@@ -46,6 +46,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		writeJSON(w, map[string]string{"status": "ok"})
 	})
 
+	// Public evidence share endpoint. Unauthenticated by design — the
+	// token IS the authorization. Every GET is logged to the append-only
+	// evidence_share_opens table for chain-of-custody. A non-existent,
+	// revoked, or expired token returns 404 with no detail (don't leak
+	// share state to probes).
+	r.Get("/share/{token}", HandlePublicEvidenceShare(db))
+
 	// Authenticated auth routes
 	r.With(RequireAuth(cfg)).Get("/auth/me", HandleGetMe(db))
 

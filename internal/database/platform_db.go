@@ -577,7 +577,20 @@ func (db *DB) FindOpenIncident(ctx context.Context, siteID string, nowMs int64) 
 }
 
 // CreateIncident inserts a new incident. Returns the created incident.
+//
+// If inc.ID is empty or doesn't start with "INC-", a fresh INC-YYYY-NNNN
+// identifier is assigned before insert. Caller-supplied ids (migration
+// replays, tests, explicit re-imports) are accepted verbatim — the
+// INC- prefix check is what distinguishes "generated" from "manual".
+// See NextIncidentID for the sequencing rationale.
 func (db *DB) CreateIncident(ctx context.Context, inc *Incident) error {
+	if inc.ID == "" || !strings.HasPrefix(inc.ID, "INC-") {
+		id, err := db.NextIncidentID(ctx)
+		if err != nil {
+			return fmt.Errorf("assign incident id: %w", err)
+		}
+		inc.ID = id
+	}
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO incidents
 		  (id, site_id, site_name, severity, status, alarm_count,
@@ -720,14 +733,30 @@ func (db *DB) UpdateIncidentSnapshot(ctx context.Context, incidentID, clipURL, s
 // ── Active alarm operations ──
 
 // CreateActiveAlarm inserts a new alarm. Returns true if newly inserted (false = already exists).
+//
+// If AlarmCode is empty, the helper assigns one (ALM-YYMMDD-NNNN). A
+// caller that already has a code (e.g., mid-retry) can pre-populate the
+// field and it will be used verbatim. TriggeringEventID is best-effort:
+// callers that don't know the event id (manual test inserts, legacy
+// paths) leave it nil and the column stays NULL.
 func (db *DB) CreateActiveAlarm(ctx context.Context, a *ActiveAlarm) (bool, error) {
+	if a.AlarmCode == "" {
+		code, err := db.NextAlarmCode(ctx)
+		if err != nil {
+			return false, fmt.Errorf("assign alarm code: %w", err)
+		}
+		a.AlarmCode = code
+	}
+
 	tag, err := db.Pool.Exec(ctx, `
 		INSERT INTO active_alarms
-		  (id, incident_id, site_id, site_name, camera_id, camera_name, severity, type, description,
+		  (id, alarm_code, triggering_event_id, incident_id, site_id, site_name,
+		   camera_id, camera_name, severity, type, description,
 		   snapshot_url, clip_url, ts, sla_deadline_ms)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		ON CONFLICT (id) DO NOTHING`,
-		a.ID, a.IncidentID, a.SiteID, a.SiteName, a.CameraID, a.CameraName,
+		a.ID, a.AlarmCode, a.TriggeringEventID, a.IncidentID,
+		a.SiteID, a.SiteName, a.CameraID, a.CameraName,
 		a.Severity, a.Type, a.Description,
 		a.SnapshotURL, a.ClipURL, a.Ts, a.SlaDeadlineMs,
 	)
@@ -748,7 +777,8 @@ func (db *DB) AcknowledgeAlarm(ctx context.Context, alarmID string) error {
 // ListActiveAlarms returns all unacknowledged alarms, newest first.
 func (db *DB) ListActiveAlarms(ctx context.Context) ([]ActiveAlarm, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, COALESCE(incident_id,''), site_id, site_name, camera_id, camera_name, severity, type,
+		`SELECT id, COALESCE(alarm_code,''), triggering_event_id,
+		        COALESCE(incident_id,''), site_id, site_name, camera_id, camera_name, severity, type,
 		        description, snapshot_url, clip_url, ts, acknowledged,
 		        COALESCE(claimed_by,''), escalation_level, COALESCE(sla_deadline_ms,0),
 		        COALESCE(ai_description,''), COALESCE(ai_threat_level,''),
@@ -766,7 +796,8 @@ func (db *DB) ListActiveAlarms(ctx context.Context) ([]ActiveAlarm, error) {
 	for rows.Next() {
 		var a ActiveAlarm
 		var aiDetJSON, aiPPEJSON []byte
-		if err := rows.Scan(&a.ID, &a.IncidentID, &a.SiteID, &a.SiteName, &a.CameraID, &a.CameraName,
+		if err := rows.Scan(&a.ID, &a.AlarmCode, &a.TriggeringEventID,
+			&a.IncidentID, &a.SiteID, &a.SiteName, &a.CameraID, &a.CameraName,
 			&a.Severity, &a.Type, &a.Description, &a.SnapshotURL, &a.ClipURL,
 			&a.Ts, &a.Acknowledged, &a.ClaimedBy, &a.EscalationLevel, &a.SlaDeadlineMs,
 			&a.AIDescription, &a.AIThreatLevel, &a.AIRecommendedAction, &a.AIFalsePositivePct,

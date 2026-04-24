@@ -190,6 +190,107 @@ func classifyRequest(method, path string) (action, targetType, targetID string) 
 					action = "delete_storage_location"
 				}
 			}
+
+		// ── SOC platform entities ──────────────────────────────────────
+		// Before these cases existed, mutations on sites, operators,
+		// incidents, alarms, and security_events landed in audit_log with
+		// empty target_type / target_id, which defeats the whole point of
+		// having a polymorphic target column.
+		case "sites":
+			targetType = "site"
+			targetID = id
+			switch method {
+			case "POST":
+				action = "create_site"
+			case "PATCH", "PUT":
+				action = "update_site"
+			case "DELETE":
+				action = "delete_site"
+			}
+		case "operators":
+			targetType = "operator"
+			targetID = id
+			switch method {
+			case "POST":
+				action = "create_operator"
+			case "PATCH", "PUT":
+				// /api/operators/{id}/status is the common case — record it
+				// distinctly so "who set themselves available" is queryable.
+				if len(parts) >= 4 && parts[3] == "status" {
+					action = "update_operator_status"
+				} else {
+					action = "update_operator"
+				}
+			case "DELETE":
+				action = "delete_operator"
+			}
+		case "incidents":
+			targetType = "incident"
+			targetID = id
+			switch method {
+			case "POST":
+				action = "create_incident"
+			case "PATCH", "PUT":
+				action = "update_incident"
+			case "DELETE":
+				action = "close_incident"
+			}
+		case "alarms", "active-alarms":
+			targetType = "alarm"
+			targetID = id
+			// Disposition verbs live on sub-paths — /alarms/{id}/ack,
+			// /alarms/{id}/claim, /alarms/{id}/dispose. Capture which
+			// one so the audit trail tells the story without joining.
+			sub := ""
+			if len(parts) >= 4 {
+				sub = parts[3]
+			}
+			switch {
+			case sub == "ack" || sub == "acknowledge":
+				action = "ack_alarm"
+			case sub == "claim":
+				action = "claim_alarm"
+			case sub == "release":
+				action = "release_alarm"
+			case sub == "dispose":
+				action = "dispose_alarm"
+			case method == "POST" && id == "":
+				action = "create_alarm"
+			}
+		case "security-events":
+			targetType = "security_event"
+			targetID = id
+			switch method {
+			case "POST":
+				action = "create_security_event"
+			case "PATCH", "PUT":
+				action = "update_security_event"
+			}
+		case "evidence":
+			targetType = "evidence"
+			targetID = id
+			switch method {
+			case "POST":
+				// /api/evidence/{id}/share creates a public share token
+				if len(parts) >= 4 && parts[3] == "share" {
+					action = "create_evidence_share"
+				} else {
+					action = "create_evidence"
+				}
+			case "DELETE":
+				action = "revoke_evidence_share"
+			}
+		case "organizations":
+			targetType = "organization"
+			targetID = id
+			switch method {
+			case "POST":
+				action = "create_organization"
+			case "PATCH", "PUT":
+				action = "update_organization"
+			case "DELETE":
+				action = "delete_organization"
+			}
 		}
 	}
 

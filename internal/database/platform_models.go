@@ -216,6 +216,13 @@ type Incident struct {
 // Created when a high-confidence detection fires; closed when the operator dispositions it.
 type ActiveAlarm struct {
 	ID              string `json:"id"`
+	// AlarmCode is the phoneticizable short code (ALM-YYMMDD-NNNN) used
+	// on radios and phone bridges; the ID stays as the URL/API key.
+	AlarmCode       string `json:"alarm_code,omitempty"`
+	// TriggeringEventID pins the alarm to the specific detection-pipeline
+	// event that produced it, so forensic replay is one SELECT instead of
+	// a lossy (camera_id, ts) join.
+	TriggeringEventID *int64 `json:"triggering_event_id,omitempty"`
 	IncidentID      string `json:"incident_id,omitempty"` // parent incident grouping
 	SiteID          string `json:"site_id"`
 	SiteName        string `json:"site_name"`

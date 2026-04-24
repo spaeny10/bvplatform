@@ -429,6 +429,87 @@ func main() {
 			ON exports (created_at) WHERE status = 'pending';
 		CREATE INDEX IF NOT EXISTS idx_exports_processing
 			ON exports (started_at) WHERE status = 'processing';
+
+		-- ── SOC audit-trail upgrades ────────────────────────────────────
+		-- These columns and triggers turn the "demo-grade" audit surface
+		-- into something we can defend in a customer conversation or
+		-- discovery request. Each change is idempotent; the whole block is
+		-- safe to re-run on an existing database.
+
+		-- Phoneticizable per-alarm short code. The UUID-ish PK is fine in
+		-- URLs but unusable over a radio or phone bridge ("ack alarm
+		-- a-7-b-3-d-9-1-e-dash..."). ALM-YYMMDD-NNNN gives a 4-digit
+		-- daily sequence, readable aloud, and still unique. Legacy rows
+		-- stay NULL — the generator backfills on next write if needed.
+		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS alarm_code TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_alarms_code
+			ON active_alarms(alarm_code) WHERE alarm_code IS NOT NULL;
+
+		-- Forensic linkage: which detection event actually fired this
+		-- alarm? Previously recoverable only by (camera_id, ts) join,
+		-- which is ambiguous when multiple events land on the same
+		-- second. BIGINT intentionally has no FK — events is a Timescale
+		-- hypertable and can't be the target of a FK constraint.
+		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS triggering_event_id BIGINT;
+		CREATE INDEX IF NOT EXISTS idx_active_alarms_event
+			ON active_alarms(triggering_event_id) WHERE triggering_event_id IS NOT NULL;
+
+		-- Polymorphic target on audit_log. target_type is one of a small
+		-- enum ("camera", "site", "user", "alarm", etc.) and target_id is
+		-- whatever format that entity uses. Lets us answer "who touched
+		-- this camera" with a single indexed query instead of LIKE-scans
+		-- over the route path.
+		ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS target_type TEXT NOT NULL DEFAULT '';
+		ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS target_id   TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_audit_log_target
+			ON audit_log(target_type, target_id, created_at DESC)
+			WHERE target_id <> '';
+
+		-- Evidence share access log. One row per GET of a share URL.
+		-- This is the chain-of-custody bit courts want: not just who
+		-- generated the share, but every IP/agent that actually opened
+		-- it, timestamped. No FK to evidence_shares — a revoked share
+		-- should still show its access history.
+		CREATE TABLE IF NOT EXISTS evidence_share_opens (
+			id          BIGSERIAL PRIMARY KEY,
+			token       TEXT NOT NULL,
+			ip          TEXT NOT NULL DEFAULT '',
+			user_agent  TEXT NOT NULL DEFAULT '',
+			referrer    TEXT NOT NULL DEFAULT '',
+			opened_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_evidence_share_opens_token
+			ON evidence_share_opens(token, opened_at DESC);
+
+		-- Append-only audit tables via trigger. We deliberately don't
+		-- REVOKE UPDATE/DELETE from the app role: the migration itself
+		-- and future scripted maintenance run as this role. Instead a
+		-- BEFORE trigger raises an exception on any mutation, which is
+		-- just as effective and leaves one obvious place to disable
+		-- (with comment, during a signed maintenance window) if a
+		-- GDPR right-to-erasure request ever comes through.
+		CREATE OR REPLACE FUNCTION ironsight_prevent_mutation()
+		RETURNS trigger AS $$
+		BEGIN
+			RAISE EXCEPTION 'audit table %.% is append-only (op=%)',
+				TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP
+				USING ERRCODE = 'insufficient_privilege';
+		END;
+		$$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS audit_log_append_only       ON audit_log;
+		DROP TRIGGER IF EXISTS playback_audits_append_only ON playback_audits;
+		DROP TRIGGER IF EXISTS deterrence_audits_append_only ON deterrence_audits;
+
+		CREATE TRIGGER audit_log_append_only
+			BEFORE UPDATE OR DELETE ON audit_log
+			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
+		CREATE TRIGGER playback_audits_append_only
+			BEFORE UPDATE OR DELETE ON playback_audits
+			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
+		CREATE TRIGGER deterrence_audits_append_only
+			BEFORE UPDATE OR DELETE ON deterrence_audits
+			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
 	`)
 	if err != nil {
 		log.Printf("[DB] Migration warning (non-fatal): %v", err)
@@ -579,17 +660,37 @@ func main() {
 			// One alarm per camera per minute — prevents alert flooding
 			alarmID := fmt.Sprintf("ALM-%s-%d", result.CameraID[:8], now/60000)
 
+			// Record the detection as an event row first so the alarm we
+			// create has a real foreign key to point at. Without this,
+			// triggering_event_id would be NULL and the forensic question
+			// "which detection frame fired this alarm?" has no answer in
+			// SQL. Best-effort: if the insert fails, the alarm still gets
+			// written, just without the event linkage.
+			var eventID *int64
+			camUUID, _ := uuid.Parse(result.CameraID)
+			evt := &database.Event{
+				CameraID:  camUUID,
+				EventTime: time.UnixMilli(now),
+				EventType: alertType,
+				Details:   map[string]interface{}{"boxes": result.Boxes},
+			}
+			if err := db.InsertEvent(ctx, evt); err == nil {
+				id := evt.ID
+				eventID = &id
+			}
+
 			alarm := &database.ActiveAlarm{
-				ID:            alarmID,
-				SiteID:        siteID,
-				SiteName:      siteName,
-				CameraID:      result.CameraID,
-				CameraName:    cameraName,
-				Severity:      severity,
-				Type:          alertType,
-				Description:   fmt.Sprintf("%s detected at %s", typeLabel, cameraName),
-				Ts:            now,
-				SlaDeadlineMs: now + 90_000, // 90-second SLA
+				ID:                alarmID,
+				TriggeringEventID: eventID,
+				SiteID:            siteID,
+				SiteName:          siteName,
+				CameraID:          result.CameraID,
+				CameraName:        cameraName,
+				Severity:          severity,
+				Type:              alertType,
+				Description:       fmt.Sprintf("%s detected at %s", typeLabel, cameraName),
+				Ts:                now,
+				SlaDeadlineMs:     now + 90_000, // 90-second SLA
 			}
 
 			created, err := db.CreateActiveAlarm(ctx, alarm)
@@ -889,8 +990,10 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 						inc, _ := db.FindOpenIncident(context.Background(), siteID, now)
 						isNewIncident := inc == nil
 						if isNewIncident {
+							// ID is intentionally left empty — CreateIncident
+							// assigns an INC-YYYY-NNNN identifier from the
+							// annual sequence.
 							inc = &database.Incident{
-								ID:            fmt.Sprintf("INC-%s-%d", siteID, now),
 								SiteID:        siteID,
 								SiteName:      siteName,
 								Severity:      severity,
