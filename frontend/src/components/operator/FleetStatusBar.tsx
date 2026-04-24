@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useOperatorStore } from '@/stores/operator-store';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface FleetStatusBarProps {
   onlineCameras: number;
@@ -21,6 +22,14 @@ export default function FleetStatusBar({
   const [time, setTime] = useState('');
   const currentOperator = useOperatorStore((s) => s.currentOperator);
   const siteLocks = useOperatorStore((s) => s.siteLocks);
+  const { user } = useAuth();
+
+  // The on-duty operator badge only makes sense for the SOC shift roles.
+  // Admins/supervisors browsing this page are doing oversight, not working
+  // a console shift — showing them a fake "ON DUTY" tile duplicates the
+  // UserChip in the header and confuses the "who is monitoring right now"
+  // signal for actual operators on the floor.
+  const isShiftRole = user?.role === 'soc_operator' || user?.role === 'soc_supervisor';
 
   const myLockedCount = Object.values(siteLocks).filter(
     (l) => l.operator_id === currentOperator?.id
@@ -76,19 +85,21 @@ export default function FleetStatusBar({
 
       <div className="op-time-display">{time}</div>
 
-      <div className="op-operator-badge">
-        <div className="op-avatar">
-          {currentOperator ? currentOperator.callsign.slice(-1) : '?'}
-        </div>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 600 }}>
-            {currentOperator?.callsign || 'OFFLINE'}
+      {isShiftRole && (
+        <div className="op-operator-badge">
+          <div className="op-avatar">
+            {currentOperator ? currentOperator.callsign.slice(-1) : '?'}
           </div>
-          <div style={{ fontSize: 8, color: 'var(--sg-text-dim)', fontFamily: "'JetBrains Mono', monospace" }}>
-            {currentOperator?.name || '—'}
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 600 }}>
+              {currentOperator?.callsign || 'OFFLINE'}
+            </div>
+            <div style={{ fontSize: 8, color: 'var(--sg-text-dim)', fontFamily: "'JetBrains Mono', monospace" }}>
+              {currentOperator?.name || '—'}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 }
