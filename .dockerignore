@@ -1,0 +1,54 @@
+# Keep the build context small — every file here is one more thing that
+# invalidates the Docker layer cache. Nothing in here needs to reach the
+# build stage; the Dockerfile only actually needs go.mod/go.sum/cmd/internal.
+
+# Local build artefacts
+server.exe
+server*.exe
+server*.exe~
+bin/mediamtx.exe
+bin/mediamtx_runtime.yml
+bin/mediamtx.log
+build.bat
+
+# Logs and runtime output
+*.log
+server_*.log
+frontend_*.log
+backend*.log
+
+# Storage scratch (gets bind-mounted at runtime)
+storage/
+data/
+
+# Frontend is a separate build context — don't ship Next's output/cache
+# into the Go image build.
+frontend/node_modules
+frontend/.next
+frontend/out
+frontend/.vercel
+
+# Editor + OS junk
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git metadata isn't needed inside the image
+.git
+.github
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Docs don't belong in a production image
+Documents/
+*.md
+
+# Misc
+cam_snapshot.jpg
+mediamtx.zip
+clear_db.go.bak
+*.bak

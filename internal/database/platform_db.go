@@ -1,0 +1,1151 @@
+package database
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ═══════════════════════════════════════════════════════════════
+// Organization CRUD
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListOrganizations(ctx context.Context) ([]Organization, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, plan, contact_name, contact_email, logo_url, created_at FROM organizations ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orgs []Organization
+	for rows.Next() {
+		var o Organization
+		if err := rows.Scan(&o.ID, &o.Name, &o.Plan, &o.ContactName, &o.ContactEmail, &o.LogoURL, &o.CreatedAt); err != nil {
+			return nil, err
+		}
+		orgs = append(orgs, o)
+	}
+	if orgs == nil {
+		orgs = []Organization{}
+	}
+	return orgs, nil
+}
+
+func (db *DB) CreateOrganization(ctx context.Context, c *OrganizationCreate) (*Organization, error) {
+	id := fmt.Sprintf("co-%s", uuid.New().String()[:8])
+	plan := c.Plan
+	if plan == "" {
+		plan = "professional"
+	}
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO organizations (id, name, plan, contact_name, contact_email, logo_url) VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, c.Name, plan, c.ContactName, c.ContactEmail, c.LogoURL,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Organization{ID: id, Name: c.Name, Plan: plan, ContactName: c.ContactName, ContactEmail: c.ContactEmail, CreatedAt: time.Now()}, nil
+}
+
+func (db *DB) UpdateOrganization(ctx context.Context, id string, c *OrganizationCreate) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE organizations SET name=$2, plan=$3, contact_name=$4, contact_email=$5 WHERE id=$1`,
+		id, c.Name, c.Plan, c.ContactName, c.ContactEmail,
+	)
+	return err
+}
+
+func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM organizations WHERE id=$1`, id)
+	return err
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Site CRUD
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
+		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
+		       COALESCE(s.feature_mode, 'security_and_safety') AS feature_mode,
+		       COALESCE(s.retention_days, 30),
+		       COALESCE(s.recording_mode, 'continuous'),
+		       COALESCE(s.pre_buffer_sec, 10),
+		       COALESCE(s.post_buffer_sec, 30),
+		       COALESCE(s.recording_triggers, 'motion,object'),
+		       COALESCE(s.recording_schedule, ''),
+		       s.created_at,
+		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
+		       COUNT(c.id) AS cameras_total
+		FROM sites s
+		LEFT JOIN cameras c ON c.site_id = s.id
+		GROUP BY s.id
+		ORDER BY s.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sites []Site
+	for rows.Next() {
+		var s Site
+		var notesJSON []byte
+		if err := rows.Scan(&s.ID, &s.Name, &s.Address, &s.OrganizationID, &s.Latitude, &s.Longitude, &s.Status, &s.MonitoringStart, &s.MonitoringEnd, &notesJSON, &s.FeatureMode,
+			&s.RetentionDays, &s.RecordingMode, &s.PreBufferSec, &s.PostBufferSec, &s.RecordingTriggers, &s.RecordingSchedule,
+			&s.CreatedAt, &s.CamerasOnline, &s.CamerasTotal); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(notesJSON, &s.SiteNotes)
+		if s.SiteNotes == nil {
+			s.SiteNotes = []string{}
+		}
+		s.ComplianceScore = 85
+		s.Trend = "flat"
+		s.LastActivity = time.Now().UTC().Format(time.RFC3339)
+		sites = append(sites, s)
+	}
+	if sites == nil {
+		sites = []Site{}
+	}
+	return sites, nil
+}
+
+func (db *DB) GetSite(ctx context.Context, id string) (*Site, error) {
+	var s Site
+	var notesJSON []byte
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, name, address, organization_id, latitude, longitude, status,
+		       monitoring_start, monitoring_end, site_notes,
+		       COALESCE(feature_mode, 'security_and_safety'),
+		       COALESCE(retention_days, 30),
+		       COALESCE(recording_mode, 'continuous'),
+		       COALESCE(pre_buffer_sec, 10),
+		       COALESCE(post_buffer_sec, 30),
+		       COALESCE(recording_triggers, 'motion,object'),
+		       COALESCE(recording_schedule, ''),
+		       created_at
+		FROM sites WHERE id=$1`, id,
+	).Scan(&s.ID, &s.Name, &s.Address, &s.OrganizationID, &s.Latitude, &s.Longitude, &s.Status,
+		&s.MonitoringStart, &s.MonitoringEnd, &notesJSON, &s.FeatureMode,
+		&s.RetentionDays, &s.RecordingMode, &s.PreBufferSec, &s.PostBufferSec, &s.RecordingTriggers, &s.RecordingSchedule,
+		&s.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal(notesJSON, &s.SiteNotes)
+	return &s, nil
+}
+
+// UpdateSiteRecording writes the per-site recording/retention policy. Separate
+// from UpdateSite because the policy has stricter semantics (every camera on
+// the site will adopt the new values on its next recording restart) and we
+// want this to be a focused admin action, not bundled into a generic detail
+// edit. The recording engine re-reads on its next schedule check.
+func (db *DB) UpdateSiteRecording(ctx context.Context, id string, retentionDays, preBufferSec, postBufferSec int, mode, triggers, schedule string) error {
+	if mode == "" {
+		mode = "continuous"
+	}
+	if triggers == "" {
+		triggers = "motion,object"
+	}
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE sites
+		   SET retention_days      = $2,
+		       recording_mode      = $3,
+		       pre_buffer_sec      = $4,
+		       post_buffer_sec     = $5,
+		       recording_triggers  = $6,
+		       recording_schedule  = $7,
+		       recording_backfilled = true
+		 WHERE id = $1`,
+		id, retentionDays, mode, preBufferSec, postBufferSec, triggers, schedule)
+	return err
+}
+
+func (db *DB) CreateSite(ctx context.Context, c *SiteCreate) (*Site, error) {
+	initials := ""
+	for _, w := range strings.Fields(c.Name) {
+		if len(w) > 0 {
+			initials += string(w[0])
+		}
+	}
+	id := fmt.Sprintf("%s-%d", strings.ToUpper(initials), 100+rand.Intn(900))
+
+	mode := c.FeatureMode
+	if mode == "" {
+		mode = "security_and_safety"
+	}
+	notesJSON, _ := json.Marshal([]string{})
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO sites (id, name, address, organization_id, latitude, longitude, status, site_notes, feature_mode) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8)`,
+		id, c.Name, c.Address, c.CompanyID, c.Latitude, c.Longitude, notesJSON, mode,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &Site{
+		ID: id, Name: c.Name, Address: c.Address, OrganizationID: c.CompanyID,
+		Status: "active", FeatureMode: mode, CreatedAt: time.Now(),
+		SiteNotes: []string{}, MonitoringStart: "18:00", MonitoringEnd: "06:00",
+		ComplianceScore: 85, Trend: "flat", LastActivity: time.Now().UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func (db *DB) UpdateSite(ctx context.Context, id string, c *SiteCreate) error {
+	mode := c.FeatureMode
+	if mode == "" {
+		mode = "security_and_safety"
+	}
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE sites SET name=$2, address=$3, organization_id=$4, latitude=$5, longitude=$6, feature_mode=$7 WHERE id=$1`,
+		id, c.Name, c.Address, c.CompanyID, c.Latitude, c.Longitude, mode,
+	)
+	return err
+}
+
+func (db *DB) DeleteSite(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM sites WHERE id=$1`, id)
+	return err
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Site SOPs
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListSiteSOPs(ctx context.Context, siteID string) ([]SiteSOP, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, site_id, title, category, priority, steps, contacts, updated_at, updated_by FROM site_sops WHERE site_id=$1`, siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sops []SiteSOP
+	for rows.Next() {
+		var s SiteSOP
+		var stepsJSON, contactsJSON []byte
+		if err := rows.Scan(&s.ID, &s.SiteID, &s.Title, &s.Category, &s.Priority, &stepsJSON, &contactsJSON, &s.UpdatedAt, &s.UpdatedBy); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(stepsJSON, &s.Steps)
+		json.Unmarshal(contactsJSON, &s.Contacts)
+		if s.Steps == nil { s.Steps = []string{} }
+		if s.Contacts == nil { s.Contacts = []map[string]interface{}{} }
+		sops = append(sops, s)
+	}
+	if sops == nil {
+		sops = []SiteSOP{}
+	}
+	return sops, nil
+}
+
+func (db *DB) CreateSiteSOP(ctx context.Context, c *SOPCreate) (*SiteSOP, error) {
+	id := fmt.Sprintf("sop-%s", uuid.New().String()[:8])
+	stepsJSON, _ := json.Marshal(c.Steps)
+	contactsJSON, _ := json.Marshal(c.Contacts)
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO site_sops (id, site_id, title, category, priority, steps, contacts, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, c.SiteID, c.Title, c.Category, c.Priority, stepsJSON, contactsJSON, c.UpdatedBy,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &SiteSOP{ID: id, SiteID: c.SiteID, Title: c.Title, Category: c.Category, Priority: c.Priority, Steps: c.Steps, Contacts: c.Contacts, UpdatedBy: c.UpdatedBy, UpdatedAt: time.Now()}, nil
+}
+
+func (db *DB) UpdateSiteSOP(ctx context.Context, id string, c *SOPCreate) error {
+	stepsJSON, _ := json.Marshal(c.Steps)
+	contactsJSON, _ := json.Marshal(c.Contacts)
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE site_sops SET title=$2, category=$3, priority=$4, steps=$5, contacts=$6, updated_by=$7, updated_at=NOW() WHERE id=$1`,
+		id, c.Title, c.Category, c.Priority, stepsJSON, contactsJSON, c.UpdatedBy,
+	)
+	return err
+}
+
+func (db *DB) DeleteSiteSOP(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM site_sops WHERE id=$1`, id)
+	return err
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Company Users
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListCompanyUsers(ctx context.Context, orgID string) ([]CompanyUser, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, email, phone, role, organization_id, assigned_site_ids, created_at FROM company_users WHERE organization_id=$1`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []CompanyUser
+	for rows.Next() {
+		var u CompanyUser
+		var siteIDsJSON []byte
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.Phone, &u.Role, &u.OrganizationID, &siteIDsJSON, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(siteIDsJSON, &u.AssignedSiteIDs)
+		if u.AssignedSiteIDs == nil { u.AssignedSiteIDs = []string{} }
+		users = append(users, u)
+	}
+	if users == nil {
+		users = []CompanyUser{}
+	}
+	return users, nil
+}
+
+func (db *DB) CreateCompanyUser(ctx context.Context, c *CompanyUserCreate) (*CompanyUser, error) {
+	id := uuid.New().String()[:8]
+	siteIDsJSON, _ := json.Marshal(c.AssignedSiteIDs)
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO company_users (id, name, email, phone, password_hash, role, organization_id, assigned_site_ids) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, c.Name, c.Email, c.Phone, c.Password, c.Role, c.CompanyID, siteIDsJSON,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &CompanyUser{ID: id, Name: c.Name, Email: c.Email, Phone: c.Phone, Role: c.Role, OrganizationID: c.CompanyID, AssignedSiteIDs: c.AssignedSiteIDs, CreatedAt: time.Now()}, nil
+}
+
+func (db *DB) DeleteCompanyUser(ctx context.Context, id string) error {
+	_, err := db.Pool.Exec(ctx, `DELETE FROM company_users WHERE id=$1`, id)
+	return err
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Operators
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListOperators(ctx context.Context) ([]Operator, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, callsign, email, status, active_alarm_id, last_active FROM operators ORDER BY callsign`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ops []Operator
+	for rows.Next() {
+		var o Operator
+		var activeAlarm *string
+		if err := rows.Scan(&o.ID, &o.Name, &o.Callsign, &o.Email, &o.Status, &activeAlarm, &o.LastActive); err != nil {
+			return nil, err
+		}
+		if activeAlarm != nil {
+			o.ActiveAlarmID = *activeAlarm
+		}
+		ops = append(ops, o)
+	}
+	if ops == nil {
+		ops = []Operator{}
+	}
+	return ops, nil
+}
+
+func (db *DB) CreateOperator(ctx context.Context, name, callsign, email string, userID *string) (*Operator, error) {
+	id := "op-" + uuid.New().String()[:8]
+	now := time.Now().UnixMilli()
+	var err error
+	if userID != nil {
+		_, err = db.Pool.Exec(ctx,
+			`INSERT INTO operators (id, name, callsign, email, status, last_active, user_id) VALUES ($1, $2, $3, $4, 'available', $5, $6)`,
+			id, name, callsign, email, now, *userID,
+		)
+	} else {
+		_, err = db.Pool.Exec(ctx,
+			`INSERT INTO operators (id, name, callsign, email, status, last_active) VALUES ($1, $2, $3, $4, 'available', $5)`,
+			id, name, callsign, email, now,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Operator{ID: id, Name: name, Callsign: callsign, Email: email, Status: "available", LastActive: now}, nil
+}
+
+func (db *DB) GetCurrentOperator(ctx context.Context) (*Operator, error) {
+	var o Operator
+	var activeAlarm *string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, name, callsign, email, status, active_alarm_id, last_active FROM operators WHERE status != 'away' LIMIT 1`,
+	).Scan(&o.ID, &o.Name, &o.Callsign, &o.Email, &o.Status, &activeAlarm, &o.LastActive)
+	if err != nil {
+		return nil, err
+	}
+	if activeAlarm != nil {
+		o.ActiveAlarmID = *activeAlarm
+	}
+	return &o, nil
+}
+
+func (db *DB) GetOperatorByUserID(ctx context.Context, userID string) (*Operator, error) {
+	var o Operator
+	var activeAlarm *string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, name, callsign, email, status, active_alarm_id, last_active FROM operators WHERE user_id = $1`,
+		userID,
+	).Scan(&o.ID, &o.Name, &o.Callsign, &o.Email, &o.Status, &activeAlarm, &o.LastActive)
+	if err != nil {
+		return nil, err
+	}
+	if activeAlarm != nil {
+		o.ActiveAlarmID = *activeAlarm
+	}
+	return &o, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Security Events
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) CreateSecurityEvent(ctx context.Context, c *SecurityEventCreate) (*SecurityEvent, error) {
+	id := fmt.Sprintf("EVT-%d-%04d", time.Now().Year(), rand.Intn(9999))
+	now := time.Now().UnixMilli()
+	actionLogJSON, _ := json.Marshal(c.ActionLog)
+
+	severity := c.Severity
+	if severity == "" {
+		severity = "medium"
+	}
+
+	_, err := db.Pool.Exec(ctx,
+		`INSERT INTO security_events
+		 (id, alarm_id, site_id, camera_id, severity, type, description,
+		  disposition_code, disposition_label, operator_callsign, operator_notes,
+		  action_log, escalation_depth, clip_url, ts, resolved_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		id, c.AlarmID, c.SiteID, c.CameraID, severity, c.Type, c.Description,
+		c.DispositionCode, c.DispositionLabel, c.OperatorCallsign, c.OperatorNotes,
+		actionLogJSON, c.EscalationDepth, c.ClipURL, now, now,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// Close the active alarm if one exists
+	db.Pool.Exec(ctx, `UPDATE active_alarms SET acknowledged=true WHERE id=$1`, c.AlarmID)
+	return &SecurityEvent{ID: id, AlarmID: c.AlarmID, SiteID: c.SiteID, Ts: now, ResolvedAt: now}, nil
+}
+
+func (db *DB) ListSecurityEvents(ctx context.Context, siteID string, viewedOnly *bool) ([]SecurityEvent, error) {
+	query := `SELECT id, alarm_id, site_id, camera_id, severity,
+	       COALESCE(type,''), COALESCE(description,''),
+	       disposition_code, disposition_label, COALESCE(operator_callsign,''), operator_notes,
+	       action_log, escalation_depth, COALESCE(clip_url,''), ts, resolved_at, viewed_by_customer FROM security_events`
+	var args []interface{}
+	var conditions []string
+
+	if siteID != "" {
+		conditions = append(conditions, fmt.Sprintf("site_id=$%d", len(args)+1))
+		args = append(args, siteID)
+	}
+	if viewedOnly != nil {
+		conditions = append(conditions, fmt.Sprintf("viewed_by_customer=$%d", len(args)+1))
+		args = append(args, *viewedOnly)
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY resolved_at DESC"
+
+	rows, err := db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []SecurityEvent
+	for rows.Next() {
+		var e SecurityEvent
+		var actionLogJSON []byte
+		if err := rows.Scan(&e.ID, &e.AlarmID, &e.SiteID, &e.CameraID, &e.Severity,
+			&e.Type, &e.Description,
+			&e.DispositionCode, &e.DispositionLabel, &e.OperatorCallsign, &e.OperatorNotes,
+			&actionLogJSON, &e.EscalationDepth, &e.ClipURL, &e.Ts, &e.ResolvedAt, &e.ViewedByCustomer); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(actionLogJSON, &e.ActionLog)
+		events = append(events, e)
+	}
+	if events == nil {
+		events = []SecurityEvent{}
+	}
+	return events, nil
+}
+
+func (db *DB) ListIncidents(ctx context.Context, siteID, severity string, limit int) ([]IncidentSummary, error) {
+	query := `
+		SELECT e.id,
+		       COALESCE(NULLIF(e.severity,''), 'medium'),
+		       'resolved',
+		       COALESCE(NULLIF(e.description,''), NULLIF(e.disposition_label,''), NULLIF(e.type,''), 'Security Event'),
+		       e.site_id, COALESCE(s.name, e.site_id),
+		       COALESCE(e.camera_id,''), e.ts, COALESCE(e.resolved_at, e.ts), 0,
+		       COALESCE(NULLIF(e.type,''), NULLIF(e.disposition_code,''), ''),
+		       e.escalation_depth,
+		       COALESCE(e.disposition_code,''), COALESCE(e.disposition_label,''),
+		       COALESCE(e.operator_callsign,''),
+		       COALESCE(c.name, '')
+		FROM security_events e
+		LEFT JOIN sites s ON s.id = e.site_id
+		LEFT JOIN cameras c ON c.id::text = e.camera_id`
+	var args []interface{}
+	var conds []string
+	if siteID != "" {
+		conds = append(conds, fmt.Sprintf("e.site_id=$%d", len(args)+1))
+		args = append(args, siteID)
+	}
+	if severity != "" {
+		conds = append(conds, fmt.Sprintf("e.severity=$%d", len(args)+1))
+		args = append(args, severity)
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += " ORDER BY e.ts DESC"
+	if limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", limit)
+	}
+
+	rows, err := db.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var incidents []IncidentSummary
+	for rows.Next() {
+		var inc IncidentSummary
+		if err := rows.Scan(&inc.ID, &inc.Severity, &inc.Status, &inc.Title, &inc.SiteID, &inc.SiteName, &inc.CameraID, &inc.Ts, &inc.ResolvedAt, &inc.WorkersIdentified, &inc.Type, &inc.EscalationLevel, &inc.DispositionCode, &inc.DispositionLabel, &inc.OperatorCallsign, &inc.CameraName); err != nil {
+			return nil, err
+		}
+		incidents = append(incidents, inc)
+	}
+	if incidents == nil {
+		incidents = []IncidentSummary{}
+	}
+	return incidents, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Active Alarms (live queue from detection pipeline)
+// ═══════════════════════════════════════════════════════════════
+
+// GetCameraWithSite looks up a camera's name and its current site assignment.
+// Returns empty siteID if the camera is unassigned.
+func (db *DB) GetCameraWithSite(ctx context.Context, cameraID string) (cameraName, siteID, siteName string, err error) {
+	err = db.Pool.QueryRow(ctx, `
+		SELECT c.name, COALESCE(c.site_id,''), COALESCE(s.name,'')
+		FROM cameras c
+		LEFT JOIN sites s ON s.id = c.site_id
+		WHERE c.id::text = $1`, cameraID,
+	).Scan(&cameraName, &siteID, &siteName)
+	return
+}
+
+// ── Incident management ──
+
+// IncidentCorrelationWindow is how far back (in milliseconds) we look for an
+// open incident at the same site before creating a new one.
+const IncidentCorrelationWindow = 5 * 60 * 1000 // 5 minutes
+
+// FindOpenIncident returns an active incident at the given site whose last alarm
+// is within the correlation window, or nil if none exists.
+func (db *DB) FindOpenIncident(ctx context.Context, siteID string, nowMs int64) (*Incident, error) {
+	cutoff := nowMs - IncidentCorrelationWindow
+	var inc Incident
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, site_id, site_name, severity, status, alarm_count,
+		       camera_ids, camera_names, types, latest_type, description,
+		       snapshot_url, clip_url, first_alarm_ts, last_alarm_ts, sla_deadline_ms
+		FROM incidents
+		WHERE site_id = $1 AND status = 'active' AND last_alarm_ts >= $2
+		ORDER BY last_alarm_ts DESC LIMIT 1`, siteID, cutoff,
+	).Scan(&inc.ID, &inc.SiteID, &inc.SiteName, &inc.Severity, &inc.Status, &inc.AlarmCount,
+		&inc.CameraIDs, &inc.CameraNames, &inc.Types, &inc.LatestType, &inc.Description,
+		&inc.SnapshotURL, &inc.ClipURL, &inc.FirstAlarmTs, &inc.LastAlarmTs, &inc.SlaDeadlineMs)
+	if err != nil {
+		return nil, nil // no open incident found (or error — treat as "none")
+	}
+	return &inc, nil
+}
+
+// CreateIncident inserts a new incident. Returns the created incident.
+func (db *DB) CreateIncident(ctx context.Context, inc *Incident) error {
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO incidents
+		  (id, site_id, site_name, severity, status, alarm_count,
+		   camera_ids, camera_names, types, latest_type, description,
+		   snapshot_url, clip_url, first_alarm_ts, last_alarm_ts, sla_deadline_ms)
+		VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		inc.ID, inc.SiteID, inc.SiteName, inc.Severity, inc.AlarmCount,
+		inc.CameraIDs, inc.CameraNames, inc.Types, inc.LatestType, inc.Description,
+		inc.SnapshotURL, inc.ClipURL, inc.FirstAlarmTs, inc.LastAlarmTs, inc.SlaDeadlineMs,
+	)
+	return err
+}
+
+// AttachAlarmToIncident adds a new alarm's data to an existing incident:
+// increments alarm_count, appends camera/type if new, updates severity/timestamps/snapshot.
+func (db *DB) AttachAlarmToIncident(ctx context.Context, incidentID, cameraID, cameraName, eventType, severity, description, snapshotURL, clipURL string, ts, slaDeadlineMs int64) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE incidents SET
+			alarm_count = alarm_count + 1,
+			camera_ids = CASE WHEN $2 = ANY(camera_ids) THEN camera_ids
+			             ELSE array_append(camera_ids, $2) END,
+			camera_names = CASE WHEN $3 = ANY(camera_names) THEN camera_names
+			               ELSE array_append(camera_names, $3) END,
+			types = CASE WHEN $4 = ANY(types) THEN types
+			        ELSE array_append(types, $4) END,
+			latest_type = $4,
+			description = $5,
+			severity = CASE
+				WHEN $6 = 'critical' THEN 'critical'
+				WHEN $6 = 'high' AND severity NOT IN ('critical') THEN 'high'
+				WHEN $6 = 'medium' AND severity NOT IN ('critical','high') THEN 'medium'
+				ELSE severity END,
+			snapshot_url = CASE WHEN $7 != '' THEN $7 ELSE snapshot_url END,
+			clip_url = CASE WHEN $8 != '' THEN $8 ELSE clip_url END,
+			last_alarm_ts = $9,
+			sla_deadline_ms = $10
+		WHERE id = $1`, incidentID, cameraID, cameraName, eventType, description,
+		severity, snapshotURL, clipURL, ts, slaDeadlineMs)
+	return err
+}
+
+// ListActiveIncidents returns all active (unacknowledged) incidents, newest first.
+func (db *DB) ListActiveIncidents(ctx context.Context) ([]Incident, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, site_id, site_name, severity, status, alarm_count,
+		       camera_ids, camera_names, types, latest_type, description,
+		       snapshot_url, clip_url, first_alarm_ts, last_alarm_ts, sla_deadline_ms
+		FROM incidents WHERE status = 'active'
+		ORDER BY last_alarm_ts DESC LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var incidents []Incident
+	for rows.Next() {
+		var inc Incident
+		if err := rows.Scan(&inc.ID, &inc.SiteID, &inc.SiteName, &inc.Severity, &inc.Status,
+			&inc.AlarmCount, &inc.CameraIDs, &inc.CameraNames, &inc.Types, &inc.LatestType,
+			&inc.Description, &inc.SnapshotURL, &inc.ClipURL,
+			&inc.FirstAlarmTs, &inc.LastAlarmTs, &inc.SlaDeadlineMs); err != nil {
+			return nil, err
+		}
+		incidents = append(incidents, inc)
+	}
+	return incidents, nil
+}
+
+// GetIncidentWithAlarms fetches a single incident by ID along with all its child alarms.
+func (db *DB) GetIncidentWithAlarms(ctx context.Context, incidentID string) (*Incident, []ActiveAlarm, error) {
+	var inc Incident
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, site_id, site_name, severity, status, alarm_count,
+		       camera_ids, camera_names, types, latest_type, description,
+		       snapshot_url, clip_url, first_alarm_ts, last_alarm_ts, sla_deadline_ms
+		FROM incidents WHERE id = $1`, incidentID,
+	).Scan(&inc.ID, &inc.SiteID, &inc.SiteName, &inc.Severity, &inc.Status, &inc.AlarmCount,
+		&inc.CameraIDs, &inc.CameraNames, &inc.Types, &inc.LatestType, &inc.Description,
+		&inc.SnapshotURL, &inc.ClipURL, &inc.FirstAlarmTs, &inc.LastAlarmTs, &inc.SlaDeadlineMs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, COALESCE(incident_id,''), site_id, site_name, camera_id, camera_name, severity, type,
+		       description, snapshot_url, clip_url, ts, acknowledged,
+		       COALESCE(claimed_by,''), escalation_level, COALESCE(sla_deadline_ms,0),
+		       COALESCE(ai_description,''), COALESCE(ai_threat_level,''),
+		       COALESCE(ai_recommended_action,''), COALESCE(ai_false_positive_pct,0),
+		       COALESCE(ai_detections,'[]'::jsonb),
+		       COALESCE(ai_ppe_violations,'[]'::jsonb)
+		FROM active_alarms WHERE incident_id = $1
+		ORDER BY ts ASC`, incidentID)
+	if err != nil {
+		return &inc, nil, nil
+	}
+	defer rows.Close()
+
+	var alarms []ActiveAlarm
+	for rows.Next() {
+		var a ActiveAlarm
+		var aiDetJSON, aiPPEJSON []byte
+		if err := rows.Scan(&a.ID, &a.IncidentID, &a.SiteID, &a.SiteName, &a.CameraID, &a.CameraName,
+			&a.Severity, &a.Type, &a.Description, &a.SnapshotURL, &a.ClipURL,
+			&a.Ts, &a.Acknowledged, &a.ClaimedBy, &a.EscalationLevel, &a.SlaDeadlineMs,
+			&a.AIDescription, &a.AIThreatLevel, &a.AIRecommendedAction, &a.AIFalsePositivePct,
+			&aiDetJSON, &aiPPEJSON); err != nil {
+			return &inc, alarms, nil
+		}
+		json.Unmarshal(aiDetJSON, &a.AIDetections)
+		json.Unmarshal(aiPPEJSON, &a.AIPPEViolations)
+		alarms = append(alarms, a)
+	}
+	if alarms == nil {
+		alarms = []ActiveAlarm{}
+	}
+	return &inc, alarms, nil
+}
+
+// AcknowledgeIncident marks an incident and all its child alarms as acknowledged.
+func (db *DB) AcknowledgeIncident(ctx context.Context, incidentID string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE incidents SET status = 'acknowledged' WHERE id = $1`, incidentID)
+	if err != nil {
+		return err
+	}
+	_, err = db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET acknowledged = true WHERE incident_id = $1`, incidentID)
+	return err
+}
+
+// UpdateIncidentSnapshot sets the snapshot/clip on an incident after async capture.
+func (db *DB) UpdateIncidentSnapshot(ctx context.Context, incidentID, clipURL, snapshotURL string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE incidents SET snapshot_url=$2, clip_url=$3 WHERE id=$1`,
+		incidentID, snapshotURL, clipURL)
+	return err
+}
+
+// ── Active alarm operations ──
+
+// CreateActiveAlarm inserts a new alarm. Returns true if newly inserted (false = already exists).
+func (db *DB) CreateActiveAlarm(ctx context.Context, a *ActiveAlarm) (bool, error) {
+	tag, err := db.Pool.Exec(ctx, `
+		INSERT INTO active_alarms
+		  (id, incident_id, site_id, site_name, camera_id, camera_name, severity, type, description,
+		   snapshot_url, clip_url, ts, sla_deadline_ms)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+		ON CONFLICT (id) DO NOTHING`,
+		a.ID, a.IncidentID, a.SiteID, a.SiteName, a.CameraID, a.CameraName,
+		a.Severity, a.Type, a.Description,
+		a.SnapshotURL, a.ClipURL, a.Ts, a.SlaDeadlineMs,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// AcknowledgeAlarm marks an alarm as acknowledged (archived) so it no longer
+// appears in the SOC dispatch queue.
+func (db *DB) AcknowledgeAlarm(ctx context.Context, alarmID string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET acknowledged = true WHERE id = $1`, alarmID)
+	return err
+}
+
+// ListActiveAlarms returns all unacknowledged alarms, newest first.
+func (db *DB) ListActiveAlarms(ctx context.Context) ([]ActiveAlarm, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, COALESCE(incident_id,''), site_id, site_name, camera_id, camera_name, severity, type,
+		        description, snapshot_url, clip_url, ts, acknowledged,
+		        COALESCE(claimed_by,''), escalation_level, COALESCE(sla_deadline_ms,0),
+		        COALESCE(ai_description,''), COALESCE(ai_threat_level,''),
+		        COALESCE(ai_recommended_action,''), COALESCE(ai_false_positive_pct,0),
+		       COALESCE(ai_detections,'[]'::jsonb),
+		       COALESCE(ai_ppe_violations,'[]'::jsonb)
+		 FROM active_alarms WHERE acknowledged = false
+		 ORDER BY ts DESC LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var alarms []ActiveAlarm
+	for rows.Next() {
+		var a ActiveAlarm
+		var aiDetJSON, aiPPEJSON []byte
+		if err := rows.Scan(&a.ID, &a.IncidentID, &a.SiteID, &a.SiteName, &a.CameraID, &a.CameraName,
+			&a.Severity, &a.Type, &a.Description, &a.SnapshotURL, &a.ClipURL,
+			&a.Ts, &a.Acknowledged, &a.ClaimedBy, &a.EscalationLevel, &a.SlaDeadlineMs,
+			&a.AIDescription, &a.AIThreatLevel, &a.AIRecommendedAction, &a.AIFalsePositivePct,
+			&aiDetJSON, &aiPPEJSON); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(aiDetJSON, &a.AIDetections)
+		json.Unmarshal(aiPPEJSON, &a.AIPPEViolations)
+		alarms = append(alarms, a)
+	}
+	return alarms, nil
+}
+
+// GetActiveAlarmsCount returns the number of unacknowledged alarms and the timestamp of the oldest one.
+func (db *DB) GetActiveAlarmsCount(ctx context.Context) (count int, oldestTs int64, err error) {
+	err = db.Pool.QueryRow(ctx,
+		`SELECT COUNT(*), COALESCE(MIN(ts), 0) FROM active_alarms WHERE acknowledged = false`,
+	).Scan(&count, &oldestTs)
+	return
+}
+
+// UpdateActiveAlarmClip sets the clip_url on an alarm after async clip capture.
+func (db *DB) UpdateActiveAlarmClip(ctx context.Context, alarmID, clipURL, snapshotURL string) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET clip_url=$2, snapshot_url=$3 WHERE id=$1`,
+		alarmID, clipURL, snapshotURL)
+	return err
+}
+
+// UpdateAlarmAI persists AI pipeline results (YOLO + Qwen) on an active alarm.
+func (db *DB) UpdateAlarmAI(ctx context.Context, alarmID, description, threatLevel, recommendedAction string, fpPct float64, detectionsJSON, ppeViolationsJSON []byte) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET ai_description=$2, ai_threat_level=$3, ai_recommended_action=$4, ai_false_positive_pct=$5, ai_detections=$6, ai_ppe_violations=$7 WHERE id=$1`,
+		alarmID, description, threatLevel, recommendedAction, fpPct, detectionsJSON, ppeViolationsJSON)
+	return err
+}
+
+// SetAlarmAIFeedback records the operator's explicit feedback on the AI assessment.
+func (db *DB) SetAlarmAIFeedback(ctx context.Context, alarmID string, agreed bool) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET ai_operator_agreed=$2 WHERE id=$1`,
+		alarmID, agreed)
+	return err
+}
+
+// ComputeAICorrectness compares the AI threat assessment against the operator's
+// disposition and stores the result. Called when the alarm is resolved.
+// Logic: AI said high/critical + disposition is verified_* → AI was correct
+//        AI said high/critical + disposition is false_positive_* → AI was wrong
+//        AI said low/none + disposition is verified_* → AI was wrong (missed threat)
+//        AI said low/none + disposition is false_positive_* → AI was correct
+func (db *DB) ComputeAICorrectness(ctx context.Context, alarmID, dispositionCode string) error {
+	var aiThreatLevel string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(ai_threat_level,'') FROM active_alarms WHERE id=$1`, alarmID,
+	).Scan(&aiThreatLevel)
+	if err != nil || aiThreatLevel == "" {
+		return nil // no AI assessment, nothing to compute
+	}
+
+	aiSaidThreat := aiThreatLevel == "critical" || aiThreatLevel == "high"
+	isFalsePositive := len(dispositionCode) > 0 && dispositionCode[:5] == "false"
+	aiWasCorrect := (aiSaidThreat && !isFalsePositive) || (!aiSaidThreat && isFalsePositive)
+
+	_, err = db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET ai_was_correct=$2 WHERE id=$1`,
+		alarmID, aiWasCorrect)
+	return err
+}
+
+// EscalateActiveAlarm bumps the escalation_level on an active alarm.
+func (db *DB) EscalateActiveAlarm(ctx context.Context, alarmID string, level int) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE active_alarms SET escalation_level=$2 WHERE id=$1`, alarmID, level)
+	return err
+}
+
+// GetSecurityEventByID fetches one security_event by ID and maps it to IncidentDetail.
+func (db *DB) GetSecurityEventByID(ctx context.Context, id string) (*IncidentDetail, error) {
+	var (
+		evtID, alarmID, siteID, cameraID                        string
+		severity, evtType, description                          string
+		dispositionCode, dispositionLabel                       string
+		operatorCallsign, operatorNotes                         string
+		actionLogJSON                                           []byte
+		clipURL                                                 string
+		ts, resolvedAt                                          int64
+	)
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, COALESCE(alarm_id,''), site_id, COALESCE(camera_id,''),
+		       COALESCE(severity,'medium'), COALESCE(type,''), COALESCE(description,''),
+		       COALESCE(disposition_code,''), COALESCE(disposition_label,''),
+		       COALESCE(operator_callsign,''), COALESCE(operator_notes,''),
+		       COALESCE(action_log,'[]'::jsonb), COALESCE(clip_url,''), ts, resolved_at
+		FROM security_events WHERE id=$1`, id,
+	).Scan(&evtID, &alarmID, &siteID, &cameraID,
+		&severity, &evtType, &description,
+		&dispositionCode, &dispositionLabel,
+		&operatorCallsign, &operatorNotes,
+		&actionLogJSON, &clipURL, &ts, &resolvedAt)
+	if err != nil {
+		return nil, err
+	}
+
+	// Look up site and camera names
+	var siteName, cameraName string
+	db.Pool.QueryRow(ctx, `SELECT COALESCE(name,'') FROM sites WHERE id=$1`, siteID).Scan(&siteName)
+	if cameraID != "" {
+		db.Pool.QueryRow(ctx, `SELECT COALESCE(name,'') FROM cameras WHERE id::text=$1`, cameraID).Scan(&cameraName)
+	}
+
+	// Map action_log → timeline
+	var rawLog []map[string]interface{}
+	json.Unmarshal(actionLogJSON, &rawLog)
+	timeline := make([]map[string]interface{}, 0, len(rawLog))
+	for _, entry := range rawLog {
+		timeline = append(timeline, map[string]interface{}{
+			"ts":    entry["ts"],
+			"label": entry["text"],
+			"type":  "action",
+		})
+	}
+
+	title := description
+	if title == "" {
+		title = dispositionLabel
+	}
+	if title == "" {
+		title = evtType
+	}
+	if title == "" {
+		title = "Security Event"
+	}
+
+	return &IncidentDetail{
+		ID:                 evtID,
+		Severity:           severity,
+		Status:             "resolved",
+		Title:              title,
+		SiteID:             siteID,
+		SiteName:           siteName,
+		CameraID:           cameraID,
+		CameraName:         cameraName,
+		Ts:                 ts,
+		DurationMs:         resolvedAt - ts,
+		WorkersIdentified:  0,
+		AIConfidence:       0,
+		AICaption:          description,
+		Findings:           []map[string]interface{}{},
+		Detections:         []map[string]interface{}{},
+		Workers:            []map[string]interface{}{},
+		Timeline:           timeline,
+		Notifications:      []map[string]interface{}{},
+		Comments:           []map[string]interface{}{},
+		ClipURL:            clipURL,
+		Keyframes:          []map[string]interface{}{},
+		OSHAClassification: "",
+		RelatedIncidents:   []string{},
+		OperatorCallsign:   operatorCallsign,
+		OperatorNotes:      operatorNotes,
+		DispositionCode:    dispositionCode,
+		DispositionLabel:   dispositionLabel,
+	}, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Shift Handoffs
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) CreateHandoff(ctx context.Context, h *ShiftHandoffCreate) (*ShiftHandoff, error) {
+	siteLocks, _ := json.Marshal(h.LockedSiteIDs)
+	activeAlerts, _ := json.Marshal(h.ActiveAlertIDs)
+	var id int64
+	var createdAt time.Time
+	err := db.Pool.QueryRow(ctx, `
+		INSERT INTO shift_handoffs
+		  (from_operator_id, from_operator_callsign, to_operator_id, to_operator_callsign, notes, site_locks, pending_alarms)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		RETURNING id, created_at`,
+		h.FromOperatorID, h.FromOperatorCallsign, h.ToOperatorID, h.ToOperatorCallsign,
+		h.Notes, siteLocks, activeAlerts,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, err
+	}
+	return &ShiftHandoff{
+		ID: id, FromOperatorID: h.FromOperatorID, FromOperatorCallsign: h.FromOperatorCallsign,
+		ToOperatorID: h.ToOperatorID, ToOperatorCallsign: h.ToOperatorCallsign,
+		LockedSiteIDs: h.LockedSiteIDs, ActiveAlertIDs: h.ActiveAlertIDs,
+		Notes: h.Notes, Status: "pending", CreatedAt: createdAt,
+	}, nil
+}
+
+func (db *DB) ListHandoffs(ctx context.Context, toOperatorID string) ([]ShiftHandoff, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, from_operator_id, from_operator_callsign, to_operator_id, to_operator_callsign,
+		       notes, site_locks, pending_alarms, status, created_at, accepted_at
+		FROM shift_handoffs
+		WHERE to_operator_id=$1
+		ORDER BY created_at DESC LIMIT 20`, toOperatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var handoffs []ShiftHandoff
+	for rows.Next() {
+		var h ShiftHandoff
+		var siteLocks, pendingAlarms []byte
+		if err := rows.Scan(&h.ID, &h.FromOperatorID, &h.FromOperatorCallsign, &h.ToOperatorID, &h.ToOperatorCallsign,
+			&h.Notes, &siteLocks, &pendingAlarms, &h.Status, &h.CreatedAt, &h.AcceptedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(siteLocks, &h.LockedSiteIDs)
+		json.Unmarshal(pendingAlarms, &h.ActiveAlertIDs)
+		if h.LockedSiteIDs == nil {
+			h.LockedSiteIDs = []string{}
+		}
+		if h.ActiveAlertIDs == nil {
+			h.ActiveAlertIDs = []string{}
+		}
+		handoffs = append(handoffs, h)
+	}
+	if handoffs == nil {
+		handoffs = []ShiftHandoff{}
+	}
+	return handoffs, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Camera site assignment
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) AssignCameraToSite(ctx context.Context, cameraID, siteID, location string) error {
+	// Close any open assignment record for this device
+	db.Pool.Exec(ctx, `UPDATE device_assignments SET removed_at=NOW()
+		WHERE device_type='camera' AND device_id=$1 AND removed_at IS NULL`, cameraID)
+	_, err := db.Pool.Exec(ctx, `UPDATE cameras SET site_id=$2, location=$3 WHERE id=$1`, cameraID, siteID, location)
+	if err != nil {
+		return err
+	}
+	// Open a new assignment record
+	db.Pool.Exec(ctx, `INSERT INTO device_assignments (device_type, device_id, site_id, location_label)
+		VALUES ('camera', $1, $2, $3)`, cameraID, siteID, location)
+	return nil
+}
+
+func (db *DB) UnassignCameraFromSite(ctx context.Context, cameraID string) error {
+	db.Pool.Exec(ctx, `UPDATE device_assignments SET removed_at=NOW()
+		WHERE device_type='camera' AND device_id=$1 AND removed_at IS NULL`, cameraID)
+	_, err := db.Pool.Exec(ctx, `UPDATE cameras SET site_id=NULL, location='' WHERE id=$1`, cameraID)
+	return err
+}
+
+func (db *DB) GetSiteCameras(ctx context.Context, siteID string) ([]Camera, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, onvif_address, status, manufacturer, model, rtsp_uri, recording, COALESCE(site_id, ''), COALESCE(location, '') FROM cameras WHERE site_id=$1`, siteID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cameras []Camera
+	for rows.Next() {
+		var c Camera
+		var siteID, location string
+		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Status, &c.Manufacturer, &c.Model, &c.RTSPUri, &c.Recording, &siteID, &location); err != nil {
+			return nil, err
+		}
+		c.CameraGroup = location // reuse CameraGroup field for location
+		cameras = append(cameras, c)
+	}
+	if cameras == nil {
+		cameras = []Camera{}
+	}
+	return cameras, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Platform Camera Registry (all cameras with site assignment info)
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListAllPlatformCameras(ctx context.Context) ([]PlatformCamera, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id::text, name, COALESCE(onvif_address,''), COALESCE(manufacturer,''),
+		       COALESCE(model,''), status, COALESCE(site_id,''), COALESCE(location,''), recording
+		FROM cameras ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cameras []PlatformCamera
+	for rows.Next() {
+		var c PlatformCamera
+		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Manufacturer,
+			&c.Model, &c.Status, &c.SiteID, &c.Location, &c.Recording); err != nil {
+			return nil, err
+		}
+		cameras = append(cameras, c)
+	}
+	if cameras == nil {
+		cameras = []PlatformCamera{}
+	}
+	return cameras, nil
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Speaker site assignment
+// ═══════════════════════════════════════════════════════════════
+
+func (db *DB) ListAllPlatformSpeakers(ctx context.Context) ([]PlatformSpeaker, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id::text, name, COALESCE(onvif_address,''), COALESCE(zone,''),
+		       COALESCE(location,''), status, COALESCE(site_id,''),
+		       COALESCE(manufacturer,''), COALESCE(model,'')
+		FROM speakers ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var speakers []PlatformSpeaker
+	for rows.Next() {
+		var s PlatformSpeaker
+		if err := rows.Scan(&s.ID, &s.Name, &s.OnvifAddress, &s.Zone,
+			&s.Location, &s.Status, &s.SiteID, &s.Manufacturer, &s.Model); err != nil {
+			return nil, err
+		}
+		speakers = append(speakers, s)
+	}
+	if speakers == nil {
+		speakers = []PlatformSpeaker{}
+	}
+	return speakers, nil
+}
+
+func (db *DB) AssignSpeakerToSite(ctx context.Context, speakerID, siteID, location string) error {
+	db.Pool.Exec(ctx, `UPDATE device_assignments SET removed_at=NOW()
+		WHERE device_type='speaker' AND device_id=$1 AND removed_at IS NULL`, speakerID)
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE speakers SET site_id=$2, location=$3 WHERE id=$1::uuid`, speakerID, siteID, location)
+	if err != nil {
+		return err
+	}
+	db.Pool.Exec(ctx, `INSERT INTO device_assignments (device_type, device_id, site_id, location_label)
+		VALUES ('speaker', $1, $2, $3)`, speakerID, siteID, location)
+	return nil
+}
+
+func (db *DB) UnassignSpeakerFromSite(ctx context.Context, speakerID string) error {
+	db.Pool.Exec(ctx, `UPDATE device_assignments SET removed_at=NOW()
+		WHERE device_type='speaker' AND device_id=$1 AND removed_at IS NULL`, speakerID)
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE speakers SET site_id=NULL, location='' WHERE id=$1::uuid`, speakerID)
+	return err
+}
+
+func (db *DB) GetDeviceHistory(ctx context.Context, deviceType, deviceID string) ([]DeviceAssignment, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, device_type, device_id, site_id, location_label, assigned_at, removed_at
+		FROM device_assignments
+		WHERE device_type=$1 AND device_id=$2
+		ORDER BY assigned_at DESC`, deviceType, deviceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []DeviceAssignment
+	for rows.Next() {
+		var d DeviceAssignment
+		if err := rows.Scan(&d.ID, &d.DeviceType, &d.DeviceID, &d.SiteID,
+			&d.LocationLabel, &d.AssignedAt, &d.RemovedAt); err != nil {
+			return nil, err
+		}
+		history = append(history, d)
+	}
+	if history == nil {
+		history = []DeviceAssignment{}
+	}
+	return history, nil
+}

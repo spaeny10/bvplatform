@@ -1,0 +1,245 @@
+# ─────────────────────────────────────────────────────────────────
+# Ironsight production-shaped stack.
+#
+# This is the single-host layout — one Docker Engine runs everything.
+# For multi-host production (see Documents/MasterDeployment.md) the
+# same service definitions translate to Swarm/K8s; the only thing
+# that changes is the volume type (named volumes → NFS/S3/PV).
+#
+# Running locally:
+#   cp .env.example .env       # edit secrets
+#   docker compose up -d --build
+#
+# Exposed host ports (edit in .env if they collide):
+#   3000  frontend (Next.js)
+#   8080  API (Go)
+#   8554  mediamtx RTSP (cameras pull here for low-latency live)
+#   8889  mediamtx WHEP (browser WebRTC)
+#   5432  postgres (omit in prod — DB should not be externally reachable)
+#
+# Host dependencies: Docker Engine 24+, Compose v2.
+# ─────────────────────────────────────────────────────────────────
+
+services:
+
+  db:
+    image: timescale/timescaledb:latest-pg15
+    container_name: ironsight-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-onvif_tool}
+      POSTGRES_USER: ${POSTGRES_USER:-onvif}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Uncomment for local debugging. In prod, drop this — only the
+    # api/worker services need DB access, and compose networking is enough.
+    # ports:
+    #   - "5432:5432"
+    networks: [backplane]
+
+  # Redis — pub/sub bridge for the WebSocket hub when running >1 API replica.
+  # Only started when the `scale-out` profile is active:
+  #   docker compose --profile scale-out up -d
+  # Single-replica deployments don't need Redis; the api service's REDIS_URL
+  # below is also commented out by default so the in-memory hub is used.
+  redis:
+    image: redis:7-alpine
+    container_name: ironsight-redis
+    restart: unless-stopped
+    profiles: [scale-out]
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    # No persistence: this is pub/sub only. Messages in flight during a
+    # Redis restart are lost, and that's fine — WS events are best-effort.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [backplane]
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: ironsight-mediamtx
+    restart: unless-stopped
+    # The Go API writes mediamtx_runtime.yml into the shared config volume
+    # once, at startup, as bootstrap state. Runtime path adds/removes go
+    # through mediamtx's HTTP control API (port 9997, internal to the
+    # backplane) — no config-volume round-trip, no restart needed.
+    command: ["/mediamtx-config/mediamtx_runtime.yml"]
+    volumes:
+      - mediamtx-config:/mediamtx-config
+    ports:
+      - "${MEDIAMTX_RTSP_PORT:-8554}:18554"   # RTSP relay (record engine pulls from this)
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"  # WHEP for browser WebRTC
+      # Port 9997 (control API) is intentionally not published to the host.
+      # The Go API reaches it over the backplane network at mediamtx:9997.
+    networks: [backplane]
+
+  # On-camera-frame YOLO detection service. Called on-demand by the API
+  # when an event fires; not in the hot path for recording.
+  yolo:
+    image: ${YOLO_IMAGE:-ironsight/yolo:latest}
+    container_name: ironsight-yolo
+    restart: unless-stopped
+    environment:
+      MODEL: ${YOLO_MODEL:-yolov8n}
+      PORT: "8501"
+    # Uncomment to give YOLO a GPU. Requires the NVIDIA container runtime
+    # on the host (nvidia-docker / --gpus all).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks: [backplane]
+
+  # Vision-language model for scene reasoning / semantic search.
+  qwen:
+    image: ${QWEN_IMAGE:-ironsight/qwen:latest}
+    container_name: ironsight-qwen
+    restart: unless-stopped
+    environment:
+      MODEL: ${QWEN_MODEL:-Qwen2-VL-2B-Instruct}
+      PORT: "8502"
+    # Qwen *needs* a GPU for usable latency. Uncomment the deploy block
+    # once nvidia-docker is configured on the host.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks: [backplane]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ironsight/api:${IRONSIGHT_VERSION:-latest}
+    container_name: ironsight-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+    environment:
+      # Server
+      SERVER_PORT: "8080"
+      # Database
+      DATABASE_URL: postgres://${POSTGRES_USER:-onvif}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-onvif_tool}?sslmode=disable
+      # MediaMTX: external mode, reach mediamtx by its service name.
+      # The API address is internal-only — the Go API uses it for runtime
+      # path adds/removes without needing a config-volume round-trip.
+      EMBEDDED_MEDIAMTX: "0"
+      MEDIAMTX_WEBRTC_ADDR: mediamtx:8889
+      MEDIAMTX_RTSP_ADDR: mediamtx:18554
+      MEDIAMTX_API_ADDR: mediamtx:9997
+      # AI services via docker DNS
+      AI_YOLO_URL: http://yolo:8501
+      AI_QWEN_URL: http://qwen:8502
+      AI_ENABLED: ${AI_ENABLED:-true}
+      # Storage. /data is mounted from the recordings volume; the
+      # Dockerfile already sets STORAGE_PATH/HLS_PATH/EXPORT_PATH/THUMBNAIL_PATH
+      # to /data/* subdirs.
+      SEGMENT_DURATION: ${SEGMENT_DURATION:-60}
+      # Secrets — REQUIRED. The fallback defaults in config.Load() are
+      # explicitly unsafe; fail hard when the operator forgot to set them.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (openssl rand -hex 32)}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      # Branding — product name used in backend-generated artifacts.
+      PRODUCT_NAME: ${PRODUCT_NAME:-Ironsight}
+      # Redis pub/sub bridge for multi-replica WS fanout. Leave unset for
+      # single-replica deployments (the in-memory hub is sufficient). Set
+      # to redis://redis:6379/0 when running the `scale-out` compose profile.
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_WS_CHANNEL: ${REDIS_WS_CHANNEL:-ironsight:ws:broadcast}
+      # Batch workers (retention, indexer, exports) run in the sibling
+      # `worker` service, not inside api. Set to true for a single-binary
+      # deployment where the api also owns the background jobs.
+      RUN_WORKERS: ${RUN_WORKERS_API:-false}
+    volumes:
+      - recordings:/data
+      - mediamtx-config:/app/bin    # Go writes mediamtx_runtime.yml here
+    ports:
+      - "${API_PORT:-8080}:8080"
+    networks: [backplane]
+
+  # Background batch workloads — retention purge, VLM indexer, export
+  # concat jobs. Same image as api, just a different entrypoint. Always
+  # runs with replicas=1; retention is idempotent but running two indexer
+  # workers on the same segments is wasted GPU time, and we don't yet
+  # have an atomic claim for indexer jobs like the export worker has.
+  worker:
+    image: ironsight/api:${IRONSIGHT_VERSION:-latest}
+    container_name: ironsight-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started    # ensures migrations have run
+    entrypoint: ["/app/worker"]
+    environment:
+      # Share the DB/storage/AI plumbing with api. The worker binary
+      # ignores RUN_WORKERS — it unconditionally runs its jobs.
+      DATABASE_URL: postgres://${POSTGRES_USER:-onvif}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-onvif_tool}?sslmode=disable
+      AI_QWEN_URL: http://qwen:8502
+      AI_ENABLED: ${AI_ENABLED:-true}
+      SEGMENT_DURATION: ${SEGMENT_DURATION:-60}
+      PRODUCT_NAME: ${PRODUCT_NAME:-Ironsight}
+      # Worker writes export outputs into the same shared volume the api
+      # reads from; paths match the api's subdir layout.
+      STORAGE_PATH: /data/recordings
+      EXPORT_PATH: /data/exports
+      THUMBNAIL_PATH: /data/thumbnails
+      # Indexer concurrency — tune per GPU. 1 is safe for a test rig;
+      # production A40s can sustain 4-8.
+      INDEXER_CONCURRENCY: ${INDEXER_CONCURRENCY:-1}
+    volumes:
+      - recordings:/data
+    networks: [backplane]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ironsight/frontend:${IRONSIGHT_VERSION:-latest}
+    container_name: ironsight-frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # The browser talks to the API via whatever public URL your reverse
+      # proxy exposes. In single-host dev we just proxy same-origin.
+      NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/api}
+      NODE_ENV: production
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    networks: [backplane]
+
+volumes:
+  pgdata:
+    # DB data — back this up off-box. See MasterDeployment.md §Backup.
+  recordings:
+    # Video segments, HLS, thumbnails, exports. In production replace
+    # with a driver-backed volume (NFS, CSI) so multiple API replicas
+    # and/or a split-out recorder container can share storage.
+  mediamtx-config:
+    # Runtime YAML written by api, read by mediamtx.
+
+networks:
+  backplane:
+    driver: bridge
+    # Internal DNS resolves service names; no published ports between
+    # services. Only api/frontend/mediamtx expose host ports above.

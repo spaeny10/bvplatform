@@ -1,0 +1,1579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiteGuard AI — Southgate Power · TX-203</title>
+<link href="https://fonts.googleapis.com/css2?family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f4ef;
+    --bg-white: #ffffff;
+    --bg-warm: #f2ede5;
+    --bg-ink: #1c1a17;
+    --border: #e0d9cf;
+    --border-strong: #c8bfb0;
+    --text-primary: #1c1a17;
+    --text-secondary: #5a5248;
+    --text-dim: #9a9088;
+    --text-white: #f7f4ef;
+    --red: #b83220;
+    --red-light: rgba(184,50,32,0.07);
+    --red-border: rgba(184,50,32,0.18);
+    --amber: #a05800;
+    --amber-light: rgba(160,88,0,0.07);
+    --green: #1e6e42;
+    --green-light: rgba(30,110,66,0.07);
+    --blue: #1a4878;
+    --blue-light: rgba(26,72,120,0.07);
+    --ink-accent: #2a2520;
+    --shadow: 0 2px 8px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+    --shadow-md: 0 6px 20px rgba(0,0,0,0.09), 0 2px 6px rgba(0,0,0,0.05);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    background: var(--bg-ink);
+    padding: 0 24px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+
+  .bc-item { color: rgba(247,244,239,0.4); cursor: pointer; transition: color 0.15s; }
+  .bc-item:hover { color: rgba(247,244,239,0.7); }
+  .bc-sep { color: rgba(247,244,239,0.2); font-size: 10px; }
+  .bc-current { color: var(--text-white); font-weight: 500; }
+
+  .topbar-right {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .top-btn {
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    color: rgba(247,244,239,0.7);
+    font-family: 'IBM Plex Sans', sans-serif;
+    transition: all 0.15s;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .top-btn:hover { background: rgba(255,255,255,0.12); color: var(--text-white); }
+  .top-btn.danger { border-color: rgba(184,50,32,0.4); color: #e07060; background: rgba(184,50,32,0.1); }
+  .top-btn.danger:hover { background: rgba(184,50,32,0.2); }
+
+  /* ── SITE HERO ── */
+  .site-hero {
+    background: var(--bg-ink);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 20px 24px 18px;
+    flex-shrink: 0;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .site-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    font-weight: 400;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(247,244,239,0.35);
+    margin-bottom: 6px;
+  }
+
+  .site-name {
+    font-family: 'Libre Baskerville', serif;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-white);
+    letter-spacing: -0.5px;
+    line-height: 1.1;
+    margin-bottom: 4px;
+  }
+
+  .site-meta-row {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    margin-top: 8px;
+  }
+
+  .site-meta-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: rgba(247,244,239,0.45);
+  }
+
+  .site-meta-item strong { color: rgba(247,244,239,0.75); font-weight: 500; }
+
+  .hero-kpis {
+    display: flex;
+    gap: 2px;
+    align-items: stretch;
+  }
+
+  .hero-kpi {
+    padding: 10px 18px;
+    text-align: center;
+    border-left: 1px solid rgba(255,255,255,0.08);
+    min-width: 80px;
+  }
+
+  .hero-kpi:first-child { border-left: none; }
+
+  .kpi-val {
+    font-family: 'Libre Baskerville', serif;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .kpi-label {
+    font-size: 9px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: rgba(247,244,239,0.35);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  /* Risk banner */
+  .risk-banner {
+    margin-top: 12px;
+    padding: 8px 14px;
+    background: rgba(184,50,32,0.12);
+    border: 1px solid rgba(184,50,32,0.25);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    color: #e07060;
+    font-weight: 500;
+  }
+
+  .risk-icon { font-size: 13px; }
+
+  /* ── MAIN BODY ── */
+  .body {
+    flex: 1;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr 320px;
+  }
+
+  /* ── LEFT PANE ── */
+  .left-pane {
+    overflow-y: auto;
+    padding: 20px 24px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  /* ── CAMERA STRIP ── */
+  .camera-strip-card {
+    background: var(--bg-white);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    animation: slideUp 0.35s ease both;
+  }
+
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .card-head {
+    padding: 13px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-warm);
+  }
+
+  .card-title {
+    font-family: 'Libre Baskerville', serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.2px;
+  }
+
+  .card-sub {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  .card-action {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--blue);
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .card-action:hover { opacity: 0.65; }
+
+  .camera-strip {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0;
+  }
+
+  .cam-thumb {
+    aspect-ratio: 16/10;
+    position: relative;
+    cursor: pointer;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+    transition: all 0.2s;
+  }
+
+  .cam-thumb:last-child { border-right: none; }
+  .cam-thumb:hover { z-index: 2; }
+
+  .cam-thumb.selected {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
+    z-index: 3;
+  }
+
+  .cam-thumb.alert-cam {
+    outline: 2px solid var(--red);
+    outline-offset: -2px;
+    z-index: 3;
+  }
+
+  .cam-scene {
+    width: 100%; height: 80%;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .cam-footer-strip {
+    height: 20%;
+    background: var(--bg-ink);
+    padding: 3px 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .cam-name-strip {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 7px;
+    color: rgba(247,244,239,0.5);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .cam-status-strip {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+  }
+
+  .cam-det-box {
+    position: absolute;
+    border: 1px solid;
+    border-radius: 1px;
+    pointer-events: none;
+  }
+
+  /* ── MAIN VIEWER ── */
+  .main-viewer-card {
+    background: var(--bg-white);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    animation: slideUp 0.35s 0.05s ease both;
+  }
+
+  .viewer-area {
+    position: relative;
+    background: #0f1208;
+    aspect-ratio: 21/8;
+    overflow: hidden;
+  }
+
+  .viewer-scene {
+    position: absolute;
+    inset: 0;
+  }
+
+  /* Large scene background elements */
+  .vs-sky { position:absolute; inset:0; background: linear-gradient(180deg,#0a0f08 0%,#141a0c 40%,#1a200e 100%); }
+  .vs-ground { position:absolute; bottom:0;left:0;right:0;height:38%; background:rgba(55,48,28,0.6); border-top:1px solid rgba(100,90,50,0.3); }
+  .vs-building-l { position:absolute; bottom:36%;left:3%;width:22%;height:55%;background:rgba(45,55,65,0.7); }
+  .vs-building-r { position:absolute; bottom:36%;right:8%;width:16%;height:70%;background:rgba(50,60,70,0.65); }
+  .vs-tower { position:absolute; bottom:36%;left:34%;width:3px;height:50%;background:rgba(140,120,60,0.6); }
+  .vs-tower-arm { position:absolute; top:0;left:0;width:120px;height:3px;background:rgba(140,120,60,0.5); }
+  .vs-structure-m { position:absolute; bottom:36%;left:40%;width:28%;height:40%;background:rgba(60,55,35,0.5); }
+  .vs-pipe { position:absolute; bottom:35%;left:60%;width:8px;height:65%;background:rgba(90,80,50,0.7); }
+
+  /* Detection overlays on main viewer */
+  .v-det {
+    position: absolute;
+    border: 2px solid;
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .v-det-label {
+    position: absolute;
+    top: -18px; left: -1px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 2px;
+    white-space: nowrap;
+    background: rgba(0,0,0,0.85);
+    color: inherit;
+    font-weight: 500;
+  }
+
+  .v-det.v-red { border-color: #e05040; color: #e05040; }
+  .v-det.v-green { border-color: #40c080; color: #40c080; }
+  .v-det.v-amber { border-color: #d4a030; color: #d4a030; }
+  .v-det.v-purple { border-color: #a070d0; color: #a070d0; }
+
+  .v-excl-zone {
+    position: absolute;
+    background: rgba(184,50,32,0.08);
+    border: 1.5px dashed rgba(184,50,32,0.5);
+    pointer-events: none;
+  }
+
+  .v-excl-label {
+    position: absolute;
+    top: 4px; left: 6px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    color: rgba(220,80,60,0.8);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .viewer-overlay-ui {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    pointer-events: none;
+  }
+
+  .viewer-topbar {
+    padding: 8px 12px;
+    background: linear-gradient(to bottom,rgba(0,0,0,0.6),transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
+  .viewer-cam-id {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    color: rgba(255,255,255,0.65);
+    background: rgba(0,0,0,0.5);
+    padding: 2px 6px;
+    border-radius: 2px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .viewer-badges {
+    display: flex;
+    gap: 4px;
+  }
+
+  .v-badge {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    padding: 2px 6px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .v-badge.rec { background: rgba(184,50,32,0.85); color: #fff; }
+  .v-badge.ai { background: rgba(26,72,120,0.7); color: #90b8e8; border: 1px solid rgba(90,140,200,0.3); }
+  .v-badge.warn {
+    background: rgba(160,88,0,0.8); color: #f5c060;
+    animation: badgepulse 2s infinite;
+  }
+
+  @keyframes badgepulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+
+  .viewer-bottombar {
+    margin-top: auto;
+    padding: 8px 12px;
+    background: linear-gradient(to top,rgba(0,0,0,0.7),transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+
+  .viewer-location { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.8); }
+
+  .viewer-stats {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 9px;
+    color: rgba(255,255,255,0.4);
+    text-align: right;
+    line-height: 1.5;
+  }
+
+  /* Timeline scrubber */
+  .timeline-bar {
+    background: var(--bg-ink);
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .tl-controls {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .tl-btn {
+    width: 26px; height: 26px;
+    border-radius: 4px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: rgba(247,244,239,0.6);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .tl-btn:hover { background: rgba(255,255,255,0.12); color: var(--text-white); }
+  .tl-btn.play { background: rgba(26,72,120,0.5); border-color: rgba(90,140,200,0.3); color: #90b8e8; }
+
+  .timeline-track {
+    flex: 1;
+    height: 28px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.06);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .tl-event {
+    position: absolute;
+    top: 6px;
+    height: 16px;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+
+  .tl-event.red { background: rgba(184,50,32,0.7); }
+  .tl-event.amber { background: rgba(160,88,0,0.6); }
+  .tl-event.blue { background: rgba(26,72,120,0.5); }
+
+  .tl-playhead {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: #fff;
+    left: 68%;
+    opacity: 0.7;
+  }
+
+  .tl-playhead::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: -4px;
+    border: 5px solid transparent;
+    border-top-color: #fff;
+  }
+
+  .tl-time {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px;
+    color: rgba(247,244,239,0.4);
+    width: 60px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* ── INCIDENT TABLE ── */
+  .incident-table-card {
+    background: var(--bg-white);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    animation: slideUp 0.35s 0.1s ease both;
+  }
+
+  table { width: 100%; border-collapse: collapse; }
+
+  thead th {
+    padding: 9px 16px;
+    text-align: left;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-warm);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--bg-warm); }
+  tbody tr.active-row { background: var(--blue-light); }
+
+  td {
+    padding: 10px 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    vertical-align: middle;
+  }
+
+  .td-strong { color: var(--text-primary); font-weight: 600; }
+
+  .sev-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: 'IBM Plex Mono', monospace;
+    letter-spacing: 0.3px;
+  }
+
+  .sev-critical { background: var(--red-light); color: var(--red); border: 1px solid var(--red-border); }
+  .sev-warning { background: var(--amber-light); color: var(--amber); border: 1px solid rgba(160,88,0,0.2); }
+  .sev-info { background: var(--blue-light); color: var(--blue); border: 1px solid rgba(26,72,120,0.15); }
+
+  .status-chip {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .st-open { background: var(--red-light); color: var(--red); }
+  .st-review { background: var(--amber-light); color: var(--amber); }
+  .st-resolved { background: var(--green-light); color: var(--green); }
+
+  .evid-link {
+    font-size: 10px;
+    color: var(--blue);
+    font-weight: 600;
+    cursor: pointer;
+    font-family: 'IBM Plex Mono', monospace;
+    transition: opacity 0.15s;
+  }
+
+  .evid-link:hover { opacity: 0.65; }
+
+  .mono-time {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  /* ── RIGHT PANE ── */
+  .right-pane {
+    border-left: 1px solid var(--border);
+    background: var(--bg-white);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Site plan / map placeholder */
+  .site-plan {
+    position: relative;
+    background: #f0ece3;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .plan-canvas {
+    width: 100%;
+    aspect-ratio: 4/3;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* Site plan drawn with CSS */
+  .plan-bg { position:absolute;inset:0;background:#ede8df; }
+
+  .plan-building {
+    position: absolute;
+    background: rgba(255,255,255,0.8);
+    border: 1.5px solid #c0b8a8;
+    border-radius: 2px;
+  }
+
+  .plan-road {
+    position: absolute;
+    background: rgba(180,170,155,0.4);
+  }
+
+  .plan-zone {
+    position: absolute;
+    border: 1.5px dashed;
+    border-radius: 2px;
+  }
+
+  .plan-cam-marker {
+    position: absolute;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 2px solid;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px;
+    cursor: pointer;
+    transition: transform 0.2s;
+    z-index: 10;
+    font-weight: 700;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .plan-cam-marker:hover { transform: scale(1.3); }
+
+  .plan-cam-marker.online { background: rgba(30,110,66,0.15); border-color: var(--green); color: var(--green); }
+  .plan-cam-marker.alert { background: rgba(184,50,32,0.15); border-color: var(--red); color: var(--red); }
+  .plan-cam-marker.offline { background: rgba(154,144,136,0.15); border-color: var(--text-dim); color: var(--text-dim); }
+
+  /* FOV cone */
+  .fov-cone {
+    position: absolute;
+    width: 0; height: 0;
+    pointer-events: none;
+  }
+
+  .plan-label {
+    position: absolute;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+  }
+
+  .plan-controls {
+    padding: 8px 14px;
+    background: var(--bg-warm);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .plan-legend {
+    display: flex;
+    gap: 10px;
+    font-size: 9px;
+    color: var(--text-dim);
+  }
+
+  .plan-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .plan-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+  /* Right pane sections */
+  .rp-section {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rp-section:last-child { border-bottom: none; }
+
+  .rp-title {
+    font-family: 'Libre Baskerville', serif;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .rp-action {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--blue);
+    cursor: pointer;
+  }
+
+  /* PPE bars */
+  .ppe-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+
+  .ppe-row:last-child { margin-bottom: 0; }
+
+  .ppe-name {
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 70px;
+    flex-shrink: 0;
+  }
+
+  .ppe-track {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-warm);
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+
+  .ppe-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 1s ease;
+  }
+
+  .ppe-val {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    width: 32px;
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  /* Worker list */
+  .worker-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .worker-item:last-child { border-bottom: none; }
+  .worker-item:hover { opacity: 0.75; }
+
+  .worker-avatar {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .worker-name { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .worker-role { font-size: 10px; color: var(--text-dim); }
+
+  .worker-ppe {
+    margin-left: auto;
+    display: flex;
+    gap: 3px;
+  }
+
+  .ppe-icon {
+    width: 16px; height: 16px;
+    border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px;
+    border: 1px solid;
+  }
+
+  .ppe-ok { background: var(--green-light); border-color: rgba(30,110,66,0.2); }
+  .ppe-fail { background: var(--red-light); border-color: var(--red-border); }
+
+  /* Shift timeline */
+  .shift-bar {
+    height: 24px;
+    background: var(--bg-warm);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+    margin-bottom: 6px;
+    border: 1px solid var(--border);
+  }
+
+  .shift-fill {
+    position: absolute;
+    top: 0; bottom: 0;
+    border-radius: 3px;
+    background: rgba(26,72,120,0.15);
+    border: 1px solid rgba(26,72,120,0.2);
+  }
+
+  .shift-now {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: var(--red);
+    opacity: 0.6;
+  }
+
+  .shift-labels {
+    display: flex;
+    justify-content: space-between;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+  }
+
+  /* Equipment */
+  .equip-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .equip-item:last-child { border-bottom: none; }
+
+  .equip-icon {
+    font-size: 18px;
+    width: 32px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+
+  .equip-name { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .equip-status { font-size: 10px; color: var(--text-dim); }
+
+  .equip-util {
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .util-val {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .util-label { font-size: 9px; color: var(--text-dim); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .tag {
+    display: inline-block;
+    padding: 2px 7px;
+    background: var(--bg-warm);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    font-weight: 500;
+  }
+
+  /* Trend mini chart */
+  .mini-trend {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 32px;
+  }
+
+  .mt-bar {
+    flex: 1;
+    border-radius: 2px 2px 0 0;
+    min-height: 2px;
+    transition: height 0.5s ease;
+  }
+
+  /* Animated entry delays */
+  .anim-0 { animation: slideUp 0.35s 0s ease both; }
+  .anim-1 { animation: slideUp 0.35s 0.06s ease both; }
+  .anim-2 { animation: slideUp 0.35s 0.12s ease both; }
+  .anim-3 { animation: slideUp 0.35s 0.18s ease both; }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="breadcrumb">
+    <span class="bc-item">SiteGuard</span>
+    <span class="bc-sep">›</span>
+    <span class="bc-item">Thorncraft Build Group</span>
+    <span class="bc-sep">›</span>
+    <span class="bc-item">My Sites</span>
+    <span class="bc-sep">›</span>
+    <span class="bc-current">Southgate Power · TX-203</span>
+  </div>
+  <div class="topbar-right">
+    <div class="top-btn">⬇ Export Report</div>
+    <div class="top-btn">⚙ Site Config</div>
+    <div class="top-btn danger">⚠ 4 Open Incidents</div>
+  </div>
+</div>
+
+<!-- SITE HERO -->
+<div class="site-hero">
+  <div class="hero-grid">
+    <div>
+      <div class="site-label">TX-203 · Houston, Texas · Active Site</div>
+      <div class="site-name">Southgate Power Station</div>
+      <div class="site-meta-row">
+        <div class="site-meta-item">📍 <strong>2847 Industrial Blvd, Houston TX 77002</strong></div>
+        <div class="site-meta-item">📅 <strong>Est. completion: Aug 2026</strong></div>
+        <div class="site-meta-item">🎥 <strong>6 cameras</strong> · 5 online · 1 offline</div>
+        <div class="site-meta-item">👷 <strong>31 workers</strong> on site today</div>
+      </div>
+      <div class="risk-banner">
+        <span class="risk-icon">⚠</span>
+        <span><strong>Elevated Risk Status</strong> — Compliance score dropped 8% this week. 4 open incidents. Harness compliance critically low at 61%. Immediate supervisor review recommended.</span>
+      </div>
+    </div>
+    <div class="hero-kpis">
+      <div class="hero-kpi">
+        <div class="kpi-val" style="color:#e07060">71%</div>
+        <div class="kpi-label">PPE Score</div>
+      </div>
+      <div class="hero-kpi">
+        <div class="kpi-val" style="color:#e07060">4</div>
+        <div class="kpi-label">Open Incidents</div>
+      </div>
+      <div class="hero-kpi">
+        <div class="kpi-val" style="color:#d4a030">12</div>
+        <div class="kpi-label">Violations Today</div>
+      </div>
+      <div class="hero-kpi">
+        <div class="kpi-val" style="color:rgba(247,244,239,0.7)">31</div>
+        <div class="kpi-label">On-Site Workers</div>
+      </div>
+      <div class="hero-kpi">
+        <div class="kpi-val" style="color:rgba(247,244,239,0.5)">↓8%</div>
+        <div class="kpi-label">Week Trend</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- BODY -->
+<div class="body">
+
+  <!-- LEFT PANE -->
+  <div class="left-pane">
+
+    <!-- Camera strip -->
+    <div class="camera-strip-card anim-0">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Live Cameras</div>
+          <div class="card-sub">6 cameras · 5 online · Click to switch view</div>
+        </div>
+        <div class="card-action">Open all →</div>
+      </div>
+      <div class="camera-strip">
+
+        <!-- CAM 1 — Alert -->
+        <div class="cam-thumb alert-cam" onclick="selectCam(1)">
+          <div class="cam-scene" style="background:linear-gradient(160deg,#0f1808,#181408)">
+            <div style="position:absolute;bottom:0;left:0;right:0;height:40%;background:rgba(50,45,25,0.6)"></div>
+            <div class="cam-det-box" style="left:30%;top:25%;width:22%;height:45%;border-color:#e05040;color:#e05040"></div>
+            <div class="cam-det-box" style="left:60%;top:40%;width:14%;height:35%;border-color:#40c080;color:#40c080"></div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-01</div>
+            <div style="display:flex;gap:3px;align-items:center">
+              <div style="font-size:7px;color:#e07060;font-family:'IBM Plex Mono',monospace">⚠</div>
+              <div class="cam-status-strip" style="background:#e05040"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CAM 2 — Selected -->
+        <div class="cam-thumb selected" onclick="selectCam(2)">
+          <div class="cam-scene" style="background:linear-gradient(160deg,#0a1015,#101808)">
+            <div style="position:absolute;bottom:0;left:0;right:0;height:35%;background:rgba(40,50,30,0.5)"></div>
+            <div style="position:absolute;right:0;top:0;width:35%;height:65%;background:rgba(40,50,60,0.6)"></div>
+            <div class="cam-det-box" style="left:15%;top:35%;width:18%;height:42%;border-color:#e05040"></div>
+            <div class="cam-det-box" style="left:50%;top:42%;width:12%;height:32%;border-color:#40c080"></div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-02</div>
+            <div class="cam-status-strip" style="background:#40c080"></div>
+          </div>
+        </div>
+
+        <!-- CAM 3 -->
+        <div class="cam-thumb" onclick="selectCam(3)">
+          <div class="cam-scene" style="background:linear-gradient(160deg,#181008,#100f08)">
+            <div style="position:absolute;bottom:0;left:0;right:0;height:45%;background:rgba(55,50,30,0.5)"></div>
+            <div class="cam-det-box" style="left:40%;top:30%;width:20%;height:45%;border-color:#40c080"></div>
+            <div class="cam-det-box" style="left:65%;top:25%;width:30%;height:55%;background:rgba(160,90,0,0.08);border-color:#d4a030"></div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-03</div>
+            <div class="cam-status-strip" style="background:#40c080"></div>
+          </div>
+        </div>
+
+        <!-- CAM 4 -->
+        <div class="cam-thumb" onclick="selectCam(4)">
+          <div class="cam-scene" style="background:linear-gradient(160deg,#0a1210,#151008)">
+            <div style="position:absolute;bottom:0;left:0;right:0;height:38%;background:rgba(45,55,40,0.5)"></div>
+            <div class="cam-det-box" style="left:20%;top:40%;width:15%;height:35%;border-color:#40c080"></div>
+            <div class="cam-det-box" style="left:40%;top:38%;width:15%;height:38%;border-color:#40c080"></div>
+            <div class="cam-det-box" style="left:62%;top:42%;width:15%;height:32%;border-color:#40c080"></div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-04</div>
+            <div class="cam-status-strip" style="background:#40c080"></div>
+          </div>
+        </div>
+
+        <!-- CAM 5 — Degraded -->
+        <div class="cam-thumb" onclick="selectCam(5)">
+          <div class="cam-scene" style="background:linear-gradient(160deg,#181808,#101510)">
+            <div style="position:absolute;bottom:0;left:0;right:0;height:35%;background:rgba(50,55,30,0.5)"></div>
+            <div class="cam-det-box" style="left:25%;top:35%;width:18%;height:40%;border-color:#e05040"></div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-05</div>
+            <div style="display:flex;gap:3px;align-items:center">
+              <div style="font-size:7px;color:#d4a030;font-family:'IBM Plex Mono',monospace">!</div>
+              <div class="cam-status-strip" style="background:#d4a030"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- CAM 6 — Offline -->
+        <div class="cam-thumb" onclick="selectCam(6)">
+          <div class="cam-scene" style="background:#1a1a1a;display:flex;align-items:center;justify-content:center">
+            <div style="text-align:center">
+              <div style="font-size:16px;opacity:0.2">📷</div>
+              <div style="font-family:'IBM Plex Mono',monospace;font-size:7px;color:rgba(255,255,255,0.2);margin-top:4px;letter-spacing:1px">OFFLINE</div>
+            </div>
+          </div>
+          <div class="cam-footer-strip">
+            <div class="cam-name-strip">CAM-06</div>
+            <div class="cam-status-strip" style="background:#5a5248"></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Main viewer -->
+    <div class="main-viewer-card anim-1">
+      <div class="viewer-area">
+        <div class="viewer-scene">
+          <div class="vs-sky"></div>
+          <div class="vs-ground"></div>
+          <div class="vs-building-l"></div>
+          <div class="vs-building-r"></div>
+          <div class="vs-tower">
+            <div class="vs-tower-arm"></div>
+          </div>
+          <div class="vs-structure-m"></div>
+          <div class="vs-pipe"></div>
+        </div>
+
+        <!-- Exclusion zone -->
+        <div class="v-excl-zone" style="left:55%;top:18%;width:32%;height:55%">
+          <div class="v-excl-label">EXCL ZONE B · CRANE RADIUS</div>
+        </div>
+
+        <!-- Detections -->
+        <div class="v-det v-red" style="left:57%;top:30%;width:7%;height:28%">
+          <div class="v-det-label">NO HARNESS · 0.94</div>
+        </div>
+
+        <div class="v-det v-red" style="left:67%;top:28%;width:7%;height:28%">
+          <div class="v-det-label">NO HARD HAT · 0.97</div>
+        </div>
+
+        <div class="v-det v-green" style="left:18%;top:52%;width:6%;height:22%">
+          <div class="v-det-label">COMPLIANT · 0.99</div>
+        </div>
+
+        <div class="v-det v-green" style="left:28%;top:50%;width:6%;height:22%">
+          <div class="v-det-label">COMPLIANT · 0.96</div>
+        </div>
+
+        <div class="v-det v-amber" style="left:5%;top:42%;width:28%;height:48%">
+          <div class="v-det-label">CRANE TRUCK · OPERATING · 0.99</div>
+        </div>
+
+        <div class="v-det v-purple" style="right:3%;top:20%;width:18%;height:60%">
+          <div class="v-det-label">SCAFFOLDING · ZONE B</div>
+        </div>
+
+        <!-- UI overlay -->
+        <div class="viewer-overlay-ui">
+          <div class="viewer-topbar">
+            <div class="viewer-cam-id" id="cam-id-display">CAM-203-02 · EAST YARD OVERVIEW</div>
+            <div class="viewer-badges">
+              <div class="v-badge rec">● REC</div>
+              <div class="v-badge ai">AI ACTIVE</div>
+              <div class="v-badge warn">⚠ 2 VIOLATIONS DETECTED</div>
+            </div>
+          </div>
+          <div class="viewer-bottombar">
+            <div class="viewer-location">East Yard — Crane Operations Area</div>
+            <div class="viewer-stats">
+              5120×1520 · H.265+ · 3.4 Mbps<br>
+              <span id="vtime" style="color:rgba(255,255,255,0.3)">14:32:17 CST</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Timeline -->
+      <div class="timeline-bar">
+        <div class="tl-controls">
+          <div class="tl-btn">⏮</div>
+          <div class="tl-btn">◀</div>
+          <div class="tl-btn play">▶</div>
+          <div class="tl-btn">▶</div>
+          <div class="tl-btn">⏭</div>
+        </div>
+        <div class="timeline-track">
+          <!-- Events on timeline -->
+          <div class="tl-event red" style="left:8%;width:1.5%" title="Zone violation 07:45"></div>
+          <div class="tl-event amber" style="left:22%;width:1%" title="PPE warning 09:20"></div>
+          <div class="tl-event red" style="left:35%;width:1.5%" title="No harness 11:30"></div>
+          <div class="tl-event red" style="left:48%;width:1%" title="Zone violation 13:05"></div>
+          <div class="tl-event amber" style="left:55%;width:0.8%" title="PPE warning 13:50"></div>
+          <div class="tl-event blue" style="left:62%;width:2%" title="Vehicle event 14:15"></div>
+          <div class="tl-event red" style="left:67%;width:1.5%" title="Active violation 14:32"></div>
+          <div class="tl-playhead"></div>
+        </div>
+        <div class="tl-time">14:32:17</div>
+        <div style="margin-left:4px;font-family:'IBM Plex Mono',monospace;font-size:9px;color:rgba(247,244,239,0.25)">TODAY</div>
+      </div>
+    </div>
+
+    <!-- Incident table -->
+    <div class="incident-table-card anim-2">
+      <div class="card-head">
+        <div>
+          <div class="card-title">Site Incidents — This Week</div>
+          <div class="card-sub">9 incidents total · 4 open · Sorted by severity</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-left:auto">
+          <span class="tag">All Types</span>
+          <div class="card-action">Export →</div>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Severity</th>
+            <th>Type</th>
+            <th>Camera</th>
+            <th>Description</th>
+            <th>Status</th>
+            <th>Evidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="active-row">
+            <td class="mono-time">Today 14:32</td>
+            <td><span class="sev-pill sev-critical">● CRITICAL</span></td>
+            <td class="td-strong">Zone Breach + PPE</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-02</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">2 workers in Excl. Zone B without harness or hard hat. Crane operating overhead.</td>
+            <td><span class="status-chip st-open">Open</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Today 13:05</td>
+            <td><span class="sev-pill sev-critical">● CRITICAL</span></td>
+            <td class="td-strong">Exclusion Zone</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-01</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Unauthorized entry into Zone A during active concrete pour.</td>
+            <td><span class="status-chip st-review">In Review</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Today 11:30</td>
+            <td><span class="sev-pill sev-critical">● CRITICAL</span></td>
+            <td class="td-strong">No Harness</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-05</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Worker at height &gt;8m on scaffold without safety harness. 3 minute exposure before correction.</td>
+            <td><span class="status-chip st-open">Open</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Today 09:20</td>
+            <td><span class="sev-pill sev-warning">● WARNING</span></td>
+            <td class="td-strong">PPE Non-Compliance</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-03</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Worker operating forklift without hi-vis vest. Low-risk area but non-compliant.</td>
+            <td><span class="status-chip st-review">In Review</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Today 07:45</td>
+            <td><span class="sev-pill sev-warning">● WARNING</span></td>
+            <td class="td-strong">Zone Violation</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-01</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Delivery vehicle entered restricted Zone A without escort. Immediately departed.</td>
+            <td><span class="status-chip st-resolved">Resolved</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Feb 21 15:12</td>
+            <td><span class="sev-pill sev-warning">● WARNING</span></td>
+            <td class="td-strong">No Hard Hat</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-04</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Worker at site entrance without hard hat. Verbal warning issued.</td>
+            <td><span class="status-chip st-resolved">Resolved</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+          <tr>
+            <td class="mono-time">Feb 21 10:44</td>
+            <td><span class="sev-pill sev-info">● INFO</span></td>
+            <td class="td-strong">After-Hours Entry</td>
+            <td><span style="font-family:'IBM Plex Mono',monospace;font-size:11px">CAM-02</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">Authorized supervisor detected on site outside shift window. Acknowledged.</td>
+            <td><span class="status-chip st-resolved">Resolved</span></td>
+            <td><span class="evid-link">▶ View Clip</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <!-- RIGHT PANE -->
+  <div class="right-pane">
+
+    <!-- Site plan -->
+    <div class="site-plan">
+      <div style="padding:13px 18px 10px;border-bottom:1px solid var(--border);background:var(--bg-warm)">
+        <div style="font-family:'Libre Baskerville',serif;font-size:13px;font-weight:700;color:var(--text-primary)">Site Plan</div>
+        <div style="font-size:10px;color:var(--text-dim);margin-top:1px">Camera positions · Detection zones</div>
+      </div>
+      <div class="plan-canvas">
+        <div class="plan-bg"></div>
+
+        <!-- Roads -->
+        <div class="plan-road" style="left:0;top:70%;width:100%;height:14%"></div>
+        <div class="plan-road" style="left:72%;top:0;width:12%;height:70%"></div>
+
+        <!-- Main building footprints -->
+        <div class="plan-building" style="left:8%;top:8%;width:42%;height:35%"></div>
+        <div class="plan-building" style="left:8%;top:50%;width:25%;height:16%"></div>
+        <div class="plan-building" style="left:38%;top:50%;width:22%;height:18%"></div>
+
+        <!-- Labels -->
+        <div class="plan-label" style="left:22%;top:20%">TURBINE HALL</div>
+        <div class="plan-label" style="left:12%;top:53%">CONTROL</div>
+        <div class="plan-label" style="left:42%;top:53%">SUBSTATION</div>
+        <div class="plan-label" style="left:74%;top:38%">YARD</div>
+
+        <!-- Exclusion zones -->
+        <div class="plan-zone" style="left:55%;top:10%;width:30%;height:40%;border-color:rgba(184,50,32,0.5);background:rgba(184,50,32,0.04)">
+          <div style="position:absolute;top:4px;left:5px;font-family:'IBM Plex Mono',monospace;font-size:7px;color:rgba(184,50,32,0.6);text-transform:uppercase;letter-spacing:0.5px">Zone A</div>
+        </div>
+        <div class="plan-zone" style="left:58%;top:52%;width:26%;height:14%;border-color:rgba(160,88,0,0.4);background:rgba(160,88,0,0.04)">
+          <div style="position:absolute;top:2px;left:5px;font-family:'IBM Plex Mono',monospace;font-size:7px;color:rgba(160,88,0,0.6);text-transform:uppercase;letter-spacing:0.5px">Zone B</div>
+        </div>
+
+        <!-- Camera markers -->
+        <div class="plan-cam-marker alert" style="left:62%;top:14%;transform:translate(-50%,-50%)">1</div>
+        <div class="plan-cam-marker online" style="left:77%;top:22%;transform:translate(-50%,-50%)">2</div>
+        <div class="plan-cam-marker online" style="left:30%;top:45%;transform:translate(-50%,-50%)">3</div>
+        <div class="plan-cam-marker online" style="left:10%;top:65%;transform:translate(-50%,-50%)">4</div>
+        <div class="plan-cam-marker online" style="left:48%;top:65%;transform:translate(-50%,-50%)">5</div>
+        <div class="plan-cam-marker offline" style="left:80%;top:55%;transform:translate(-50%,-50%)">6</div>
+
+      </div>
+      <div class="plan-controls">
+        <div class="plan-legend">
+          <div class="plan-legend-item"><div class="plan-dot" style="background:var(--green)"></div>Online</div>
+          <div class="plan-legend-item"><div class="plan-dot" style="background:var(--red)"></div>Alert</div>
+          <div class="plan-legend-item"><div class="plan-dot" style="background:var(--text-dim)"></div>Offline</div>
+        </div>
+        <div style="margin-left:auto;font-size:10px;color:var(--blue);font-weight:600;cursor:pointer">Edit Zones →</div>
+      </div>
+    </div>
+
+    <!-- PPE Compliance -->
+    <div class="rp-section">
+      <div class="rp-title">
+        PPE Compliance Today
+        <span class="rp-action">History →</span>
+      </div>
+      <div class="ppe-row">
+        <div class="ppe-name">Hard Hat</div>
+        <div class="ppe-track"><div class="ppe-fill" style="width:78%;background:#d4a030"></div></div>
+        <div class="ppe-val" style="color:var(--amber)">78%</div>
+      </div>
+      <div class="ppe-row">
+        <div class="ppe-name">Hi-Vis Vest</div>
+        <div class="ppe-track"><div class="ppe-fill" style="width:82%;background:#1a7a4a"></div></div>
+        <div class="ppe-val" style="color:var(--green)">82%</div>
+      </div>
+      <div class="ppe-row">
+        <div class="ppe-name">Harness</div>
+        <div class="ppe-track"><div class="ppe-fill" style="width:61%;background:#b83220"></div></div>
+        <div class="ppe-val" style="color:var(--red)">61%</div>
+      </div>
+      <div class="ppe-row">
+        <div class="ppe-name">Safety Boots</div>
+        <div class="ppe-track"><div class="ppe-fill" style="width:91%;background:#1a7a4a"></div></div>
+        <div class="ppe-val" style="color:var(--green)">91%</div>
+      </div>
+      <div class="ppe-row">
+        <div class="ppe-name">Gloves</div>
+        <div class="ppe-track"><div class="ppe-fill" style="width:74%;background:#d4a030"></div></div>
+        <div class="ppe-val" style="color:var(--amber)">74%</div>
+      </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <div style="font-size:10px;color:var(--text-dim);margin-bottom:6px;font-family:'IBM Plex Mono',monospace;letter-spacing:0.5px">7-DAY TREND</div>
+        <div class="mini-trend">
+          <div class="mt-bar" style="height:75%;background:var(--amber);opacity:0.5"></div>
+          <div class="mt-bar" style="height:78%;background:var(--amber);opacity:0.5"></div>
+          <div class="mt-bar" style="height:80%;background:#1a7a4a;opacity:0.5"></div>
+          <div class="mt-bar" style="height:72%;background:var(--amber);opacity:0.5"></div>
+          <div class="mt-bar" style="height:68%;background:var(--red);opacity:0.5"></div>
+          <div class="mt-bar" style="height:65%;background:var(--red);opacity:0.6"></div>
+          <div class="mt-bar" style="height:71%;background:var(--red);opacity:0.8"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shift schedule -->
+    <div class="rp-section">
+      <div class="rp-title">Today's Shift</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">
+        Shift A: <strong>07:00 – 15:30</strong> · 31 workers &nbsp;|&nbsp; Shift B: <strong>16:00 – 00:00</strong> · 18 workers
+      </div>
+      <div class="shift-bar">
+        <div class="shift-fill" style="left:29%;width:35%"></div>
+        <div class="shift-now" style="left:60%"></div>
+      </div>
+      <div class="shift-labels">
+        <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
+      </div>
+    </div>
+
+    <!-- Workers on site -->
+    <div class="rp-section">
+      <div class="rp-title">
+        Workers On Site
+        <span class="rp-action">All 31 →</span>
+      </div>
+      <div class="worker-item">
+        <div class="worker-avatar" style="background:linear-gradient(135deg,#6b4f3a,#9a7058)">DR</div>
+        <div>
+          <div class="worker-name">D. Rodriguez</div>
+          <div class="worker-role">Lead Rigger · Zone B</div>
+        </div>
+        <div class="worker-ppe">
+          <div class="ppe-icon ppe-ok" title="Hard Hat">⛑</div>
+          <div class="ppe-icon ppe-ok" title="Hi-Vis">🦺</div>
+          <div class="ppe-icon ppe-fail" title="No Harness">⚠</div>
+          <div class="ppe-icon ppe-ok" title="Boots">👢</div>
+        </div>
+      </div>
+      <div class="worker-item">
+        <div class="worker-avatar" style="background:linear-gradient(135deg,#2a5a3a,#3a8a5a)">JM</div>
+        <div>
+          <div class="worker-name">J. Martinez</div>
+          <div class="worker-role">Electrician · Hall B</div>
+        </div>
+        <div class="worker-ppe">
+          <div class="ppe-icon ppe-ok">⛑</div>
+          <div class="ppe-icon ppe-ok">🦺</div>
+          <div class="ppe-icon ppe-ok">🔒</div>
+          <div class="ppe-icon ppe-ok">👢</div>
+        </div>
+      </div>
+      <div class="worker-item">
+        <div class="worker-avatar" style="background:linear-gradient(135deg,#3a3a6a,#5a5a9a)">KP</div>
+        <div>
+          <div class="worker-name">K. Patel</div>
+          <div class="worker-role">Crane Op. · Zone A</div>
+        </div>
+        <div class="worker-ppe">
+          <div class="ppe-icon ppe-fail">⚠</div>
+          <div class="ppe-icon ppe-ok">🦺</div>
+          <div class="ppe-icon ppe-fail">⚠</div>
+          <div class="ppe-icon ppe-ok">👢</div>
+        </div>
+      </div>
+      <div class="worker-item">
+        <div class="worker-avatar" style="background:linear-gradient(135deg,#6a3a3a,#9a5a5a)">TW</div>
+        <div>
+          <div class="worker-name">T. Williams</div>
+          <div class="worker-role">Foreman · General</div>
+        </div>
+        <div class="worker-ppe">
+          <div class="ppe-icon ppe-ok">⛑</div>
+          <div class="ppe-icon ppe-ok">🦺</div>
+          <div class="ppe-icon ppe-ok">🔒</div>
+          <div class="ppe-icon ppe-ok">👢</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Equipment -->
+    <div class="rp-section">
+      <div class="rp-title">Equipment Status</div>
+      <div class="equip-item">
+        <div class="equip-icon">🏗️</div>
+        <div>
+          <div class="equip-name">Tower Crane #1</div>
+          <div class="equip-status" style="color:var(--green)">● Active · Zone A overhead</div>
+        </div>
+        <div class="equip-util">
+          <div class="util-val" style="color:var(--green)">87%</div>
+          <div class="util-label">utilization</div>
+        </div>
+      </div>
+      <div class="equip-item">
+        <div class="equip-icon">🚧</div>
+        <div>
+          <div class="equip-name">Concrete Pump</div>
+          <div class="equip-status" style="color:var(--green)">● Active · East face</div>
+        </div>
+        <div class="equip-util">
+          <div class="util-val" style="color:var(--green)">64%</div>
+          <div class="util-label">utilization</div>
+        </div>
+      </div>
+      <div class="equip-item">
+        <div class="equip-icon">🚜</div>
+        <div>
+          <div class="equip-name">Forklift FL-04</div>
+          <div class="equip-status" style="color:var(--amber)">◐ Idle · Yard</div>
+        </div>
+        <div class="equip-util">
+          <div class="util-val" style="color:var(--amber)">22%</div>
+          <div class="util-label">utilization</div>
+        </div>
+      </div>
+      <div class="equip-item">
+        <div class="equip-icon">⚡</div>
+        <div>
+          <div class="equip-name">Generator G-2</div>
+          <div class="equip-status" style="color:var(--green)">● Running · South end</div>
+        </div>
+        <div class="equip-util">
+          <div class="util-val" style="color:var(--text-dim)">—</div>
+          <div class="util-label">continuous</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+  // Viewer time update
+  function updateTime() {
+    const now = new Date();
+    const h = String(now.getHours()).padStart(2,'0');
+    const m = String(now.getMinutes()).padStart(2,'0');
+    const s = String(now.getSeconds()).padStart(2,'0');
+    const el = document.getElementById('vtime');
+    if (el) el.textContent = `${h}:${m}:${s} CST`;
+  }
+  updateTime();
+  setInterval(updateTime, 1000);
+
+  // Camera selection
+  const camNames = {
+    1: 'CAM-203-01 · MAIN ENTRANCE',
+    2: 'CAM-203-02 · EAST YARD OVERVIEW',
+    3: 'CAM-203-03 · TURBINE HALL WEST',
+    4: 'CAM-203-04 · CONTROL BUILDING',
+    5: 'CAM-203-05 · SCAFFOLD NORTH',
+    6: 'CAM-203-06 · OFFLINE'
+  };
+
+  function selectCam(n) {
+    document.querySelectorAll('.cam-thumb').forEach((el, i) => {
+      el.classList.remove('selected');
+      if (i + 1 === n) el.classList.add('selected');
+    });
+    const display = document.getElementById('cam-id-display');
+    if (display) display.textContent = camNames[n] || `CAM-203-0${n}`;
+  }
+</script>
+
+</body>
+</html>

@@ -1,0 +1,76 @@
+# ── Compiled Go binaries ───────────────────────────────────────
+# Rebuilt on every `go build`; server.old*.exe are historical snapshots
+# from past restarts. All regenerable; not tracked.
+server.exe
+server.new.exe
+server.new.exe~
+server*.exe
+bin/*.exe
+bin/mediamtx
+bin/mediamtx_runtime.yml
+bin/mediamtx.log
+
+# ── AI model weights ───────────────────────────────────────────
+# PyTorch checkpoints are 10-120 MB each and should live in a model
+# registry (S3, HuggingFace, or a download script), not git. If a model
+# needs to be versioned alongside code, use Git LFS.
+*.pt
+*.safetensors
+*.bin
+*.onnx
+
+# ── Build cache ────────────────────────────────────────────────
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Windows build / install scratch
+build.bat
+mediamtx.zip
+
+# ── Logs ───────────────────────────────────────────────────────
+*.log
+server_*.log
+frontend_*.log
+backend*.log
+frontend_error.log
+frontend_output.log
+
+# ── Node / Next.js ─────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+frontend/.turbo/
+frontend/.env.local
+frontend/.env.*.local
+
+# ── Go build cache / test coverage ─────────────────────────────
+coverage.out
+*.test
+*.prof
+
+# ── Secrets ────────────────────────────────────────────────────
+# .env is gitignored; .env.example is committed as the template.
+.env
+.env.*
+!.env.example
+
+# ── Storage scratch ────────────────────────────────────────────
+# Video segments / HLS / exports / thumbnails all live at /data
+# (Docker volumes) or ./storage/ in dev. Never committed.
+storage/
+data/
+recordings/
+
+# ── Editor + OS junk ───────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# ── Misc session artefacts ─────────────────────────────────────
+cam_snapshot.jpg
+clear_db.go.bak
+*.bak

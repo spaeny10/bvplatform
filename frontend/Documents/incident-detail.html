@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiteGuard AI — Incident INC-2026-0847</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Epilogue:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=Fira+Code:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f8f7f5;
+    --bg-white: #ffffff;
+    --bg-panel: #f2f0ec;
+    --bg-dark: #141210;
+    --bg-dark2: #1e1c19;
+    --border: #e4e0d8;
+    --border-strong: #ccc8be;
+    --text: #141210;
+    --text-2: #4a4740;
+    --text-3: #8a8680;
+    --text-inv: #f8f7f5;
+    --red: #c0311a;
+    --red-bg: rgba(192,49,26,0.06);
+    --red-border: rgba(192,49,26,0.16);
+    --red-mid: rgba(192,49,26,0.5);
+    --amber: #9a6200;
+    --amber-bg: rgba(154,98,0,0.06);
+    --green: #1a6e40;
+    --green-bg: rgba(26,110,64,0.06);
+    --blue: #1448a0;
+    --blue-bg: rgba(20,72,160,0.06);
+    --blue-border: rgba(20,72,160,0.15);
+    --shadow: 0 1px 4px rgba(0,0,0,0.07), 0 2px 8px rgba(0,0,0,0.04);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.1), 0 1px 4px rgba(0,0,0,0.05);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.14), 0 2px 8px rgba(0,0,0,0.06);
+    --r: 8px;
+    --r-sm: 4px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Epilogue', sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── TOP CHROME ── */
+  .chrome {
+    background: var(--bg-dark);
+    padding: 0 24px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    gap: 0;
+    flex-shrink: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+
+  .bc {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    font-size: 11px;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .bc-seg {
+    padding: 0 10px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    color: rgba(248,247,245,0.35);
+    cursor: pointer;
+    border-right: 1px solid rgba(255,255,255,0.05);
+    transition: color 0.15s;
+    letter-spacing: 0.3px;
+  }
+
+  .bc-seg:hover { color: rgba(248,247,245,0.6); }
+  .bc-seg:first-child { padding-left: 0; }
+  .bc-seg.current {
+    color: var(--text-inv);
+    background: rgba(192,49,26,0.12);
+    border-right-color: rgba(192,49,26,0.2);
+  }
+
+  .chrome-right {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .chrome-btn {
+    padding: 5px 12px;
+    border-radius: var(--r-sm);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.05);
+    color: rgba(248,247,245,0.6);
+    font-family: 'Epilogue', sans-serif;
+    transition: all 0.15s;
+    display: flex; align-items: center; gap: 6px;
+    letter-spacing: 0.2px;
+  }
+
+  .chrome-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-inv); }
+
+  .chrome-btn.export {
+    background: rgba(20,72,160,0.25);
+    border-color: rgba(20,72,160,0.4);
+    color: #80a8f0;
+  }
+
+  .chrome-btn.export:hover { background: rgba(20,72,160,0.35); }
+
+  .chrome-btn.escalate {
+    background: rgba(192,49,26,0.2);
+    border-color: rgba(192,49,26,0.4);
+    color: #e87060;
+  }
+
+  .chrome-btn.escalate:hover { background: rgba(192,49,26,0.3); }
+
+  /* ── INCIDENT HEADER ── */
+  .inc-header {
+    background: var(--bg-dark2);
+    padding: 18px 24px 16px;
+    flex-shrink: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .inc-header::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--red);
+    box-shadow: 0 0 20px rgba(192,49,26,0.5);
+  }
+
+  /* Subtle noise texture */
+  .inc-header::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
+    opacity: 0.4;
+  }
+
+  .inc-header-inner {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 24px;
+    align-items: start;
+  }
+
+  .inc-id-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+  }
+
+  .inc-id {
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: rgba(248,247,245,0.4);
+    letter-spacing: 1px;
+  }
+
+  .inc-severity-tag {
+    padding: 2px 8px;
+    border-radius: 2px;
+    font-family: 'Syne', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    background: rgba(192,49,26,0.2);
+    color: #e87060;
+    border: 1px solid rgba(192,49,26,0.35);
+  }
+
+  .inc-status-tag {
+    padding: 2px 8px;
+    border-radius: 2px;
+    font-family: 'Syne', sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    background: rgba(154,98,0,0.2);
+    color: #d4a040;
+    border: 1px solid rgba(154,98,0,0.3);
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .pulse-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #d4a040;
+    animation: pdot 2s infinite;
+  }
+
+  @keyframes pdot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.7)} }
+
+  .inc-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    color: var(--text-inv);
+    letter-spacing: -0.3px;
+    line-height: 1.15;
+    margin-bottom: 8px;
+  }
+
+  .inc-meta-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .meta-chip {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--r-sm);
+    font-size: 11px;
+    color: rgba(248,247,245,0.55);
+    font-family: 'Fira Code', monospace;
+    letter-spacing: 0.2px;
+  }
+
+  .meta-chip strong { color: rgba(248,247,245,0.85); font-weight: 500; }
+
+  .inc-actions-cluster {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+  }
+
+  .act-btn {
+    padding: 7px 16px;
+    border-radius: var(--r-sm);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'Syne', sans-serif;
+    letter-spacing: 0.3px;
+    border: 1px solid;
+    white-space: nowrap;
+    display: flex; align-items: center; gap: 7px;
+  }
+
+  .act-btn.primary {
+    background: var(--red);
+    border-color: var(--red);
+    color: #fff;
+    box-shadow: 0 2px 8px rgba(192,49,26,0.35);
+  }
+
+  .act-btn.primary:hover { background: #a8260f; box-shadow: 0 4px 12px rgba(192,49,26,0.5); }
+
+  .act-btn.secondary {
+    background: rgba(255,255,255,0.06);
+    border-color: rgba(255,255,255,0.12);
+    color: rgba(248,247,245,0.7);
+  }
+
+  .act-btn.secondary:hover { background: rgba(255,255,255,0.1); color: var(--text-inv); }
+
+  .act-btn.resolve {
+    background: rgba(26,110,64,0.2);
+    border-color: rgba(26,110,64,0.35);
+    color: #60c890;
+  }
+
+  .act-btn.resolve:hover { background: rgba(26,110,64,0.3); }
+
+  /* ── BODY LAYOUT ── */
+  .body {
+    flex: 1;
+    overflow: hidden;
+    display: grid;
+    grid-template-columns: 1fr 360px;
+  }
+
+  /* ── CENTER PANE ── */
+  .center {
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* ── VIDEO EVIDENCE ── */
+  .video-section {
+    background: var(--bg-dark);
+    position: relative;
+    animation: fadeIn 0.4s ease both;
+  }
+
+  @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+
+  /* Tab bar over video */
+  .evidence-tabs {
+    display: flex;
+    gap: 0;
+    background: rgba(0,0,0,0.4);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 0 16px;
+  }
+
+  .etab {
+    padding: 9px 14px;
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(248,247,245,0.35);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+    font-family: 'Syne', sans-serif;
+    letter-spacing: 0.5px;
+    margin-bottom: -1px;
+  }
+
+  .etab:hover { color: rgba(248,247,245,0.6); }
+  .etab.active { color: var(--text-inv); border-bottom-color: var(--red); }
+
+  /* Main video viewport */
+  .video-viewport {
+    position: relative;
+    background: #0a0806;
+    aspect-ratio: 16/7;
+    overflow: hidden;
+  }
+
+  /* Cinematic scene */
+  .scene-layer { position: absolute; inset: 0; }
+
+  .sl-sky { background: linear-gradient(180deg,#080c08 0%,#101808 45%,#181c10 100%); }
+  .sl-ground { position:absolute;bottom:0;left:0;right:0;height:32%;background:rgba(48,42,22,0.7);border-top:1px solid rgba(90,80,40,0.3); }
+  .sl-struct-l { position:absolute;bottom:30%;left:2%;width:28%;height:60%;background:rgba(38,48,55,0.8); }
+  .sl-struct-l2 { position:absolute;bottom:30%;left:6%;width:20%;height:45%;background:rgba(30,40,48,0.6); }
+  .sl-crane-mast { position:absolute;bottom:28%;left:52%;width:5px;height:68%;background:linear-gradient(to top,rgba(130,115,60,0.8),rgba(130,115,60,0.3)); }
+  .sl-crane-arm { position:absolute;top:4%;left:38%;width:25%;height:3px;background:linear-gradient(to right,rgba(130,115,60,0.3),rgba(130,115,60,0.8)); }
+  .sl-crane-cable { position:absolute;top:4%;left:52%;width:1px;height:20%;background:rgba(130,115,60,0.4); }
+  .sl-scaffold { position:absolute;bottom:30%;right:15%;width:22%;height:50%;background:rgba(50,48,38,0.5);border:1px solid rgba(80,75,50,0.3); }
+  .sl-pipes { position:absolute;bottom:28%;left:62%;width:8px;height:58%;background:rgba(70,65,40,0.7); }
+
+  /* Zone overlay */
+  .zone-overlay {
+    position: absolute;
+    background: rgba(192,49,26,0.07);
+    border: 1.5px dashed rgba(192,49,26,0.45);
+    pointer-events: none;
+  }
+
+  .zone-label {
+    position: absolute;
+    top: 5px; left: 7px;
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    color: rgba(230,100,80,0.8);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Detection boxes */
+  .det {
+    position: absolute;
+    pointer-events: none;
+    transition: all 0.3s;
+  }
+
+  .det-box {
+    position: absolute;
+    inset: 0;
+    border: 2px solid;
+    border-radius: 2px;
+  }
+
+  .det-label {
+    position: absolute;
+    bottom: 100%;
+    left: -1px;
+    margin-bottom: 2px;
+    font-family: 'Fira Code', monospace;
+    font-size: 8.5px;
+    font-weight: 500;
+    padding: 2px 6px;
+    border-radius: 2px;
+    white-space: nowrap;
+    background: rgba(0,0,0,0.88);
+    letter-spacing: 0.3px;
+  }
+
+  .det-conf-bar {
+    position: absolute;
+    bottom: -3px;
+    left: 0;
+    height: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    opacity: 0.7;
+  }
+
+  .det.violation .det-box { border-color: #e06050; }
+  .det.violation .det-label { color: #e06050; border: 1px solid rgba(224,96,80,0.3); }
+  .det.compliant .det-box { border-color: #40b870; }
+  .det.compliant .det-label { color: #40b870; border: 1px solid rgba(64,184,112,0.25); }
+  .det.equipment .det-box { border-color: #c0a030; }
+  .det.equipment .det-label { color: #c0a030; border: 1px solid rgba(192,160,48,0.25); }
+  .det.zone-breach .det-box { border-color: #e06050; box-shadow: 0 0 0 3px rgba(224,96,80,0.1); animation: detpulse 1.5s infinite; }
+
+  @keyframes detpulse {
+    0%,100% { box-shadow: 0 0 0 3px rgba(224,96,80,0.1); }
+    50% { box-shadow: 0 0 0 6px rgba(224,96,80,0.05); }
+  }
+
+  /* Worker ID callout */
+  .worker-callout {
+    position: absolute;
+    background: rgba(0,0,0,0.88);
+    border: 1px solid rgba(224,96,80,0.4);
+    border-radius: var(--r-sm);
+    padding: 6px 9px;
+    font-family: 'Fira Code', monospace;
+    font-size: 8.5px;
+    color: rgba(248,247,245,0.8);
+    pointer-events: none;
+    line-height: 1.5;
+    min-width: 120px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+
+  .wc-name { color: #e06050; font-weight: 500; font-size: 9px; margin-bottom: 2px; }
+
+  .wc-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .wc-ok { color: #40b870; }
+  .wc-fail { color: #e06050; }
+
+  /* Video UI overlays */
+  .vid-ui {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    pointer-events: none;
+  }
+
+  .vid-topbar {
+    padding: 8px 12px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
+  .vid-id {
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: rgba(255,255,255,0.55);
+    background: rgba(0,0,0,0.55);
+    padding: 2px 7px;
+    border-radius: 2px;
+    border: 1px solid rgba(255,255,255,0.08);
+    letter-spacing: 0.5px;
+  }
+
+  .vid-badges {
+    display: flex;
+    gap: 4px;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .vid-badge {
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    padding: 2px 7px;
+    border-radius: 2px;
+    letter-spacing: 0.5px;
+  }
+
+  .vb-evidence { background: rgba(20,72,160,0.8); color: #90b8f0; border: 1px solid rgba(90,140,220,0.3); }
+  .vb-alert { background: rgba(192,49,26,0.85); color: #fff; animation: pdot 1.5s infinite; }
+  .vb-ai { background: rgba(0,0,0,0.6); color: rgba(255,255,255,0.5); border: 1px solid rgba(255,255,255,0.1); }
+
+  .vid-bottombar {
+    margin-top: auto;
+    padding: 8px 12px;
+    background: linear-gradient(to top, rgba(0,0,0,0.75), transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+
+  .vid-loc { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.8); font-family: 'Syne', sans-serif; }
+
+  .vid-meta-r {
+    text-align: right;
+    font-family: 'Fira Code', monospace;
+    font-size: 8.5px;
+    color: rgba(255,255,255,0.35);
+    line-height: 1.6;
+  }
+
+  /* Timestamp watermark */
+  .vid-timestamp {
+    position: absolute;
+    bottom: 32px;
+    left: 12px;
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: rgba(255,255,255,0.45);
+    letter-spacing: 0.5px;
+    pointer-events: none;
+  }
+
+  /* Scanlines */
+  .scanlines {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.025) 2px,
+      rgba(0,0,0,0.025) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* Video controls */
+  .vid-controls {
+    background: #0d0b09;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    padding: 10px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Frame strip */
+  .frame-strip {
+    display: flex;
+    gap: 3px;
+    height: 44px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .frame-thumb {
+    flex-shrink: 0;
+    width: 72px;
+    height: 44px;
+    border-radius: 2px;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: border-color 0.15s;
+  }
+
+  .frame-thumb:hover { border-color: rgba(255,255,255,0.2); }
+  .frame-thumb.key-frame { border-color: var(--red); border-width: 2px; }
+  .frame-thumb.current-frame { border-color: #fff; border-width: 2px; }
+
+  .ft-scene { width: 100%; height: 75%; }
+  .ft-footer { height: 25%; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; }
+  .ft-time { font-family: 'Fira Code', monospace; font-size: 7px; color: rgba(255,255,255,0.4); }
+  .ft-event-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--red); margin-right: 3px; }
+
+  /* Playback controls row */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ctrl-btn {
+    width: 28px; height: 28px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.05);
+    color: rgba(248,247,245,0.5);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .ctrl-btn:hover { background: rgba(255,255,255,0.12); color: var(--text-inv); }
+  .ctrl-btn.active-ctrl { background: rgba(20,72,160,0.3); border-color: rgba(90,140,220,0.4); color: #90b8f0; }
+
+  .ctrl-btn.big {
+    width: 32px; height: 32px;
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.15);
+    color: rgba(248,247,245,0.8);
+    font-size: 13px;
+  }
+
+  .scrubber {
+    flex: 1;
+    height: 4px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+  }
+
+  .scrubber-fill {
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 62%;
+    background: rgba(255,255,255,0.3);
+    border-radius: 2px;
+  }
+
+  .scrubber-head {
+    position: absolute;
+    top: 50%;
+    left: 62%;
+    transform: translate(-50%,-50%);
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.2);
+  }
+
+  .scrubber-event {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    border-radius: 1px;
+    background: var(--red);
+    opacity: 0.8;
+  }
+
+  .ctrl-time {
+    font-family: 'Fira Code', monospace;
+    font-size: 10px;
+    color: rgba(248,247,245,0.4);
+    flex-shrink: 0;
+    letter-spacing: 0.5px;
+  }
+
+  .ctrl-speed {
+    font-family: 'Fira Code', monospace;
+    font-size: 10px;
+    color: rgba(248,247,245,0.4);
+    padding: 3px 7px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 3px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  /* ── EVIDENCE PANEL (below video) ── */
+  .evidence-body {
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    animation: slideUp 0.4s 0.1s ease both;
+  }
+
+  @keyframes slideUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+
+  .section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .section-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.2px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-title::before {
+    content: '';
+    width: 3px; height: 14px;
+    background: var(--red);
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .section-action {
+    font-size: 11px;
+    color: var(--blue);
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+
+  .section-action:hover { opacity: 0.65; }
+
+  /* AI Analysis card */
+  .ai-card {
+    background: var(--bg-white);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .ai-header {
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #f8f4f0, #f2ecec);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ai-icon {
+    width: 28px; height: 28px;
+    background: var(--bg-dark);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  .ai-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .ai-subtitle { font-size: 10px; color: var(--text-3); margin-top: 1px; }
+
+  .ai-conf {
+    margin-left: auto;
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--green);
+    font-weight: 500;
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .ai-conf-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+
+  .ai-body { padding: 14px 16px; }
+
+  .ai-caption {
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--text-2);
+    margin-bottom: 12px;
+    font-style: italic;
+    padding: 10px 14px;
+    background: var(--bg-panel);
+    border-radius: var(--r-sm);
+    border-left: 3px solid var(--red);
+  }
+
+  .ai-findings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .finding {
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    border: 1px solid;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .finding.critical { background: var(--red-bg); border-color: var(--red-border); }
+  .finding.warning { background: var(--amber-bg); border-color: rgba(154,98,0,0.15); }
+  .finding.ok { background: var(--green-bg); border-color: rgba(26,110,64,0.12); }
+  .finding.info { background: var(--blue-bg); border-color: var(--blue-border); }
+
+  .finding-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+  .finding-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+    font-family: 'Syne', sans-serif;
+  }
+
+  .finding.critical .finding-label { color: var(--red); }
+  .finding.warning .finding-label { color: var(--amber); }
+  .finding.ok .finding-label { color: var(--green); }
+  .finding.info .finding-label { color: var(--blue); }
+
+  .finding-text { font-size: 11px; color: var(--text-2); line-height: 1.4; }
+
+  /* Detection summary table */
+  .det-table {
+    background: var(--bg-white);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+  }
+
+  .det-table table { width: 100%; border-collapse: collapse; }
+
+  .det-table thead th {
+    padding: 9px 14px;
+    text-align: left;
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--text-3);
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .det-table tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
+    cursor: pointer;
+  }
+
+  .det-table tbody tr:last-child { border-bottom: none; }
+  .det-table tbody tr:hover { background: var(--bg-panel); }
+
+  .det-table tbody tr.violation-row { background: rgba(192,49,26,0.03); }
+
+  .det-table td {
+    padding: 9px 14px;
+    font-size: 12px;
+    color: var(--text-2);
+    vertical-align: middle;
+  }
+
+  .object-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-weight: 500;
+    color: var(--text);
+  }
+
+  .object-color-swatch {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .conf-pill {
+    font-family: 'Fira Code', monospace;
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    font-weight: 500;
+  }
+
+  .conf-high { background: var(--green-bg); color: var(--green); }
+  .conf-mid { background: var(--amber-bg); color: var(--amber); }
+
+  .violation-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    font-family: 'Syne', sans-serif;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  .vf-critical { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+  .vf-warn { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(154,98,0,0.15); }
+  .vf-none { background: var(--green-bg); color: var(--green); border: 1px solid rgba(26,110,64,0.12); }
+
+  /* ── RIGHT PANE ── */
+  .right-pane {
+    border-left: 1px solid var(--border);
+    background: var(--bg-white);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rp-block {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+    animation: slideUp 0.4s ease both;
+  }
+
+  .rp-block:nth-child(1) { animation-delay: 0.05s; }
+  .rp-block:nth-child(2) { animation-delay: 0.1s; }
+  .rp-block:nth-child(3) { animation-delay: 0.15s; }
+  .rp-block:nth-child(4) { animation-delay: 0.2s; }
+  .rp-block:nth-child(5) { animation-delay: 0.25s; }
+  .rp-block:nth-child(6) { animation-delay: 0.3s; }
+
+  .rp-block:last-child { border-bottom: none; }
+
+  .rp-label {
+    font-family: 'Syne', sans-serif;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 10px;
+  }
+
+  /* Classification matrix */
+  .class-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .class-cell {
+    padding: 9px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+  }
+
+  .class-cell-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    color: var(--text-3);
+    margin-bottom: 3px;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .class-cell-value {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+  }
+
+  /* Worker profile */
+  .worker-profile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s;
+  }
+
+  .worker-profile:hover { border-color: var(--red); }
+
+  .wp-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: white;
+    flex-shrink: 0;
+    font-family: 'Syne', sans-serif;
+  }
+
+  .wp-name { font-size: 12px; font-weight: 700; color: var(--text); font-family: 'Syne', sans-serif; }
+  .wp-role { font-size: 10px; color: var(--text-3); margin-top: 1px; }
+
+  .wp-violations {
+    margin-left: auto;
+    text-align: right;
+  }
+
+  .wp-viol-count {
+    font-family: 'Syne', sans-serif;
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--red);
+  }
+
+  .wp-viol-label { font-size: 9px; color: var(--text-3); }
+
+  .wp-ppe-row {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+  }
+
+  .wp-ppe-chip {
+    flex: 1;
+    padding: 3px 4px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    text-align: center;
+    border: 1px solid;
+    font-family: 'Fira Code', monospace;
+  }
+
+  .wpc-ok { background: var(--green-bg); border-color: rgba(26,110,64,0.15); color: var(--green); }
+  .wpc-fail { background: var(--red-bg); border-color: var(--red-border); color: var(--red); }
+
+  /* Timeline of events */
+  .event-timeline {
+    position: relative;
+    padding-left: 20px;
+  }
+
+  .event-timeline::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 6px;
+    bottom: 6px;
+    width: 1px;
+    background: var(--border);
+  }
+
+  .tl-item {
+    position: relative;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .tl-item:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: none; }
+
+  .tl-dot {
+    position: absolute;
+    left: -17px;
+    top: 3px;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    border: 2px solid;
+    background: var(--bg-white);
+  }
+
+  .tl-dot.red { border-color: var(--red); background: var(--red); }
+  .tl-dot.amber { border-color: var(--amber); }
+  .tl-dot.blue { border-color: var(--blue); }
+  .tl-dot.gray { border-color: var(--border-strong); }
+
+  .tl-time {
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: var(--text-3);
+    margin-bottom: 2px;
+    letter-spacing: 0.3px;
+  }
+
+  .tl-event-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 1px;
+    font-family: 'Syne', sans-serif;
+  }
+
+  .tl-event-desc { font-size: 11px; color: var(--text-2); line-height: 1.4; }
+
+  /* Notification log */
+  .notif-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  .notif-item:last-child { border-bottom: none; }
+
+  .notif-type {
+    width: 20px; height: 20px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .notif-body { flex: 1; }
+  .notif-who { font-weight: 600; color: var(--text); }
+  .notif-desc { color: var(--text-2); margin-top: 1px; }
+
+  .notif-time {
+    font-family: 'Fira Code', monospace;
+    font-size: 9px;
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  /* Comment box */
+  .comment-box {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+
+  .comment-input {
+    flex: 1;
+    background: none;
+    border: none;
+    outline: none;
+    font-family: 'Epilogue', sans-serif;
+    font-size: 12px;
+    color: var(--text);
+    resize: none;
+    height: 32px;
+  }
+
+  .comment-input::placeholder { color: var(--text-3); }
+
+  .comment-send {
+    padding: 4px 10px;
+    background: var(--bg-dark);
+    color: rgba(248,247,245,0.7);
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.1);
+    font-family: 'Syne', sans-serif;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .comment-send:hover { background: var(--red); color: #fff; border-color: var(--red); }
+
+  /* Related incidents */
+  .related-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    cursor: pointer;
+    margin-bottom: 6px;
+    transition: border-color 0.15s;
+  }
+
+  .related-item:last-child { margin-bottom: 0; }
+  .related-item:hover { border-color: var(--border-strong); }
+
+  .related-sev {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .related-id {
+    font-family: 'Fira Code', monospace;
+    font-size: 10px;
+    color: var(--text-3);
+    flex-shrink: 0;
+  }
+
+  .related-desc { font-size: 11px; color: var(--text-2); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .related-link { font-size: 10px; color: var(--blue); font-weight: 600; flex-shrink: 0; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<!-- CHROME -->
+<div class="chrome">
+  <div class="bc">
+    <div class="bc-seg">siteguard</div>
+    <div class="bc-seg">thorncraft</div>
+    <div class="bc-seg">tx-203</div>
+    <div class="bc-seg">incidents</div>
+    <div class="bc-seg current">INC-2026-0847</div>
+  </div>
+  <div class="chrome-right">
+    <div class="chrome-btn">← Prev Incident</div>
+    <div class="chrome-btn">Next Incident →</div>
+    <div class="chrome-btn export">⬇ Export PDF</div>
+    <div class="chrome-btn escalate">⬆ Escalate to HSE</div>
+  </div>
+</div>
+
+<!-- INCIDENT HEADER -->
+<div class="inc-header">
+  <div class="inc-header-inner">
+    <div>
+      <div class="inc-id-row">
+        <span class="inc-id">INC-2026-0847</span>
+        <span class="inc-severity-tag">CRITICAL</span>
+        <span class="inc-status-tag"><span class="pulse-dot"></span>UNDER REVIEW</span>
+      </div>
+      <div class="inc-title">Exclusion Zone Breach + Multiple PPE Violations<br>During Active Crane Operation</div>
+      <div class="inc-meta-chips">
+        <div class="meta-chip">📍 <strong>Southgate Power · TX-203</strong></div>
+        <div class="meta-chip">🎥 <strong>CAM-203-02</strong> · East Yard</div>
+        <div class="meta-chip">🕐 <strong>Feb 22, 2026 · 14:32:07 CST</strong></div>
+        <div class="meta-chip">⏱ <strong>Duration: 4m 18s</strong></div>
+        <div class="meta-chip">👷 <strong>2 workers identified</strong></div>
+        <div class="meta-chip">🤖 <strong>AI Detection · 0.96 confidence</strong></div>
+      </div>
+    </div>
+    <div class="inc-actions-cluster">
+      <div class="act-btn primary">⚠ Assign to Supervisor</div>
+      <div class="act-btn resolve">✓ Mark Resolved</div>
+      <div class="act-btn secondary">📋 Generate Report</div>
+    </div>
+  </div>
+</div>
+
+<!-- BODY -->
+<div class="body">
+
+  <!-- CENTER -->
+  <div class="center">
+
+    <!-- VIDEO SECTION -->
+    <div class="video-section">
+      <div class="evidence-tabs">
+        <div class="etab active">Video Evidence</div>
+        <div class="etab">Key Frames (8)</div>
+        <div class="etab">Heat Map</div>
+        <div class="etab">Comparison</div>
+        <div class="etab">360° Context</div>
+      </div>
+
+      <!-- Viewport -->
+      <div class="video-viewport">
+        <!-- Scene layers -->
+        <div class="scene-layer sl-sky"></div>
+        <div class="scene-layer sl-ground"></div>
+        <div class="scene-layer sl-struct-l"></div>
+        <div class="scene-layer sl-struct-l2"></div>
+        <div class="scene-layer sl-crane-mast"><div class="sl-crane-arm"></div><div class="sl-crane-cable"></div></div>
+        <div class="scene-layer sl-scaffold"></div>
+        <div class="scene-layer sl-pipes"></div>
+
+        <!-- Exclusion zone -->
+        <div class="zone-overlay" style="left:52%;top:12%;width:34%;height:62%">
+          <div class="zone-label">EXCL. ZONE B · CRANE OPERATING RADIUS · PERMIT REQUIRED</div>
+        </div>
+
+        <!-- Worker 1 — double violation -->
+        <div class="det zone-breach" style="left:56%;top:22%;width:8%;height:30%">
+          <div class="det-box"></div>
+          <div class="det-label">WORKER-1 · NO HARNESS · NO HARD HAT</div>
+          <div class="det-conf-bar" style="width:96%"></div>
+        </div>
+
+        <!-- Worker callout 1 -->
+        <div class="worker-callout" style="left:65%;top:18%">
+          <div class="wc-name">K. PATEL — CRANE OP.</div>
+          <div class="wc-row"><span class="wc-fail">✗ NO HARD HAT</span></div>
+          <div class="wc-row"><span class="wc-fail">✗ NO HARNESS</span></div>
+          <div class="wc-row"><span class="wc-ok">✓ HI-VIS VEST</span></div>
+          <div class="wc-row"><span class="wc-ok">✓ SAFETY BOOTS</span></div>
+        </div>
+
+        <!-- Worker 2 — harness only -->
+        <div class="det violation" style="left:63%;top:26%;width:7%;height:28%">
+          <div class="det-box"></div>
+          <div class="det-label">WORKER-2 · NO HARNESS</div>
+          <div class="det-conf-bar" style="width:91%"></div>
+        </div>
+
+        <!-- Compliant workers outside zone -->
+        <div class="det compliant" style="left:18%;top:48%;width:6%;height:22%">
+          <div class="det-box"></div>
+          <div class="det-label">WORKER-3 · COMPLIANT · 0.99</div>
+        </div>
+
+        <div class="det compliant" style="left:27%;top:46%;width:6%;height:22%">
+          <div class="det-box"></div>
+          <div class="det-label">WORKER-4 · COMPLIANT · 0.97</div>
+        </div>
+
+        <!-- Equipment -->
+        <div class="det equipment" style="left:3%;top:35%;width:26%;height:52%">
+          <div class="det-box"></div>
+          <div class="det-label">CRANE TRUCK · OPERATING · ACTIVE LIFT · 0.99</div>
+        </div>
+
+        <!-- Scanlines -->
+        <div class="scanlines"></div>
+
+        <!-- Timestamp -->
+        <div class="vid-timestamp">2026-02-22 14:32:07 CST · INCIDENT FRAME T+00:00</div>
+
+        <!-- UI overlay -->
+        <div class="vid-ui">
+          <div class="vid-topbar">
+            <div class="vid-id">CAM-203-02 · EAST YARD OVERVIEW · 5120×1520 · H.265+</div>
+            <div class="vid-badges">
+              <div class="vid-badge vb-evidence">EVIDENCE LOCKED</div>
+              <div class="vid-badge vb-alert">● 2 CRITICAL VIOLATIONS</div>
+              <div class="vid-badge vb-ai">AI VER. 2.4.1</div>
+            </div>
+          </div>
+          <div class="vid-bottombar">
+            <div class="vid-loc">Southgate Power TX-203 · East Yard · Zone B</div>
+            <div class="vid-meta-r">
+              Crane operating at 78% capacity · Active lift in progress<br>
+              Zone B violation duration: <span style="color:#e87060">4m 18s and counting</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Frame strip + controls -->
+      <div class="vid-controls">
+        <!-- Key frame strip -->
+        <div class="frame-strip">
+          <div class="frame-thumb">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#0a1008,#101408)"></div>
+            <div class="ft-footer"><span class="ft-time">14:28:02</span></div>
+          </div>
+          <div class="frame-thumb">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#0c1208,#121808)"></div>
+            <div class="ft-footer"><span class="ft-time">14:29:15</span></div>
+          </div>
+          <div class="frame-thumb key-frame">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#14100a,#180c08)">
+              <div style="position:absolute;left:50%;top:20%;width:12%;height:45%;border:1.5px solid rgba(224,96,80,0.8)"></div>
+            </div>
+            <div class="ft-footer"><div class="ft-event-dot"></div><span class="ft-time">14:30:44</span></div>
+          </div>
+          <div class="frame-thumb key-frame">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#160e08,#140e0a)">
+              <div style="position:absolute;left:48%;top:18%;width:14%;height:48%;border:1.5px solid rgba(224,96,80,0.8)"></div>
+            </div>
+            <div class="ft-footer"><div class="ft-event-dot"></div><span class="ft-time">14:31:20</span></div>
+          </div>
+          <div class="frame-thumb current-frame">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#181208,#160e08)">
+              <div style="position:absolute;left:46%;top:16%;width:16%;height:52%;border:2px solid rgba(224,96,80,0.9)"></div>
+              <div style="position:absolute;left:55%;top:20%;width:12%;height:44%;border:1.5px solid rgba(224,96,80,0.7)"></div>
+            </div>
+            <div class="ft-footer"><div class="ft-event-dot"></div><span class="ft-time" style="color:#e87060">14:32:07 ◀</span></div>
+          </div>
+          <div class="frame-thumb">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#141008,#121008)">
+              <div style="position:absolute;left:44%;top:15%;width:18%;height:55%;border:1.5px solid rgba(224,96,80,0.6)"></div>
+            </div>
+            <div class="ft-footer"><div class="ft-event-dot"></div><span class="ft-time">14:33:41</span></div>
+          </div>
+          <div class="frame-thumb key-frame">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#0e1008,#101008)"></div>
+            <div class="ft-footer"><div class="ft-event-dot"></div><span class="ft-time">14:35:12</span></div>
+          </div>
+          <div class="frame-thumb">
+            <div class="ft-scene" style="background:linear-gradient(160deg,#0c0e08,#0e1008)"></div>
+            <div class="ft-footer"><span class="ft-time">14:36:25</span></div>
+          </div>
+        </div>
+
+        <!-- Playback row -->
+        <div class="controls-row">
+          <div class="ctrl-btn">⏮</div>
+          <div class="ctrl-btn active-ctrl">⏪ −10s</div>
+          <div class="ctrl-btn big">▶</div>
+          <div class="ctrl-btn active-ctrl">+10s ⏩</div>
+          <div class="ctrl-btn">⏭</div>
+          <div class="ctrl-btn active-ctrl">⊞</div>
+
+          <div class="scrubber">
+            <div class="scrubber-fill"></div>
+            <div class="scrubber-head"></div>
+            <!-- Event markers on scrubber -->
+            <div class="scrubber-event" style="left:38%"></div>
+            <div class="scrubber-event" style="left:48%"></div>
+            <div class="scrubber-event" style="left:61%"></div>
+            <div class="scrubber-event" style="left:72%"></div>
+          </div>
+
+          <div class="ctrl-time">14:32:07 / 14:36:25</div>
+          <div class="ctrl-speed">1×</div>
+          <div class="ctrl-btn active-ctrl" title="AI Overlay">⬡ AI</div>
+          <div class="ctrl-btn" title="Download clip">⬇</div>
+          <div class="ctrl-btn" title="Share evidence">⬆</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EVIDENCE BODY -->
+    <div class="evidence-body">
+
+      <!-- AI Analysis -->
+      <div>
+        <div class="section-head">
+          <div class="section-title">AI Analysis Report</div>
+          <div class="section-action">Full AI log →</div>
+        </div>
+        <div class="ai-card">
+          <div class="ai-header">
+            <div class="ai-icon">◈</div>
+            <div>
+              <div class="ai-title">VLM Scene Analysis · YOLOv8m + InternVL2</div>
+              <div class="ai-subtitle">Generated 2026-02-22 14:32:09 CST · Processing time 17ms</div>
+            </div>
+            <div class="ai-conf"><div class="ai-conf-dot"></div>96.4% confidence</div>
+          </div>
+          <div class="ai-body">
+            <div class="ai-caption">
+              "Two workers have entered Exclusion Zone B — an active crane operating radius — without required personal protective equipment. Worker-1 (identified as K. Patel, Crane Operator) is missing both a hard hat and safety harness. Worker-2 is missing a safety harness. A crane truck is actively operating at 78% capacity with an in-progress lift directly overhead. Both workers appear unaware of the overhead load. Four compliant workers are present outside the exclusion zone. This constitutes a high-severity imminent danger scenario."
+            </div>
+            <div class="ai-findings">
+              <div class="finding critical">
+                <div class="finding-icon">⛔</div>
+                <div>
+                  <div class="finding-label">Imminent Danger</div>
+                  <div class="finding-text">Active crane lift overhead. Workers in drop zone without hard hats. Risk of fatal struck-by incident.</div>
+                </div>
+              </div>
+              <div class="finding critical">
+                <div class="finding-icon">🚧</div>
+                <div>
+                  <div class="finding-label">Zone Breach</div>
+                  <div class="finding-text">Both workers fully inside Exclusion Zone B perimeter. No permit-to-enter detected. Duration: 4m 18s.</div>
+                </div>
+              </div>
+              <div class="finding warning">
+                <div class="finding-icon">⚠</div>
+                <div>
+                  <div class="finding-label">PPE Non-Compliance</div>
+                  <div class="finding-text">Worker-1: No hard hat, no harness. Worker-2: No harness. Both present in high-risk zone.</div>
+                </div>
+              </div>
+              <div class="finding info">
+                <div class="finding-icon">📋</div>
+                <div>
+                  <div class="finding-label">Context</div>
+                  <div class="finding-text">3rd harness violation at this site this week. Pattern suggests systemic compliance failure.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detection objects table -->
+      <div>
+        <div class="section-head">
+          <div class="section-title">Detection Objects</div>
+          <div class="section-action">Export detections →</div>
+        </div>
+        <div class="det-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Object</th>
+                <th>Class</th>
+                <th>Confidence</th>
+                <th>Location</th>
+                <th>In Zone</th>
+                <th>Violation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="violation-row">
+                <td>
+                  <div class="object-label">
+                    <div class="object-color-swatch" style="background:#e06050"></div>
+                    Worker-1 (K. Patel)
+                  </div>
+                </td>
+                <td>Person</td>
+                <td><span class="conf-pill conf-high">0.96</span></td>
+                <td style="font-family:'Fira Code',monospace;font-size:10px">x:56% y:22%</td>
+                <td style="color:var(--red);font-weight:600">Zone B ✗</td>
+                <td><span class="violation-flag vf-critical">No Harness + Hard Hat</span></td>
+              </tr>
+              <tr class="violation-row">
+                <td>
+                  <div class="object-label">
+                    <div class="object-color-swatch" style="background:#e07040"></div>
+                    Worker-2 (Unidentified)
+                  </div>
+                </td>
+                <td>Person</td>
+                <td><span class="conf-pill conf-high">0.91</span></td>
+                <td style="font-family:'Fira Code',monospace;font-size:10px">x:63% y:26%</td>
+                <td style="color:var(--red);font-weight:600">Zone B ✗</td>
+                <td><span class="violation-flag vf-critical">No Harness</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="object-label">
+                    <div class="object-color-swatch" style="background:#40b870"></div>
+                    Worker-3
+                  </div>
+                </td>
+                <td>Person</td>
+                <td><span class="conf-pill conf-high">0.99</span></td>
+                <td style="font-family:'Fira Code',monospace;font-size:10px">x:18% y:48%</td>
+                <td style="color:var(--green);font-weight:600">Safe ✓</td>
+                <td><span class="violation-flag vf-none">None</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="object-label">
+                    <div class="object-color-swatch" style="background:#50b880"></div>
+                    Worker-4
+                  </div>
+                </td>
+                <td>Person</td>
+                <td><span class="conf-pill conf-high">0.97</span></td>
+                <td style="font-family:'Fira Code',monospace;font-size:10px">x:27% y:46%</td>
+                <td style="color:var(--green);font-weight:600">Safe ✓</td>
+                <td><span class="violation-flag vf-none">None</span></td>
+              </tr>
+              <tr>
+                <td>
+                  <div class="object-label">
+                    <div class="object-color-swatch" style="background:#c0a030"></div>
+                    Crane Truck
+                  </div>
+                </td>
+                <td>Equipment</td>
+                <td><span class="conf-pill conf-high">0.99</span></td>
+                <td style="font-family:'Fira Code',monospace;font-size:10px">x:03% y:35%</td>
+                <td style="color:var(--amber);font-weight:600">Adj. Zone</td>
+                <td><span class="violation-flag vf-warn">Active Lift</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- RIGHT PANE -->
+  <div class="right-pane">
+
+    <!-- Classification -->
+    <div class="rp-block">
+      <div class="rp-label">Incident Classification</div>
+      <div class="class-grid">
+        <div class="class-cell">
+          <div class="class-cell-label">Category</div>
+          <div class="class-cell-value">Zone Breach</div>
+        </div>
+        <div class="class-cell">
+          <div class="class-cell-label">Severity</div>
+          <div class="class-cell-value" style="color:var(--red)">Critical</div>
+        </div>
+        <div class="class-cell">
+          <div class="class-cell-label">OSHA Ref.</div>
+          <div class="class-cell-value" style="font-size:10px;font-family:'Fira Code',monospace">1926.502(d)</div>
+        </div>
+        <div class="class-cell">
+          <div class="class-cell-label">Injury Risk</div>
+          <div class="class-cell-value" style="color:var(--red)">Imminent</div>
+        </div>
+        <div class="class-cell">
+          <div class="class-cell-label">Detected By</div>
+          <div class="class-cell-value" style="font-size:10px">AI Auto-detect</div>
+        </div>
+        <div class="class-cell">
+          <div class="class-cell-label">Response SLA</div>
+          <div class="class-cell-value" style="color:var(--amber)">15 min ⚠</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workers involved -->
+    <div class="rp-block">
+      <div class="rp-label">Workers Involved</div>
+
+      <div class="worker-profile">
+        <div class="wp-avatar" style="background:linear-gradient(135deg,#5a3a2a,#8a5a40)">KP</div>
+        <div>
+          <div class="wp-name">K. Patel</div>
+          <div class="wp-role">Crane Operator · Zone B</div>
+        </div>
+        <div class="wp-violations">
+          <div class="wp-viol-count">3</div>
+          <div class="wp-viol-label">violations this week</div>
+        </div>
+      </div>
+      <div class="wp-ppe-row">
+        <div class="wp-ppe-chip wpc-fail">⛑ NO HAT</div>
+        <div class="wp-ppe-chip wpc-ok">🦺 VEST</div>
+        <div class="wp-ppe-chip wpc-fail">⚓ NO HARNESS</div>
+        <div class="wp-ppe-chip wpc-ok">👢 BOOTS</div>
+      </div>
+
+      <div style="margin-top:10px">
+        <div class="worker-profile" style="margin-bottom:0">
+          <div class="wp-avatar" style="background:linear-gradient(135deg,#2a4a5a,#3a6a7a)">??</div>
+          <div>
+            <div class="wp-name">Unidentified Worker</div>
+            <div class="wp-role">Re-ID in progress · Zone B</div>
+          </div>
+          <div class="wp-violations">
+            <div class="wp-viol-count" style="font-size:12px;color:var(--amber)">?</div>
+            <div class="wp-viol-label">history unknown</div>
+          </div>
+        </div>
+        <div class="wp-ppe-row">
+          <div class="wp-ppe-chip wpc-ok">⛑ HAT</div>
+          <div class="wp-ppe-chip wpc-ok">🦺 VEST</div>
+          <div class="wp-ppe-chip wpc-fail">⚓ NO HARNESS</div>
+          <div class="wp-ppe-chip wpc-ok">👢 BOOTS</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Incident timeline -->
+    <div class="rp-block">
+      <div class="rp-label">Event Timeline</div>
+      <div class="event-timeline">
+        <div class="tl-item">
+          <div class="tl-dot blue"></div>
+          <div class="tl-time">14:28:02</div>
+          <div class="tl-event-label">Crane lift commenced</div>
+          <div class="tl-event-desc">Crane truck began active lift operation in Zone B. Zone automatically flagged as restricted.</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot amber"></div>
+          <div class="tl-time">14:30:44</div>
+          <div class="tl-event-label">Workers approach Zone B</div>
+          <div class="tl-event-desc">2 workers detected approaching exclusion zone perimeter. PPE check triggered.</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot red"></div>
+          <div class="tl-time">14:32:07</div>
+          <div class="tl-event-label">Zone breach confirmed</div>
+          <div class="tl-event-desc">Both workers fully inside Zone B. PPE violations confirmed. Alert dispatched. Incident record created.</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot amber"></div>
+          <div class="tl-time">14:32:09</div>
+          <div class="tl-event-label">Notifications sent</div>
+          <div class="tl-event-desc">Site supervisor T. Williams notified via SMS + app push. Customer portal alert published.</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot gray"></div>
+          <div class="tl-time">14:36:25 (ongoing)</div>
+          <div class="tl-event-label">Awaiting acknowledgment</div>
+          <div class="tl-event-desc">Incident unresolved. Workers still in zone per last frame. SLA breach in 9 minutes.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Notifications sent -->
+    <div class="rp-block">
+      <div class="rp-label">Notifications Dispatched</div>
+      <div class="notif-item">
+        <div class="notif-type" style="background:var(--amber-bg)">📱</div>
+        <div class="notif-body">
+          <div class="notif-who">T. Williams — Site Foreman</div>
+          <div class="notif-desc">SMS + App push · Zone breach alert with snapshot</div>
+        </div>
+        <div class="notif-time">14:32:09</div>
+      </div>
+      <div class="notif-item">
+        <div class="notif-type" style="background:var(--blue-bg)">✉️</div>
+        <div class="notif-body">
+          <div class="notif-who">Marcus Kim — Safety Manager</div>
+          <div class="notif-desc">Email · Critical incident notification with clip link</div>
+        </div>
+        <div class="notif-time">14:32:09</div>
+      </div>
+      <div class="notif-item">
+        <div class="notif-type" style="background:var(--green-bg)">🔗</div>
+        <div class="notif-body">
+          <div class="notif-who">Thorncraft HSE Webhook</div>
+          <div class="notif-desc">POST to customer endpoint · JSON payload delivered</div>
+        </div>
+        <div class="notif-time">14:32:10</div>
+      </div>
+      <div class="notif-item">
+        <div class="notif-type" style="background:var(--red-bg)">⚡</div>
+        <div class="notif-body">
+          <div class="notif-who">Operator Console</div>
+          <div class="notif-desc">Real-time alert pushed to monitoring center dashboard</div>
+        </div>
+        <div class="notif-time">14:32:07</div>
+      </div>
+    </div>
+
+    <!-- Related incidents -->
+    <div class="rp-block">
+      <div class="rp-label">Related at TX-203 This Week</div>
+      <div class="related-item">
+        <div class="related-sev" style="background:var(--red)"></div>
+        <div class="related-id">INC-0844</div>
+        <div class="related-desc">Zone A unauthorized entry during concrete pour</div>
+        <div class="related-link">View →</div>
+      </div>
+      <div class="related-item">
+        <div class="related-sev" style="background:var(--red)"></div>
+        <div class="related-id">INC-0831</div>
+        <div class="related-desc">K. Patel — no harness on scaffold (11:30)</div>
+        <div class="related-link">View →</div>
+      </div>
+      <div class="related-item">
+        <div class="related-sev" style="background:var(--amber)"></div>
+        <div class="related-id">INC-0819</div>
+        <div class="related-desc">Forklift op. without hi-vis vest in material yard</div>
+        <div class="related-link">View →</div>
+      </div>
+      <div style="margin-top:8px;padding:8px;background:var(--red-bg);border:1px solid var(--red-border);border-radius:var(--r-sm)">
+        <div style="font-size:10px;font-weight:700;color:var(--red);font-family:'Syne',sans-serif;margin-bottom:3px">⚠ Pattern Detected</div>
+        <div style="font-size:10px;color:var(--text-2);line-height:1.5">TX-203 has 4 critical incidents in 7 days. K. Patel has 3 individual violations. Site-level intervention recommended by AI safety model.</div>
+      </div>
+    </div>
+
+    <!-- Comments -->
+    <div class="rp-block">
+      <div class="rp-label">Incident Notes</div>
+      <div class="notif-item" style="padding-bottom:8px">
+        <div class="wp-avatar" style="width:26px;height:26px;font-size:10px;background:linear-gradient(135deg,#2a5040,#3a7060);border-radius:50%;display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-family:'Syne',sans-serif;flex-shrink:0">TW</div>
+        <div class="notif-body">
+          <div class="notif-who">T. Williams · Site Foreman</div>
+          <div class="notif-desc" style="margin-top:3px;line-height:1.5">Reached K. Patel by radio. Workers exiting zone. Will conduct immediate site stand-down and PPE inspection for all Zone B personnel.</div>
+        </div>
+        <div class="notif-time">14:34:22</div>
+      </div>
+      <div class="comment-box">
+        <textarea class="comment-input" placeholder="Add a note or update…"></textarea>
+        <div class="comment-send">Post</div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+  // Animate the detection boxes slightly
+  let drift = 0;
+  setInterval(() => {
+    drift += 0.3;
+    const boxes = document.querySelectorAll('.det');
+    boxes.forEach((b, i) => {
+      const offset = Math.sin(drift * 0.4 + i) * 0.3;
+      b.style.transform = `translateY(${offset}px)`;
+    });
+  }, 50);
+
+  // Scrubber interaction
+  const scrubber = document.querySelector('.scrubber');
+  let isDragging = false;
+
+  scrubber.addEventListener('mousedown', e => {
+    isDragging = true;
+    updateScrubber(e);
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (isDragging) updateScrubber(e);
+  });
+
+  document.addEventListener('mouseup', () => isDragging = false);
+
+  function updateScrubber(e) {
+    const rect = scrubber.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const fill = scrubber.querySelector('.scrubber-fill');
+    const head = scrubber.querySelector('.scrubber-head');
+    fill.style.width = (pct * 100) + '%';
+    head.style.left = (pct * 100) + '%';
+  }
+
+  // Tab switching
+  document.querySelectorAll('.etab').forEach(tab => {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.etab').forEach(t => t.classList.remove('active'));
+      this.classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>

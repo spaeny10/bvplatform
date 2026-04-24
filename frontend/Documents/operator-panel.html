@@ -1,0 +1,1639 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SiteGuard AI — Operator Console</title>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@300;400;500&family=Barlow+Condensed:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-base: #080c10;
+    --bg-panel: #0c1118;
+    --bg-card: #101820;
+    --bg-elevated: #141e28;
+    --bg-highlight: #1a2535;
+    --border: rgba(255,255,255,0.06);
+    --border-bright: rgba(255,255,255,0.12);
+    --accent-primary: #00d4ff;
+    --accent-secondary: #ff6b35;
+    --accent-green: #00e5a0;
+    --accent-yellow: #ffcc00;
+    --accent-red: #ff3355;
+    --accent-purple: #a855f7;
+    --text-primary: #e8f0f8;
+    --text-secondary: #8fa8c0;
+    --text-dim: #4a6070;
+    --glow-blue: 0 0 20px rgba(0,212,255,0.3);
+    --glow-red: 0 0 20px rgba(255,51,85,0.4);
+    --glow-green: 0 0 20px rgba(0,229,160,0.3);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-base);
+    color: var(--text-primary);
+    font-family: 'Barlow Condensed', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    background-image: 
+      radial-gradient(ellipse at 20% 0%, rgba(0,212,255,0.04) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(255,107,53,0.03) 0%, transparent 50%);
+  }
+
+  /* ── TOP BAR ── */
+  .topbar {
+    height: 48px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 24px;
+    position: relative;
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--accent-primary);
+    text-shadow: var(--glow-blue);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .logo-icon {
+    width: 24px; height: 24px;
+    border: 2px solid var(--accent-primary);
+    transform: rotate(45deg);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: var(--glow-blue);
+  }
+
+  .logo-icon::after {
+    content: '';
+    width: 8px; height: 8px;
+    background: var(--accent-primary);
+    transform: rotate(0deg);
+  }
+
+  .topbar-nav {
+    display: flex;
+    gap: 2px;
+    margin-left: 16px;
+  }
+
+  .nav-item {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 3px;
+    transition: all 0.2s;
+  }
+
+  .nav-item:hover { color: var(--text-primary); background: var(--bg-elevated); }
+  .nav-item.active { color: var(--accent-primary); background: rgba(0,212,255,0.08); }
+
+  .topbar-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .status-cluster {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    border: 1px solid;
+  }
+
+  .status-pill.online { 
+    background: rgba(0,229,160,0.08); 
+    border-color: rgba(0,229,160,0.3); 
+    color: var(--accent-green);
+  }
+  .status-pill.warning { 
+    background: rgba(255,204,0,0.08); 
+    border-color: rgba(255,204,0,0.3); 
+    color: var(--accent-yellow);
+  }
+  .status-pill.critical { 
+    background: rgba(255,51,85,0.1); 
+    border-color: rgba(255,51,85,0.4); 
+    color: var(--accent-red);
+    animation: pulse-red 2s infinite;
+  }
+
+  @keyframes pulse-red {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 0 8px rgba(255,51,85,0.5); }
+  }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .dot.blink { animation: blink 1.5s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+  .time-display {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-secondary);
+    letter-spacing: 1px;
+  }
+
+  .operator-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-bright);
+    border-radius: 2px;
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+
+  .avatar {
+    width: 22px; height: 22px;
+    background: linear-gradient(135deg, var(--accent-primary), var(--accent-purple));
+    border-radius: 50%;
+    font-size: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700;
+    color: #000;
+  }
+
+  /* ── MAIN LAYOUT ── */
+  .main {
+    display: grid;
+    grid-template-columns: 220px 1fr 300px;
+    grid-template-rows: 1fr;
+    height: calc(100vh - 48px);
+    overflow: hidden;
+  }
+
+  /* ── LEFT SIDEBAR ── */
+  .sidebar {
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .sidebar-section {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .sidebar-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+    padding: 0 4px;
+  }
+
+  .site-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .site-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.15s;
+    position: relative;
+  }
+
+  .site-item:hover { background: var(--bg-elevated); }
+  .site-item.active { background: rgba(0,212,255,0.08); }
+  .site-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 4px; bottom: 4px;
+    width: 2px;
+    background: var(--accent-primary);
+    border-radius: 0 2px 2px 0;
+    box-shadow: var(--glow-blue);
+  }
+
+  .site-icon {
+    width: 28px; height: 28px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .site-alert-badge {
+    position: absolute;
+    top: -4px; right: -4px;
+    width: 14px; height: 14px;
+    background: var(--accent-red);
+    border-radius: 50%;
+    font-size: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700;
+    color: #fff;
+    border: 1px solid var(--bg-panel);
+  }
+
+  .site-info { flex: 1; min-width: 0; }
+
+  .site-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .site-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 1px;
+  }
+
+  .site-status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .metric-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+
+  .metric-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 8px;
+  }
+
+  .metric-label {
+    font-size: 8px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+
+  .metric-value {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .metric-sub {
+    font-size: 8px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  .compliance-bar-wrap {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+
+  .bar-track {
+    height: 4px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 1s ease;
+  }
+
+  .sidebar-scroll {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  /* ── CENTER: VIDEO GRID ── */
+  .center {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-base);
+  }
+
+  .center-topbar {
+    height: 40px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .site-title {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--text-primary);
+  }
+
+  .site-subtitle {
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .toolbar-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+  }
+
+  .tool-btn {
+    padding: 5px 10px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-bright);
+    border-radius: 2px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'Barlow Condensed', sans-serif;
+  }
+
+  .tool-btn:hover { color: var(--text-primary); border-color: var(--accent-primary); }
+  .tool-btn.primary {
+    background: rgba(0,212,255,0.1);
+    border-color: rgba(0,212,255,0.4);
+    color: var(--accent-primary);
+  }
+
+  .video-grid {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 3px;
+    padding: 3px;
+    overflow: hidden;
+  }
+
+  .video-cell {
+    background: #050810;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    position: relative;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+
+  .video-cell:hover { border-color: var(--border-bright); }
+
+  .video-cell.alert-critical { 
+    border-color: var(--accent-red); 
+    box-shadow: inset 0 0 20px rgba(255,51,85,0.1), 0 0 10px rgba(255,51,85,0.3);
+    animation: border-pulse 1.5s infinite;
+  }
+
+  .video-cell.alert-warning { 
+    border-color: var(--accent-yellow); 
+    box-shadow: inset 0 0 15px rgba(255,204,0,0.08);
+  }
+
+  @keyframes border-pulse {
+    0%,100% { box-shadow: inset 0 0 20px rgba(255,51,85,0.1), 0 0 10px rgba(255,51,85,0.3); }
+    50% { box-shadow: inset 0 0 30px rgba(255,51,85,0.2), 0 0 20px rgba(255,51,85,0.5); }
+  }
+
+  .video-cell:first-child {
+    grid-column: span 2;
+  }
+
+  /* Simulated camera feeds with CSS */
+  .cam-bg {
+    width: 100%; height: 100%;
+    position: absolute;
+    inset: 0;
+  }
+
+  .cam-bg-1 { background: linear-gradient(160deg, #0a1520 0%, #151f10 40%, #0d1818 100%); }
+  .cam-bg-2 { background: linear-gradient(200deg, #0f1510 0%, #1a1208 60%, #0c1015 100%); }
+  .cam-bg-3 { background: linear-gradient(140deg, #08121a 0%, #12100a 50%, #0a1510 100%); }
+  .cam-bg-4 { background: linear-gradient(180deg, #0d1010 0%, #181510 50%, #0a0f15 100%); }
+  .cam-bg-5 { background: linear-gradient(170deg, #10120a 0%, #0c1510 60%, #151008 100%); }
+
+  /* Fake scene elements */
+  .scene-ground {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 35%;
+    background: rgba(80,65,40,0.4);
+    border-top: 1px solid rgba(120,100,60,0.3);
+  }
+
+  .scene-structure {
+    position: absolute;
+    bottom: 30%;
+    background: rgba(60,70,80,0.5);
+  }
+
+  .scene-crane {
+    position: absolute;
+    right: 20%;
+    bottom: 30%;
+    width: 4px;
+    height: 40%;
+    background: rgba(180,160,100,0.5);
+  }
+
+  .scene-crane::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0;
+    width: 30%; height: 3px;
+    background: rgba(180,160,100,0.5);
+    transform-origin: right top;
+    transform: translateX(100%);
+  }
+
+  /* Detection overlays */
+  .detection-box {
+    position: absolute;
+    border: 2px solid;
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  .detection-box.person-ok { border-color: var(--accent-green); }
+  .detection-box.person-violation { border-color: var(--accent-red); animation: border-pulse 1s infinite; }
+  .detection-box.vehicle { border-color: var(--accent-yellow); }
+  .detection-box.equipment { border-color: var(--accent-purple); }
+
+  .detection-label {
+    position: absolute;
+    top: -18px; left: -1px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    font-weight: 500;
+    padding: 1px 4px;
+    border-radius: 1px;
+    white-space: nowrap;
+    background: rgba(0,0,0,0.8);
+    color: inherit;
+  }
+
+  .detection-box.person-ok .detection-label { color: var(--accent-green); }
+  .detection-box.person-violation .detection-label { color: var(--accent-red); }
+  .detection-box.vehicle .detection-label { color: var(--accent-yellow); }
+  .detection-box.equipment .detection-label { color: var(--accent-purple); }
+
+  .confidence-bar {
+    position: absolute;
+    bottom: -5px; left: 0;
+    height: 2px;
+    background: currentColor;
+    border-radius: 1px;
+    opacity: 0.8;
+  }
+
+  /* Camera overlay UI */
+  .cam-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    pointer-events: none;
+  }
+
+  .cam-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    padding: 6px 8px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+  }
+
+  .cam-id {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: rgba(255,255,255,0.7);
+    background: rgba(0,0,0,0.5);
+    padding: 2px 5px;
+    border-radius: 2px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+
+  .cam-badges {
+    display: flex;
+    gap: 3px;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .cam-badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    padding: 1px 5px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .cam-badge.live { background: rgba(255,51,85,0.8); color: #fff; }
+  .cam-badge.ai { background: rgba(0,212,255,0.2); color: var(--accent-primary); border: 1px solid rgba(0,212,255,0.4); }
+
+  .cam-footer {
+    margin-top: auto;
+    padding: 6px 8px;
+    background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+
+  .cam-location {
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.8);
+  }
+
+  .cam-stats {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    color: rgba(255,255,255,0.4);
+    text-align: right;
+  }
+
+  .violation-banner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(255,51,85,0.15);
+    border: 1px solid rgba(255,51,85,0.6);
+    border-radius: 3px;
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--accent-red);
+    text-transform: uppercase;
+    backdrop-filter: blur(4px);
+    animation: violation-flash 2s infinite;
+    white-space: nowrap;
+  }
+
+  @keyframes violation-flash {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+
+  /* Scan line effect */
+  .scanlines {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    );
+    pointer-events: none;
+  }
+
+  /* Bottom stats bar */
+  .center-bottombar {
+    height: 36px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 20px;
+    flex-shrink: 0;
+  }
+
+  .bottom-stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .bottom-stat strong {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-secondary);
+  }
+
+  /* Search bar */
+  .search-row {
+    padding: 8px 12px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .search-input-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-bright);
+    border-radius: 3px;
+    padding: 6px 10px;
+    transition: border-color 0.2s;
+  }
+
+  .search-input-wrap:focus-within { border-color: var(--accent-primary); }
+
+  .search-icon { font-size: 12px; color: var(--text-dim); }
+
+  .search-input {
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--text-primary);
+    font-family: 'Barlow Condensed', sans-serif;
+    font-size: 13px;
+    flex: 1;
+  }
+
+  .search-input::placeholder { color: var(--text-dim); }
+
+  .search-kbd {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
+  /* ── RIGHT SIDEBAR: ALERTS ── */
+  .alerts-panel {
+    background: var(--bg-panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .alerts-header {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .alerts-title {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-primary);
+  }
+
+  .alert-count-badge {
+    background: var(--accent-red);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    box-shadow: var(--glow-red);
+  }
+
+  .filter-row {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .filter-chip {
+    padding: 3px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    border-radius: 2px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+  }
+
+  .filter-chip.all { background: rgba(0,212,255,0.1); border-color: rgba(0,212,255,0.3); color: var(--accent-primary); }
+  .filter-chip:not(.all) { background: var(--bg-elevated); color: var(--text-dim); }
+  .filter-chip:hover { color: var(--text-secondary); }
+
+  .alerts-scroll {
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  .alert-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+
+  .alert-item:hover { background: var(--bg-elevated); }
+
+  .alert-item.new::after {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 3px;
+  }
+
+  .alert-item.critical.new::after { background: var(--accent-red); box-shadow: var(--glow-red); }
+  .alert-item.warning.new::after { background: var(--accent-yellow); }
+  .alert-item.info.new::after { background: var(--accent-primary); }
+
+  .alert-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 4px;
+  }
+
+  .alert-type {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .alert-type.critical { color: var(--accent-red); }
+  .alert-type.warning { color: var(--accent-yellow); }
+  .alert-type.info { color: var(--accent-primary); }
+  .alert-type.success { color: var(--accent-green); }
+
+  .alert-time {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--text-dim);
+  }
+
+  .alert-desc {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    margin-bottom: 6px;
+  }
+
+  .alert-meta {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .alert-site-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    padding: 1px 5px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--text-dim);
+  }
+
+  .alert-cam-tag {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    color: var(--text-dim);
+  }
+
+  .alert-thumb {
+    width: 48px; height: 32px;
+    background: var(--bg-elevated);
+    border-radius: 2px;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    overflow: hidden;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .alert-thumb-inner {
+    width: 100%; height: 100%;
+    background: linear-gradient(135deg, #0a1520, #151208);
+  }
+
+  .alert-thumb-box {
+    position: absolute;
+    border: 1px solid var(--accent-red);
+    border-radius: 1px;
+  }
+
+  .alert-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+  }
+
+  .alert-btn {
+    flex: 1;
+    padding: 4px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-align: center;
+    border-radius: 2px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    transition: all 0.15s;
+    font-family: 'Barlow Condensed', sans-serif;
+    text-transform: uppercase;
+  }
+
+  .alert-btn.view { border-color: rgba(0,212,255,0.3); color: var(--accent-primary); background: rgba(0,212,255,0.05); }
+  .alert-btn.ack { border-color: rgba(0,229,160,0.3); color: var(--accent-green); background: rgba(0,229,160,0.05); }
+
+  /* Stats panel at bottom of right sidebar */
+  .stats-panel {
+    border-top: 1px solid var(--border);
+    padding: 10px 12px;
+    flex-shrink: 0;
+  }
+
+  .stats-panel-title {
+    font-size: 9px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+
+  .stat-row-label {
+    font-size: 10px;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .stat-color-dot {
+    width: 5px; height: 5px;
+    border-radius: 50%;
+  }
+
+  .stat-row-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+  }
+
+  .sparkline {
+    height: 30px;
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    margin-top: 8px;
+  }
+
+  .spark-bar {
+    flex: 1;
+    background: rgba(0,212,255,0.2);
+    border-radius: 1px 1px 0 0;
+    transition: height 0.3s;
+    min-height: 2px;
+  }
+
+  .spark-bar.high { background: rgba(255,51,85,0.4); }
+  .spark-bar.active { background: rgba(0,212,255,0.6); }
+
+  /* Scrollbar styling */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+
+  /* Animated counter */
+  .live-counter {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    color: var(--accent-primary);
+    animation: counter-tick 3s infinite;
+  }
+  @keyframes counter-tick {
+    0%,90%,100% { opacity:1; }
+    95% { opacity:0.3; }
+  }
+
+  /* Exclusion zone overlay */
+  .exclusion-zone {
+    position: absolute;
+    background: rgba(255,51,85,0.08);
+    border: 1px dashed rgba(255,51,85,0.4);
+    pointer-events: none;
+  }
+
+  .exclusion-label {
+    position: absolute;
+    top: 3px; left: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 7px;
+    color: rgba(255,51,85,0.7);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Heatmap overlay spots */
+  .heat-spot {
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+    mix-blend-mode: screen;
+  }
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="logo">
+    <div class="logo-icon"></div>
+    SITEGUARD<span style="color:var(--text-dim);font-weight:400">·AI</span>
+  </div>
+
+  <div class="topbar-nav">
+    <div class="nav-item active">Monitor</div>
+    <div class="nav-item">Incidents</div>
+    <div class="nav-item">Analytics</div>
+    <div class="nav-item">Search</div>
+    <div class="nav-item">Reports</div>
+    <div class="nav-item">Fleet</div>
+  </div>
+
+  <div class="topbar-right">
+    <div class="status-cluster">
+      <div class="status-pill online"><div class="dot blink"></div>762 ONLINE</div>
+      <div class="status-pill warning"><div class="dot"></div>38 DEGRADED</div>
+      <div class="status-pill critical"><div class="dot blink"></div>7 CRITICAL</div>
+    </div>
+    <div class="time-display" id="clock">--:--:-- UTC</div>
+    <div class="operator-badge">
+      <div class="avatar">JR</div>
+      <span>J. REYES</span>
+      <span style="color:var(--accent-green);font-size:9px;">● L2</span>
+    </div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- LEFT SIDEBAR -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <div class="sidebar-label">Fleet Overview</div>
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">Cameras</div>
+          <div class="metric-value" style="color:var(--accent-primary)">800</div>
+          <div class="metric-sub">762 active</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Sites</div>
+          <div class="metric-value" style="color:var(--accent-green)">160</div>
+          <div class="metric-sub">All regions</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Alerts</div>
+          <div class="metric-value" style="color:var(--accent-red)">24</div>
+          <div class="metric-sub">7 critical</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">PPE Score</div>
+          <div class="metric-value" style="color:var(--accent-yellow)">87%</div>
+          <div class="metric-sub">▼ 3% today</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="compliance-bar-wrap">
+      <div class="bar-label"><span>Hard Hat</span><span style="color:var(--accent-green)">94%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:94%;background:var(--accent-green)"></div></div>
+      <div class="bar-label"><span>Hi-Vis Vest</span><span style="color:var(--accent-yellow)">89%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:89%;background:var(--accent-yellow)"></div></div>
+      <div class="bar-label"><span>Harness</span><span style="color:var(--accent-red)">72%</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:72%;background:var(--accent-red)"></div></div>
+      <div class="bar-label"><span>Safety Boots</span><span style="color:var(--accent-green)">97%</span></div>
+      <div class="bar-track" style="margin-bottom:0"><div class="bar-fill" style="width:97%;background:var(--accent-green)"></div></div>
+    </div>
+
+    <div class="sidebar-section" style="flex-shrink:0">
+      <div class="sidebar-label">Active Sites</div>
+    </div>
+
+    <div class="sidebar-scroll">
+      <div class="site-list" style="padding:4px 12px 8px">
+
+        <div class="site-item active">
+          <div class="site-icon">🏗️<div class="site-alert-badge">3</div></div>
+          <div class="site-info">
+            <div class="site-name">Meridian Tower</div>
+            <div class="site-meta">NYC-047 · 5 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-red)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">🔧</div>
+          <div class="site-info">
+            <div class="site-name">Harbor Bridge</div>
+            <div class="site-meta">NJ-012 · 3 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-yellow)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">🏢</div>
+          <div class="site-info">
+            <div class="site-name">Westfield Plaza</div>
+            <div class="site-meta">LA-089 · 8 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-green)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">⚡<div class="site-alert-badge">1</div></div>
+          <div class="site-info">
+            <div class="site-name">Southgate Power</div>
+            <div class="site-meta">TX-203 · 6 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-red)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">🚧</div>
+          <div class="site-info">
+            <div class="site-name">I-95 Expansion</div>
+            <div class="site-meta">MD-067 · 4 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-green)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">🏭</div>
+          <div class="site-info">
+            <div class="site-name">Lakewood Depot</div>
+            <div class="site-meta">OH-031 · 5 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-green)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">🏗️<div class="site-alert-badge">2</div></div>
+          <div class="site-info">
+            <div class="site-name">Northgate Commons</div>
+            <div class="site-meta">IL-118 · 5 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-yellow)"></div>
+        </div>
+
+        <div class="site-item">
+          <div class="site-icon">⚙️</div>
+          <div class="site-info">
+            <div class="site-name">Riverdale Mill</div>
+            <div class="site-meta">PA-055 · 4 cams</div>
+          </div>
+          <div class="site-status-dot" style="background:var(--accent-green)"></div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER -->
+  <div class="center">
+    <!-- Toolbar -->
+    <div class="center-topbar">
+      <div>
+        <div class="site-title">MERIDIAN TOWER — NYC-047</div>
+        <div class="site-subtitle">Manhattan, NY · 40.7589° N, 73.9851° W · Floor 28–42</div>
+      </div>
+      <div class="toolbar-actions">
+        <div class="tool-btn">2×3 Grid</div>
+        <div class="tool-btn">PTZ</div>
+        <div class="tool-btn">AI Overlay ●</div>
+        <div class="tool-btn primary">+ Live View</div>
+      </div>
+    </div>
+
+    <!-- Semantic Search -->
+    <div class="search-row">
+      <div class="search-input-wrap">
+        <span class="search-icon">⌕</span>
+        <input class="search-input" placeholder="Search footage semantically — try 'workers without hard hats near crane' or 'vehicle in Zone B after 6pm'" />
+        <span class="search-kbd">⌘K</span>
+      </div>
+    </div>
+
+    <!-- Video Grid -->
+    <div class="video-grid">
+
+      <!-- Camera 1 — LARGE, CRITICAL ALERT -->
+      <div class="video-cell alert-critical">
+        <div class="cam-bg cam-bg-1"></div>
+
+        <!-- Scene elements -->
+        <div class="scene-ground"></div>
+        <div class="scene-structure" style="left:10%;width:35%;height:45%;background:rgba(50,60,70,0.6)"></div>
+        <div class="scene-structure" style="right:15%;width:20%;height:55%;background:rgba(60,70,80,0.5)"></div>
+        <div class="scene-crane"></div>
+
+        <!-- Exclusion zone -->
+        <div class="exclusion-zone" style="left:55%;top:20%;width:30%;height:50%">
+          <div class="exclusion-label">EXCL ZONE A</div>
+        </div>
+
+        <!-- Person detections -->
+        <div class="detection-box person-violation" style="left:57%;top:35%;width:8%;height:22%">
+          <div class="detection-label">NO HARDHAT 0.96</div>
+          <div class="confidence-bar" style="width:96%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:22%;top:45%;width:6%;height:18%">
+          <div class="detection-label">COMPLIANT 0.99</div>
+          <div class="confidence-bar" style="width:99%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:34%;top:42%;width:6%;height:18%">
+          <div class="detection-label">COMPLIANT 0.97</div>
+          <div class="confidence-bar" style="width:97%"></div>
+        </div>
+
+        <div class="detection-box vehicle" style="left:5%;top:62%;width:20%;height:28%">
+          <div class="detection-label">EXCAVATOR 0.98</div>
+          <div class="confidence-bar" style="width:98%"></div>
+        </div>
+
+        <div class="violation-banner">⚠ EXCLUSION ZONE BREACH</div>
+        <div class="scanlines"></div>
+
+        <div class="cam-overlay">
+          <div class="cam-header">
+            <div class="cam-id">CAM-047-01 · NORTH FACE</div>
+            <div class="cam-badges">
+              <div class="cam-badge live">● REC</div>
+              <div class="cam-badge ai">AI ACTIVE</div>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <div class="cam-location">Floor 28 — North Perimeter</div>
+            <div class="cam-stats">5120×1520 · H.265+<br><span class="live-counter" id="bitrate">3.4 Mbps</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera 2 -->
+      <div class="video-cell">
+        <div class="cam-bg cam-bg-2"></div>
+        <div class="scene-ground" style="height:30%"></div>
+        <div class="scene-structure" style="left:5%;width:60%;height:65%;background:rgba(70,60,50,0.5)"></div>
+
+        <div class="detection-box person-ok" style="left:15%;top:50%;width:7%;height:20%">
+          <div class="detection-label">COMPLIANT 0.98</div>
+          <div class="confidence-bar" style="width:98%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:28%;top:48%;width:7%;height:20%">
+          <div class="detection-label">COMPLIANT 0.95</div>
+          <div class="confidence-bar" style="width:95%"></div>
+        </div>
+
+        <div class="detection-box equipment" style="left:60%;top:30%;width:35%;height:50%">
+          <div class="detection-label">CRANE — ACTIVE 0.99</div>
+          <div class="confidence-bar" style="width:99%"></div>
+        </div>
+
+        <div class="scanlines"></div>
+        <div class="cam-overlay">
+          <div class="cam-header">
+            <div class="cam-id">CAM-047-02 · CRANE ZONE</div>
+            <div class="cam-badges">
+              <div class="cam-badge live">● REC</div>
+              <div class="cam-badge ai">AI ACTIVE</div>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <div class="cam-location">Floor 32 — Crane Ops</div>
+            <div class="cam-stats">1920×576 · H.265+<br>3.4 Mbps</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera 3 -->
+      <div class="video-cell alert-warning">
+        <div class="cam-bg cam-bg-3"></div>
+        <div class="scene-ground" style="height:40%"></div>
+
+        <!-- Heat spots -->
+        <div class="heat-spot" style="left:40%;top:45%;width:60px;height:60px;background:radial-gradient(circle,rgba(255,100,0,0.3),transparent)"></div>
+        <div class="heat-spot" style="left:30%;top:50%;width:40px;height:40px;background:radial-gradient(circle,rgba(255,180,0,0.2),transparent)"></div>
+
+        <div class="detection-box person-violation" style="left:38%;top:42%;width:7%;height:22%">
+          <div class="detection-label">NO HARNESS 0.91</div>
+          <div class="confidence-bar" style="width:91%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:55%;top:44%;width:6%;height:20%">
+          <div class="detection-label">COMPLIANT 0.97</div>
+          <div class="confidence-bar" style="width:97%"></div>
+        </div>
+
+        <div class="detection-box vehicle" style="right:5%;top:55%;width:25%;height:35%">
+          <div class="detection-label">FORKLIFT · IDLE 0.94</div>
+          <div class="confidence-bar" style="width:94%"></div>
+        </div>
+
+        <div class="scanlines"></div>
+        <div class="cam-overlay">
+          <div class="cam-header">
+            <div class="cam-id">CAM-047-03 · SCAFFOLD WEST</div>
+            <div class="cam-badges">
+              <div class="cam-badge live">● REC</div>
+              <div class="cam-badge ai">AI ACTIVE</div>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <div class="cam-location">Floor 35 — West Scaffold</div>
+            <div class="cam-stats">1920×576 · H.265+<br>3.4 Mbps</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera 4 -->
+      <div class="video-cell">
+        <div class="cam-bg cam-bg-4"></div>
+        <div class="scene-ground" style="height:35%"></div>
+        <div class="scene-structure" style="right:0;width:40%;height:70%;background:rgba(55,65,75,0.5)"></div>
+
+        <div class="detection-box person-ok" style="left:10%;top:50%;width:7%;height:20%">
+          <div class="detection-label">COMPLIANT 0.99</div>
+          <div class="confidence-bar" style="width:99%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:22%;top:52%;width:6%;height:18%">
+          <div class="detection-label">COMPLIANT 0.96</div>
+          <div class="confidence-bar" style="width:96%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:35%;top:50%;width:6%;height:20%">
+          <div class="detection-label">COMPLIANT 0.98</div>
+          <div class="confidence-bar" style="width:98%"></div>
+        </div>
+
+        <div class="scanlines"></div>
+        <div class="cam-overlay">
+          <div class="cam-header">
+            <div class="cam-id">CAM-047-04 · ENTRY GATE</div>
+            <div class="cam-badges">
+              <div class="cam-badge live">● REC</div>
+              <div class="cam-badge ai">AI ACTIVE</div>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <div class="cam-location">Ground Level — Main Entry</div>
+            <div class="cam-stats">1920×576 · H.265+<br>3.4 Mbps</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Camera 5 -->
+      <div class="video-cell">
+        <div class="cam-bg cam-bg-5"></div>
+        <div class="scene-ground" style="height:38%"></div>
+
+        <div class="detection-box vehicle" style="left:5%;top:45%;width:30%;height:45%">
+          <div class="detection-label">CONCRETE TRUCK · ACTIVE 0.97</div>
+          <div class="confidence-bar" style="width:97%"></div>
+        </div>
+
+        <div class="detection-box person-ok" style="left:42%;top:50%;width:7%;height:20%">
+          <div class="detection-label">COMPLIANT 0.95</div>
+          <div class="confidence-bar" style="width:95%"></div>
+        </div>
+
+        <div class="scanlines"></div>
+        <div class="cam-overlay">
+          <div class="cam-header">
+            <div class="cam-id">CAM-047-05 · SOUTH YARD</div>
+            <div class="cam-badges">
+              <div class="cam-badge live">● REC</div>
+              <div class="cam-badge ai">AI ACTIVE</div>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <div class="cam-location">Ground Level — Material Yard</div>
+            <div class="cam-stats">1920×576 · H.265+<br>3.4 Mbps</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom stats -->
+    <div class="center-bottombar">
+      <div class="bottom-stat">👷 <strong>14</strong> workers on site</div>
+      <div class="bottom-stat">🚜 <strong>3</strong> equipment active</div>
+      <div class="bottom-stat" style="color:var(--accent-yellow)">⚠ <strong>2</strong> PPE violations</div>
+      <div class="bottom-stat" style="color:var(--accent-red)">🚨 <strong>1</strong> zone breach</div>
+      <div class="bottom-stat" style="margin-left:auto">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">INFERENCE</span>
+        <strong style="color:var(--accent-green)">17ms</strong>
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">avg latency</span>
+      </div>
+      <div class="bottom-stat">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">INGEST</span>
+        <strong>2.71 Gbps</strong>
+      </div>
+      <div class="bottom-stat">
+        <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--text-dim)">BUFFER</span>
+        <strong style="color:var(--accent-green)">72h ● LIVE</strong>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: ALERTS PANEL -->
+  <div class="alerts-panel">
+    <div class="alerts-header">
+      <span class="alerts-title">Alert Feed</span>
+      <span class="alert-count-badge">24</span>
+      <span style="font-size:9px;color:var(--text-dim);margin-left:auto;font-family:'JetBrains Mono',monospace">LIVE ●</span>
+    </div>
+
+    <div class="filter-row">
+      <div class="filter-chip all">All</div>
+      <div class="filter-chip">Critical</div>
+      <div class="filter-chip">PPE</div>
+      <div class="filter-chip">Zone</div>
+    </div>
+
+    <div class="alerts-scroll">
+
+      <!-- Alert 1 — Critical, new -->
+      <div class="alert-item critical new">
+        <div class="alert-top">
+          <div class="alert-type critical">⬤ ZONE BREACH</div>
+          <div class="alert-time">14:32:07</div>
+        </div>
+        <div class="alert-desc">Worker entered Exclusion Zone A without authorization. Zone active — crane operating radius.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">NYC-047</div>
+          <div class="alert-cam-tag">CAM-047-01</div>
+          <div class="alert-thumb" style="margin-left:auto">
+            <div class="alert-thumb-inner"></div>
+            <div class="alert-thumb-box" style="left:55%;top:30%;width:20%;height:40%;"></div>
+          </div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">▶ View</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 2 -->
+      <div class="alert-item warning new">
+        <div class="alert-top">
+          <div class="alert-type warning">⬤ PPE VIOLATION</div>
+          <div class="alert-time">14:31:44</div>
+        </div>
+        <div class="alert-desc">Worker on Floor 35 West Scaffold detected without safety harness. Height >10m.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">NYC-047</div>
+          <div class="alert-cam-tag">CAM-047-03</div>
+          <div class="alert-thumb" style="margin-left:auto">
+            <div class="alert-thumb-inner" style="background:linear-gradient(135deg,#101508,#0a1210)"></div>
+            <div class="alert-thumb-box" style="left:35%;top:35%;width:20%;height:40%;border-color:var(--accent-yellow)"></div>
+          </div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">▶ View</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 3 -->
+      <div class="alert-item critical new">
+        <div class="alert-top">
+          <div class="alert-type critical">⬤ PPE VIOLATION</div>
+          <div class="alert-time">14:29:18</div>
+        </div>
+        <div class="alert-desc">Worker in exclusion zone without hard hat. Confidence 96%. Crane active overhead.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">NYC-047</div>
+          <div class="alert-cam-tag">CAM-047-01</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">▶ View</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 4 -->
+      <div class="alert-item info">
+        <div class="alert-top">
+          <div class="alert-type info">⬤ VEHICLE EVENT</div>
+          <div class="alert-time">14:27:55</div>
+        </div>
+        <div class="alert-desc">Concrete truck entered South Yard. 3 workers in proximity. All PPE compliant.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">NYC-047</div>
+          <div class="alert-cam-tag">CAM-047-05</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">▶ View</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 5 from different site -->
+      <div class="alert-item critical">
+        <div class="alert-top">
+          <div class="alert-type critical">⬤ AFTER HOURS</div>
+          <div class="alert-time">14:25:30</div>
+        </div>
+        <div class="alert-desc">Unauthorized person detected at Southgate Power outside shift window (22:00–06:00).</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">TX-203</div>
+          <div class="alert-cam-tag">CAM-203-02</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">▶ View</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 6 -->
+      <div class="alert-item warning">
+        <div class="alert-top">
+          <div class="alert-type warning">⬤ CAMERA OFFLINE</div>
+          <div class="alert-time">14:20:11</div>
+        </div>
+        <div class="alert-desc">CAM-118-04 at Northgate Commons offline. Last heartbeat 8 minutes ago. 5G signal degraded.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">IL-118</div>
+          <div class="alert-cam-tag">CAM-118-04</div>
+        </div>
+        <div class="alert-actions">
+          <div class="alert-btn view">Diagnose</div>
+          <div class="alert-btn ack">✓ Ack</div>
+        </div>
+      </div>
+
+      <!-- Alert 7 resolved -->
+      <div class="alert-item" style="opacity:0.5">
+        <div class="alert-top">
+          <div class="alert-type success">✓ RESOLVED</div>
+          <div class="alert-time">14:15:02</div>
+        </div>
+        <div class="alert-desc">PPE violation cleared — worker donned hard hat after verbal warning.</div>
+        <div class="alert-meta">
+          <div class="alert-site-tag">NJ-012</div>
+          <div class="alert-cam-tag">CAM-012-01</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Stats panel -->
+    <div class="stats-panel">
+      <div class="stats-panel-title">Today's Incident Rate</div>
+      <div class="stat-row">
+        <div class="stat-row-label"><div class="stat-color-dot" style="background:var(--accent-red)"></div>Critical</div>
+        <div class="stat-row-value" style="color:var(--accent-red)">7</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-row-label"><div class="stat-color-dot" style="background:var(--accent-yellow)"></div>Warning</div>
+        <div class="stat-row-value" style="color:var(--accent-yellow)">11</div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-row-label"><div class="stat-color-dot" style="background:var(--accent-primary)"></div>Info</div>
+        <div class="stat-row-value" style="color:var(--accent-primary)">6</div>
+      </div>
+      <div class="sparkline">
+        <div class="spark-bar" style="height:20%"></div>
+        <div class="spark-bar" style="height:35%"></div>
+        <div class="spark-bar" style="height:25%"></div>
+        <div class="spark-bar high" style="height:60%"></div>
+        <div class="spark-bar" style="height:40%"></div>
+        <div class="spark-bar" style="height:30%"></div>
+        <div class="spark-bar" style="height:50%"></div>
+        <div class="spark-bar high" style="height:75%"></div>
+        <div class="spark-bar" style="height:45%"></div>
+        <div class="spark-bar" style="height:35%"></div>
+        <div class="spark-bar" style="height:55%"></div>
+        <div class="spark-bar active" style="height:65%"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  // Live clock
+  function updateClock() {
+    const now = new Date();
+    const h = String(now.getUTCHours()).padStart(2,'0');
+    const m = String(now.getUTCMinutes()).padStart(2,'0');
+    const s = String(now.getUTCSeconds()).padStart(2,'0');
+    document.getElementById('clock').textContent = `${h}:${m}:${s} UTC`;
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // Fluctuate bitrate display
+  const bitrateEl = document.getElementById('bitrate');
+  setInterval(() => {
+    const val = (3.2 + Math.random() * 0.4).toFixed(1);
+    bitrateEl.textContent = `${val} Mbps`;
+  }, 2000);
+</script>
+
+</body>
+</html>

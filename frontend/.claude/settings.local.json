@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(curl -s http://localhost:8080/api/v1/companies)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/companies -H \"Content-Type: application/json\" -d '{\"name\":\"Test Corp\",\"plan\":\"starter\",\"contact_name\":\"John\",\"contact_email\":\"john@test.com\"}')",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 768 //F)",
+      "Bash(python -m uvicorn main:app --port 8080 --reload)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/sites -H \"Content-Type: application/json\" -d '{\"name\":\"Test Warehouse\",\"address\":\"123 Main St\",\"company_id\":\"co-turner\"}')",
+      "Bash(curl -s http://localhost:8080/openapi.json)",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); [print\\(f'{m.upper\\(\\):7s} {p}'\\) for p,methods in d['paths'].items\\(\\) for m in methods]\")",
+      "Bash(find . -name \"__pycache__\" -type d -exec rm -rf {} +)",
+      "Bash(find . -name \"*.pyc\" -delete)",
+      "Bash(taskkill //PID 78928 //F)",
+      "Bash(taskkill //PID 75780 //F)",
+      "Bash(python -c \"from routers import companies; print\\('OK'\\)\")",
+      "Bash(python -c \"from routers import sites; print\\(dir\\(sites.router\\)\\); print\\(len\\(sites.router.routes\\), 'routes'\\)\")",
+      "Bash(taskkill //IM python.exe //F)",
+      "Bash(rm -rf __pycache__ routers/__pycache__ models/__pycache__)",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/sites -H \"Content-Type: application/json\" -d '{\"name\":\"Test Site\",\"address\":\"123 Main\",\"company_id\":\"co-turner\"}')",
+      "Bash(python -c \"import json,sys; [print\\(f'  {c[\\\\\"id\\\\\"]}: {c[\\\\\"name\\\\\"]}'\\) for c in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s http://localhost:8080/api/v1/sites)",
+      "Bash(python -c \"import json,sys; [print\\(f'  {s[\\\\\"id\\\\\"]}: {s[\\\\\"name\\\\\"]} \\({s[\\\\\"cameras_total\\\\\"]} cams\\)'\\) for s in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s http://localhost:8080/api/v1/sites/TX-203/sops)",
+      "Bash(python -c \"import json,sys; [print\\(f'  {s[\\\\\"id\\\\\"]}: {s[\\\\\"title\\\\\"]}'\\) for s in json.load\\(sys.stdin\\)]\")",
+      "Bash(curl -s -X POST http://localhost:8080/api/v1/companies -H \"Content-Type: application/json\" -d '{\"name\":\"Kiewit Corp\",\"plan\":\"enterprise\",\"contact_name\":\"D. Wilson\",\"contact_email\":\"dwilson@kiewit.com\"}')",
+      "Bash(python -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(f'  Created: {d[\\\\\"id\\\\\"]}: {d[\\\\\"name\\\\\"]}'\\)\")",
+      "Bash(bash -c 'netstat -ano | grep LISTENING | grep 8501')"
+    ]
+  }
+}

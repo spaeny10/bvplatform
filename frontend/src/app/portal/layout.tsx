@@ -1,0 +1,13 @@
+import './portal.css';
+import type { ReactNode } from 'react';
+import RouteGuard from '@/components/shared/RouteGuard';
+
+export default function PortalLayout({ children }: { children: ReactNode }) {
+    return (
+        <RouteGuard allowed={['site_manager', 'customer', 'soc_supervisor', 'admin']}>
+            <div style={{ fontFamily: "var(--font-family, 'Inter', sans-serif)" }}>
+                {children}
+            </div>
+        </RouteGuard>
+    );
+}
