@@ -100,15 +100,18 @@ services:
       # fires on every alarm — gets its own card so Qwen's batch workload
       # can't starve it.
       #
-      # Two-layer model: `devices` grants the container access to all
-      # GPUs via the nvidia.com/gpu=all CDI spec; NVIDIA_VISIBLE_DEVICES
-      # is what the NVIDIA runtime inside the container reads to decide
-      # which GPUs nvidia-smi actually sees.
+      # Two-layer model: `devices` grants the container access to every
+      # GPU via the nvidia.com/gpu=all CDI spec; CUDA_VISIBLE_DEVICES
+      # is then read by the CUDA runtime (libcuda) inside the container
+      # to decide which of those GPUs the app actually uses.
       #
-      # Per-GPU CDI names (nvidia.com/gpu=0, =1) work on native Linux
-      # but NOT on WSL — WSL virtualizes all GPUs through /dev/dxg, so
-      # CDI only exposes `all`. The env var is how you narrow it down.
-      NVIDIA_VISIBLE_DEVICES: "${YOLO_GPU_INDEX:-0}"
+      # Why not NVIDIA_VISIBLE_DEVICES + nvidia.com/gpu=0? That pattern
+      # works on native Linux but is a no-op under WSL — WSL exposes
+      # every GPU through a single virtual /dev/dxg node, so neither
+      # per-index CDI names nor NVIDIA_VISIBLE_DEVICES can mask at the
+      # device layer. CUDA_VISIBLE_DEVICES filters at the CUDA library
+      # level and works identically on both platforms.
+      CUDA_VISIBLE_DEVICES: "${YOLO_GPU_INDEX:-0}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     # CDI device access. On first setup run (once, as root):
     #   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
@@ -127,8 +130,9 @@ services:
       # Pin Qwen to GPU 1 (second 3070). The VLM indexer is the heaviest
       # workload in the stack — segregating it from YOLO keeps detection
       # latency predictable under indexer load. Swap GPU indices if your
-      # physical card ordering differs.
-      NVIDIA_VISIBLE_DEVICES: "${QWEN_GPU_INDEX:-1}"
+      # physical card ordering differs. See yolo service above for the
+      # CUDA_VISIBLE_DEVICES vs NVIDIA_VISIBLE_DEVICES rationale on WSL.
+      CUDA_VISIBLE_DEVICES: "${QWEN_GPU_INDEX:-1}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     # See yolo service above for CDI + WSL notes.
     devices:

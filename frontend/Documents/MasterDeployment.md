@@ -138,7 +138,7 @@ docker compose version        # Docker Compose version v2.20.x or newer
 
 ### 3.3 If you have GPUs (for YOLO / Qwen)
 
-Install NVIDIA drivers via the Ubuntu `ubuntu-drivers` tool or the official `.run` installer, then add the NVIDIA container runtime:
+Install NVIDIA drivers via the Ubuntu `ubuntu-drivers` tool or the official `.run` installer, then add the NVIDIA container toolkit:
 
 ```bash
 distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
@@ -148,12 +148,31 @@ curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-
   | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
   | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-docker run --rm --gpus all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi    # sanity check
 ```
 
-Then uncomment the `deploy:` blocks for `yolo` and `qwen` in `docker-compose.yml`.
+Generate the CDI spec (Container Device Interface — what modern Docker/Podman both use):
+
+```bash
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+nvidia-ctk cdi list     # should report "Found N CDI devices"
+```
+
+**Common pitfall — conflicting specs.** If `nvidia-ctk cdi list` shows `0 CDI devices` and warns about `conflicting device "nvidia.com/gpu=all"`, you have both `/etc/cdi/nvidia.yaml` AND `/etc/cdi/nvidia.json` registering the same device. Some NVIDIA installers (including AI Workbench on WSL) drop the JSON spec on disk, and the compose file also generates the YAML. Keep one — the YAML we generate above. Move or delete the other:
+
+```bash
+sudo mv /etc/cdi/nvidia.json /etc/cdi/nvidia.json.bak
+```
+
+Sanity check:
+
+```bash
+# Docker:
+docker run --rm --device nvidia.com/gpu=all nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi
+# Podman:
+podman run --rm --device nvidia.com/gpu=all docker.io/nvidia/cuda:12.3.0-base-ubuntu22.04 nvidia-smi
+```
+
+**Per-GPU filtering.** The compose file uses `CUDA_VISIBLE_DEVICES` to pin each AI service to a specific card (YOLO→0, Qwen→1 by default). This works everywhere — on native Linux with either Docker or Podman, and on WSL2. The earlier `NVIDIA_VISIBLE_DEVICES` pattern is a no-op under WSL because WSL virtualizes every GPU through a single `/dev/dxg` node; only `CUDA_VISIBLE_DEVICES`, which the CUDA runtime itself honors, can mask at the library layer. On native Linux it is equivalent.
 
 ### 3.4 Firewall
 
