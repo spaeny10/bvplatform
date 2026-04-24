@@ -23,7 +23,10 @@
 services:
 
   db:
-    image: timescale/timescaledb:latest-pg15
+    # Fully-qualified image names throughout this file. Podman doesn't
+    # default to docker.io — bare names can fail or prompt interactively.
+    # Docker ignores the registry prefix when present; Podman requires it.
+    image: docker.io/timescale/timescaledb:latest-pg15
     container_name: ironsight-db
     restart: unless-stopped
     environment:
@@ -50,7 +53,7 @@ services:
   # Single-replica deployments don't need Redis; the api service's REDIS_URL
   # below is also commented out by default so the in-memory hub is used.
   redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: ironsight-redis
     restart: unless-stopped
     profiles: [scale-out]
@@ -65,7 +68,7 @@ services:
     networks: [backplane]
 
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    image: docker.io/bluenviron/mediamtx:latest
     container_name: ironsight-mediamtx
     restart: unless-stopped
     # The Go API writes mediamtx_runtime.yml into the shared config volume
@@ -84,48 +87,58 @@ services:
 
   # On-camera-frame YOLO detection service. Called on-demand by the API
   # when an event fires; not in the hot path for recording.
+  # `localhost/` prefix tells Podman this is a locally-built image, don't
+  # try to pull from a registry. Docker ignores the prefix.
   yolo:
-    image: ${YOLO_IMAGE:-ironsight/yolo:latest}
+    image: ${YOLO_IMAGE:-localhost/ironsight/yolo:latest}
     container_name: ironsight-yolo
     restart: unless-stopped
     environment:
       MODEL: ${YOLO_MODEL:-yolov8n}
       PORT: "8501"
-    # Uncomment to give YOLO a GPU. Requires the NVIDIA container runtime
-    # on the host (nvidia-docker / --gpus all).
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+      # Pin YOLO to GPU 0 (first 3070). Detection is latency-sensitive and
+      # fires on every alarm — gets its own card so Qwen's batch workload
+      # can't starve it. NVIDIA_VISIBLE_DEVICES is read by the NVIDIA
+      # runtime inside the container; nvidia-smi will only see this GPU.
+      NVIDIA_VISIBLE_DEVICES: "${YOLO_GPU_INDEX:-0}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    # CDI device request — works on Podman (native) and Docker 25+ with
+    # nvidia-ctk CDI mode enabled. Superseded the old `deploy.resources`
+    # Swarm syntax, which Podman ignores outright.
+    #
+    # On first setup run:
+    #   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+    #   (or under WSL: nvidia-ctk cdi generate --output=~/.config/cdi/nvidia.yaml)
+    # which populates /etc/cdi/nvidia.yaml listing each GPU as
+    # nvidia.com/gpu=0, nvidia.com/gpu=1, … nvidia.com/gpu=all.
+    devices:
+      - nvidia.com/gpu=${YOLO_GPU_INDEX:-0}
     networks: [backplane]
 
   # Vision-language model for scene reasoning / semantic search.
   qwen:
-    image: ${QWEN_IMAGE:-ironsight/qwen:latest}
+    image: ${QWEN_IMAGE:-localhost/ironsight/qwen:latest}
     container_name: ironsight-qwen
     restart: unless-stopped
     environment:
       MODEL: ${QWEN_MODEL:-Qwen2-VL-2B-Instruct}
       PORT: "8502"
-    # Qwen *needs* a GPU for usable latency. Uncomment the deploy block
-    # once nvidia-docker is configured on the host.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+      # Pin Qwen to GPU 1 (second 3070). The VLM indexer is the heaviest
+      # workload in the stack — segregating it from YOLO keeps detection
+      # latency predictable under indexer load. Swap GPU indices if your
+      # physical card ordering differs.
+      NVIDIA_VISIBLE_DEVICES: "${QWEN_GPU_INDEX:-1}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    # See yolo service above for CDI setup notes.
+    devices:
+      - nvidia.com/gpu=${QWEN_GPU_INDEX:-1}
     networks: [backplane]
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ironsight/api:${IRONSIGHT_VERSION:-latest}
+    image: localhost/ironsight/api:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-api
     restart: unless-stopped
     depends_on:
@@ -181,7 +194,7 @@ services:
   # workers on the same segments is wasted GPU time, and we don't yet
   # have an atomic claim for indexer jobs like the export worker has.
   worker:
-    image: ironsight/api:${IRONSIGHT_VERSION:-latest}
+    image: localhost/ironsight/api:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-worker
     restart: unless-stopped
     depends_on:
@@ -214,7 +227,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: ironsight/frontend:${IRONSIGHT_VERSION:-latest}
+    image: localhost/ironsight/frontend:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-frontend
     restart: unless-stopped
     depends_on:

@@ -1,6 +1,6 @@
 # ── Stage 1: deps ──────────────────────────────────────────────
 # Using the alpine image keeps layers small; we don't need glibc.
-FROM node:20-alpine AS deps
+FROM docker.io/library/node:20-alpine AS deps
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
@@ -8,7 +8,7 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # ── Stage 2: build ─────────────────────────────────────────────
-FROM node:20-alpine AS build
+FROM docker.io/library/node:20-alpine AS build
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -22,7 +22,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ── Stage 3: runtime ───────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM docker.io/library/node:20-alpine AS runtime
 
 RUN addgroup -S -g 10002 ironsight && \
     adduser  -S -u 10002 -G ironsight ironsight

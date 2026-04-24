@@ -1,6 +1,9 @@
 # ── Stage 1: build ─────────────────────────────────────────────
 # Pinned Go version matches go.mod; pin bookworm so apt layers stay cached.
-FROM golang:1.25-bookworm AS build
+# Fully-qualified registry prefix for Podman compatibility — Docker ignores
+# the docker.io/ prefix, Podman needs it when its unqualified-search-registries
+# isn't configured.
+FROM docker.io/library/golang:1.25-bookworm AS build
 
 WORKDIR /src
 
@@ -31,7 +34,7 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server && \
 # ffmpeg for recording/HLS and needs a real glibc + tools layer. If you
 # later split recording into its own container you can swap this image
 # for distroless/static and slim the API down further.
-FROM debian:bookworm-slim
+FROM docker.io/library/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
