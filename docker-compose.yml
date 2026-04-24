@@ -96,23 +96,24 @@ services:
     environment:
       MODEL: ${YOLO_MODEL:-yolov8n}
       PORT: "8501"
-      # Pin YOLO to GPU 0 (first 3070). Detection is latency-sensitive and
+      # Pin YOLO to a specific GPU. Detection is latency-sensitive and
       # fires on every alarm — gets its own card so Qwen's batch workload
-      # can't starve it. NVIDIA_VISIBLE_DEVICES is read by the NVIDIA
-      # runtime inside the container; nvidia-smi will only see this GPU.
+      # can't starve it.
+      #
+      # Two-layer model: `devices` grants the container access to all
+      # GPUs via the nvidia.com/gpu=all CDI spec; NVIDIA_VISIBLE_DEVICES
+      # is what the NVIDIA runtime inside the container reads to decide
+      # which GPUs nvidia-smi actually sees.
+      #
+      # Per-GPU CDI names (nvidia.com/gpu=0, =1) work on native Linux
+      # but NOT on WSL — WSL virtualizes all GPUs through /dev/dxg, so
+      # CDI only exposes `all`. The env var is how you narrow it down.
       NVIDIA_VISIBLE_DEVICES: "${YOLO_GPU_INDEX:-0}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
-    # CDI device request — works on Podman (native) and Docker 25+ with
-    # nvidia-ctk CDI mode enabled. Superseded the old `deploy.resources`
-    # Swarm syntax, which Podman ignores outright.
-    #
-    # On first setup run:
-    #   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-    #   (or under WSL: nvidia-ctk cdi generate --output=~/.config/cdi/nvidia.yaml)
-    # which populates /etc/cdi/nvidia.yaml listing each GPU as
-    # nvidia.com/gpu=0, nvidia.com/gpu=1, … nvidia.com/gpu=all.
+    # CDI device access. On first setup run (once, as root):
+    #   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
     devices:
-      - nvidia.com/gpu=${YOLO_GPU_INDEX:-0}
+      - nvidia.com/gpu=all
     networks: [backplane]
 
   # Vision-language model for scene reasoning / semantic search.
@@ -129,9 +130,9 @@ services:
       # physical card ordering differs.
       NVIDIA_VISIBLE_DEVICES: "${QWEN_GPU_INDEX:-1}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
-    # See yolo service above for CDI setup notes.
+    # See yolo service above for CDI + WSL notes.
     devices:
-      - nvidia.com/gpu=${QWEN_GPU_INDEX:-1}
+      - nvidia.com/gpu=all
     networks: [backplane]
 
   api:
