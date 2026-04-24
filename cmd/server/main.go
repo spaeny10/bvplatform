@@ -143,6 +143,12 @@ func main() {
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT '';
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS organization_id TEXT;
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_site_ids JSONB NOT NULL DEFAULT '[]';
+		-- UL 827B: account lockout state. failed_login_attempts tracks
+		-- consecutive failures; resets to 0 on any successful login.
+		-- locked_until holds a future timestamp after the threshold is
+		-- breached; the login handler rejects auth while NOW() < locked_until.
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
 		ALTER TABLE operators ADD COLUMN IF NOT EXISTS user_id UUID;
 		UPDATE users SET role='soc_operator' WHERE role='operator';
 

@@ -35,8 +35,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		MaxAge:           300,
 	}))
 
-	// Public auth routes (no JWT required)
-	r.Post("/auth/login", HandleLogin(db, cfg))
+	// Public auth routes (no JWT required). Rate-limited to 10 attempts
+	// per minute per client IP — UL 827B expects a brute-force throttle
+	// on authentication endpoints. The limiter is a separate layer of
+	// defense from account lockout: the former caps *attempts*, the
+	// latter caps *consequences*. Both are needed.
+	r.With(RateLimitLogin(10)).Post("/auth/login", HandleLogin(db, cfg))
 
 	// Public health check — liveness probe for Docker HEALTHCHECK and any
 	// external uptime monitor. Deliberately unauthenticated and returns a

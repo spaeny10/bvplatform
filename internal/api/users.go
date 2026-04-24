@@ -41,6 +41,10 @@ func HandleCreateUser(db *database.DB) http.HandlerFunc {
 			http.Error(w, "username and password required", http.StatusBadRequest)
 			return
 		}
+		if err := auth.ValidatePassword(req.Password); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if req.Role == "" {
 			req.Role = "viewer"
 		}
@@ -130,6 +134,10 @@ func HandleUpdateUserPassword(db *database.DB) http.HandlerFunc {
 		var req changePasswordRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
 			http.Error(w, "password required", http.StatusBadRequest)
+			return
+		}
+		if err := auth.ValidatePassword(req.Password); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 

@@ -952,12 +952,98 @@ func (db *DB) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-// UpdateUserPassword updates only the bcrypt hash for a given user
+// UpdateUserPassword updates only the bcrypt hash for a given user.
+// Resets the failed-login counter and any lockout as a side effect —
+// a successful password change is a form of recovery and should clear
+// the lockout the same way a successful login does.
 func (db *DB) UpdateUserPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	_, err := db.Pool.Exec(ctx,
-		`UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3`,
+		`UPDATE users
+		 SET password_hash         = $1,
+		     failed_login_attempts = 0,
+		     locked_until          = NULL,
+		     updated_at            = $2
+		 WHERE id = $3`,
 		hash, time.Now(), id)
 	return err
+}
+
+// ── Lockout state (UL 827B) ─────────────────────────────────────
+//
+// These four helpers encapsulate the failed-login counter so the login
+// handler doesn't have to scatter UPDATE statements. The threshold and
+// lockout duration are hardcoded here intentionally — any deployment
+// that needs to tune them should change the constants in one place
+// (this file) rather than in the handler.
+
+// LockoutThreshold is the consecutive-failure count that triggers a
+// lock. 5 is the most commonly cited UL 827B-era number (NIST 800-63B
+// doesn't prescribe a specific value but recommends the "small number"
+// range). Raise cautiously: each increment is a measurable weakening
+// of the brute-force protection.
+const LockoutThreshold = 5
+
+// LockoutDuration is how long the account stays locked once the
+// threshold trips. 15 minutes is long enough to make automated probing
+// economically painful, short enough that a legitimate user typo spree
+// doesn't require a help-desk call.
+const LockoutDuration = 15 * time.Minute
+
+// RegisterFailedLogin increments the failed-attempt counter for a user
+// and, if the threshold is crossed, stamps locked_until. Returns the
+// new attempt count (for logging). A user row that doesn't exist is a
+// no-op — we never want the failed-login path to leak "does this user
+// exist" by behaving differently.
+func (db *DB) RegisterFailedLogin(ctx context.Context, username string) (attempts int, locked bool, err error) {
+	var until *time.Time
+	err = db.Pool.QueryRow(ctx, `
+		UPDATE users
+		SET failed_login_attempts = failed_login_attempts + 1,
+		    locked_until = CASE
+		        WHEN failed_login_attempts + 1 >= $2 THEN $3
+		        ELSE locked_until
+		    END
+		WHERE username = $1 OR LOWER(email) = LOWER($1)
+		RETURNING failed_login_attempts, locked_until`,
+		username, LockoutThreshold, time.Now().Add(LockoutDuration),
+	).Scan(&attempts, &until)
+	if err != nil {
+		return 0, false, nil // unknown user: silently succeed
+	}
+	return attempts, until != nil && until.After(time.Now()), nil
+}
+
+// ClearFailedLogins zeroes the counter and clears any lockout. Called
+// on every successful authentication — the presence of a valid password
+// is proof that any prior failures weren't an attack on this account.
+func (db *DB) ClearFailedLogins(ctx context.Context, userID uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE users
+		SET failed_login_attempts = 0,
+		    locked_until          = NULL
+		WHERE id = $1 AND (failed_login_attempts <> 0 OR locked_until IS NOT NULL)`,
+		userID,
+	)
+	return err
+}
+
+// IsUserLocked returns true if the user has an active lockout. Cheap
+// read-only check the login handler runs before bcrypt-comparing the
+// password — we want to reject locked accounts even when the caller
+// supplies the correct credentials, so a successful password guess
+// during a lockout window still fails.
+func (db *DB) IsUserLocked(ctx context.Context, userID uuid.UUID) (bool, *time.Time, error) {
+	var until *time.Time
+	err := db.Pool.QueryRow(ctx,
+		`SELECT locked_until FROM users WHERE id = $1`, userID,
+	).Scan(&until)
+	if err != nil {
+		return false, nil, err
+	}
+	if until == nil || !until.After(time.Now()) {
+		return false, nil, nil
+	}
+	return true, until, nil
 }
 
 // UpdateUserRole sets a new role for the given user
