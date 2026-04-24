@@ -243,6 +243,14 @@ services:
     # Same rationale as api above — worker writes to the shared /data
     # volume (exports + thumbnails) and needs to own the files it creates.
     user: "0:0"
+    # Disable the Dockerfile HEALTHCHECK: it targets the server binary's
+    # HTTP port (8080), but this service runs the worker entrypoint which
+    # has no HTTP surface. Without this override the worker reports
+    # "unhealthy" forever and compose lights up warnings for a healthy
+    # container. Liveness for the worker is handled by its restart policy
+    # and log output.
+    healthcheck:
+      disable: true
     depends_on:
       db:
         condition: service_healthy
@@ -253,6 +261,7 @@ services:
       # Share the DB/storage/AI plumbing with api. The worker binary
       # ignores RUN_WORKERS — it unconditionally runs its jobs.
       DATABASE_URL: postgres://${POSTGRES_USER:-onvif}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-onvif_tool}?sslmode=disable
+      AI_YOLO_URL: http://yolo:8501
       AI_QWEN_URL: http://qwen:8502
       AI_ENABLED: ${AI_ENABLED:-true}
       SEGMENT_DURATION: ${SEGMENT_DURATION:-60}
