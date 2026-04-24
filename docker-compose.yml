@@ -90,11 +90,16 @@ services:
   # `localhost/` prefix tells Podman this is a locally-built image, don't
   # try to pull from a registry. Docker ignores the prefix.
   yolo:
+    build:
+      context: ./services/yolo
+      dockerfile: Dockerfile
     image: ${YOLO_IMAGE:-localhost/ironsight/yolo:latest}
     container_name: ironsight-yolo
     restart: unless-stopped
     environment:
-      MODEL: ${YOLO_MODEL:-yolov8n}
+      # server.py reads YOLO_MODEL (not MODEL). Default matches the
+      # weights bundled into the image by services/yolo/Dockerfile.
+      YOLO_MODEL: ${YOLO_MODEL:-yolo11n.pt}
       PORT: "8501"
       # Pin YOLO to a specific GPU. Detection is latency-sensitive and
       # fires on every alarm — gets its own card so Qwen's batch workload
@@ -121,11 +126,16 @@ services:
 
   # Vision-language model for scene reasoning / semantic search.
   qwen:
+    build:
+      context: ./services/qwen
+      dockerfile: Dockerfile
     image: ${QWEN_IMAGE:-localhost/ironsight/qwen:latest}
     container_name: ironsight-qwen
     restart: unless-stopped
     environment:
-      MODEL: ${QWEN_MODEL:-Qwen2-VL-2B-Instruct}
+      # server.py reads QWEN_MODEL. Default is a ~3B VLM that fits
+      # comfortably on a single 8GB card at fp16.
+      QWEN_MODEL: ${QWEN_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
       PORT: "8502"
       # Pin Qwen to GPU 1 (second 3070). The VLM indexer is the heaviest
       # workload in the stack — segregating it from YOLO keeps detection
@@ -137,6 +147,11 @@ services:
     # See yolo service above for CDI + WSL notes.
     devices:
       - nvidia.com/gpu=all
+    volumes:
+      # HuggingFace model cache — first run downloads ~5GB of Qwen
+      # weights. Persisting this volume means container restarts are
+      # ~30s instead of ~5 minutes.
+      - hf-cache:/home/ironsight/.cache/huggingface
     networks: [backplane]
 
   api:
@@ -255,6 +270,9 @@ volumes:
     # and/or a split-out recorder container can share storage.
   mediamtx-config:
     # Runtime YAML written by api, read by mediamtx.
+  hf-cache:
+    # Qwen VLM weights downloaded from HuggingFace on first run.
+    # Safe to delete if you want to force a re-download.
 
 networks:
   backplane:

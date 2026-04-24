@@ -1,0 +1,12 @@
+# Keep the build context lean — anything the runtime doesn't need.
+__pycache__/
+*.pyc
+*.log
+*.out.log
+start.bat
+Dockerfile
+.dockerignore
+
+# Model weights ARE copied into the image. If weights are huge and
+# you'd rather bind-mount them at runtime, add `*.pt` here and mount
+# /app/yolo11n.pt from a host path in compose.
