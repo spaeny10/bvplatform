@@ -38,6 +38,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// Public auth routes (no JWT required)
 	r.Post("/auth/login", HandleLogin(db, cfg))
 
+	// Public health check — liveness probe for Docker HEALTHCHECK and any
+	// external uptime monitor. Deliberately unauthenticated and returns a
+	// fixed payload; the authenticated /api/system/health endpoint is the
+	// richer per-subsystem status dashboard.
+	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]string{"status": "ok"})
+	})
+
 	// Authenticated auth routes
 	r.With(RequireAuth(cfg)).Get("/auth/me", HandleGetMe(db))
 
@@ -142,10 +150,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Post("/exports", HandleCreateExport(db))
 		r.Get("/exports", HandleListExports(db))
 
-		// Health check
-		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, map[string]string{"status": "ok"})
-		})
+		// (The liveness /api/health is registered above as a public route.)
 
 		// Settings
 		r.Get("/settings", HandleGetSettings(db))

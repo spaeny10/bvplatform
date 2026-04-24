@@ -61,6 +61,13 @@ COPY --from=build --chown=ironsight:ironsight /out/worker /app/worker
 RUN mkdir -p /data/recordings /data/hls /data/exports /data/thumbnails /data/mediamtx && \
     chown -R ironsight:ironsight /data
 
+# /app/bin is where the Go server writes mediamtx_runtime.yml. In compose
+# this path is a named volume (mediamtx-config) shared with the mediamtx
+# container. Named volumes inherit ownership from the mount point in the
+# image on first use — so we create the dir here, owned by ironsight, to
+# avoid "permission denied" when the non-root api process writes the file.
+RUN mkdir -p /app/bin && chown -R ironsight:ironsight /app/bin
+
 USER ironsight
 
 # Tell the Go code MediaMTX is *not* embedded — another container hosts it.

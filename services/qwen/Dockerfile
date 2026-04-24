@@ -8,6 +8,13 @@
 # downloads model weights from HuggingFace on first run (no bundled
 # weights); mount /root/.cache/huggingface from a named volume so the
 # ~5GB download survives container restarts.
+# Pairing notes: this base ships torch 2.3.0 + CUDA 12.1. transformers
+# >= 4.55 started requiring torch >= 2.4 (it silently disables PyTorch
+# otherwise and falls back to config/tokenizer-only mode — your app
+# won't error, it'll just run with mock responses, which is a miserable
+# failure mode to diagnose). requirements.txt pins transformers < 4.55
+# so the two stay compatible. When bumping the base to pytorch 2.5.x or
+# newer you can lift that ceiling.
 FROM docker.io/pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
 # ffmpeg + decord deps — Qwen video mode decodes segment clips. We

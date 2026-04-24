@@ -1,0 +1,22 @@
+# Anything the multi-stage build will regenerate or doesn't need.
+node_modules/
+.next/
+out/
+.turbo/
+.vercel/
+
+# Logs, env overrides, editor cruft.
+*.log
+.env.local
+.env.*.local
+.vscode/
+.idea/
+.DS_Store
+
+# The Dockerfile itself doesn't need to be COPY'd into the image.
+Dockerfile
+.dockerignore
+
+# Build cache files — TypeScript incremental, etc.
+tsconfig.tsbuildinfo
+*.tsbuildinfo

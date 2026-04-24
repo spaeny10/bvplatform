@@ -35,7 +35,15 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Postgres runs files in this dir alphabetically on first boot.
+      # init.sql creates the ONVIF base schema; ironsight_platform.sql
+      # adds SOC-platform tables (users, sites, operators, incidents,
+      # security_events) that the in-code ALTER TABLE migrations in
+      # cmd/server/main.go depend on. Both are required — without the
+      # second file the migration batch hits "relation operators does
+      # not exist" and silently rolls back every subsequent statement.
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./ironsight_platform.sql:/docker-entrypoint-initdb.d/02-platform.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s
@@ -151,7 +159,7 @@ services:
       # HuggingFace model cache — first run downloads ~5GB of Qwen
       # weights. Persisting this volume means container restarts are
       # ~30s instead of ~5 minutes.
-      - hf-cache:/home/ironsight/.cache/huggingface
+      - hf-cache:/home/ironsight/.cache/huggingface:U
     networks: [backplane]
 
   api:
@@ -161,6 +169,14 @@ services:
     image: localhost/ironsight/api:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-api
     restart: unless-stopped
+    # Run as root *inside* the container so the Go process can write to
+    # named volumes regardless of their ownership. Under rootless podman
+    # (the target deployment mode), container-root still maps to an
+    # unprivileged user on the host via user-namespace remapping, so this
+    # does not confer any host privilege. On native Docker this relaxes
+    # one layer of defense-in-depth; if you need strict non-root there,
+    # pre-chown the named volumes with a one-shot init container.
+    user: "0:0"
     depends_on:
       db:
         condition: service_healthy
@@ -202,8 +218,15 @@ services:
       # deployment where the api also owns the background jobs.
       RUN_WORKERS: ${RUN_WORKERS_API:-false}
     volumes:
-      - recordings:/data
-      - mediamtx-config:/app/bin    # Go writes mediamtx_runtime.yml here
+      # The :U flag is a podman extension: on mount, chown the volume
+      # contents to the container user (uid 10001). Without it, rootless
+      # podman creates named volumes owned by root in the user namespace,
+      # and the non-root api process can't write mediamtx_runtime.yml or
+      # its recordings. Docker ignores the suffix (it's a parse error on
+      # some Docker versions — if you hit that, drop ":U" and chown the
+      # volume manually once after first boot).
+      - recordings:/data:U
+      - mediamtx-config:/app/bin:U    # Go writes mediamtx_runtime.yml here
     ports:
       - "${API_PORT:-8080}:8080"
     networks: [backplane]
@@ -217,6 +240,9 @@ services:
     image: localhost/ironsight/api:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-worker
     restart: unless-stopped
+    # Same rationale as api above — worker writes to the shared /data
+    # volume (exports + thumbnails) and needs to own the files it creates.
+    user: "0:0"
     depends_on:
       db:
         condition: service_healthy
@@ -240,7 +266,7 @@ services:
       # production A40s can sustain 4-8.
       INDEXER_CONCURRENCY: ${INDEXER_CONCURRENCY:-1}
     volumes:
-      - recordings:/data
+      - recordings:/data:U
     networks: [backplane]
 
   frontend:

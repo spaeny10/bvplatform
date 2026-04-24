@@ -169,8 +169,13 @@ func main() {
 		-- video segment file that contains the event moment so the UI can deep-
 		-- link an event row straight to the right clip. Nullable because events
 		-- can arrive while recording is down / not configured.
-		ALTER TABLE events ADD COLUMN IF NOT EXISTS segment_id BIGINT
-			REFERENCES segments(id) ON DELETE SET NULL;
+		-- No FK to segments(id) here: both events and segments are TimescaleDB
+		-- hypertables, and Timescale rejects FKs between hypertables. Referential
+		-- integrity isn't load-bearing for this column — the backfill below
+		-- resolves it via camera_id + time range, and application code nulls out
+		-- stale references on segment deletion. A FK constraint would break the
+		-- migration outright on any fresh (non-grandfathered) database.
+		ALTER TABLE events ADD COLUMN IF NOT EXISTS segment_id BIGINT;
 		CREATE INDEX IF NOT EXISTS idx_events_segment ON events(segment_id);
 
 		-- Backfill: one-time population of segment_id for events that existed
@@ -191,8 +196,12 @@ func main() {
 		-- background indexer (internal/indexer) during idle hours; the segment
 		-- is gated by YOLO first so empty scenes don't burn VLM time. Enables
 		-- Postgres full-text and tag search over every minute of footage.
+		-- No FK to segments(id): segments is a Timescale hypertable, and
+		-- hypertables can't be the target of a FK constraint (the primary key
+		-- isn't enforced across chunks). Retention worker is responsible for
+		-- deleting descriptions when segments expire — see internal/retention.
 		CREATE TABLE IF NOT EXISTS segment_descriptions (
-			segment_id       BIGINT       PRIMARY KEY REFERENCES segments(id) ON DELETE CASCADE,
+			segment_id       BIGINT       PRIMARY KEY,
 			camera_id        UUID         NOT NULL,
 			description      TEXT         NOT NULL DEFAULT '',
 			tags             TEXT[]       NOT NULL DEFAULT '{}',

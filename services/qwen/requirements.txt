@@ -1,8 +1,23 @@
-transformers>=4.46.0
+# torch is provided by the pytorch-runtime base image (2.3.0 + CUDA 12.1).
+# Do NOT list torch here — pip would see the >= constraint and download
+# hundreds of megabytes of replacement NVIDIA wheels from PyPI, bloating
+# the image and breaking the CUDA 12.1 pinning the base image provides.
+#
+# Upper bound on transformers: >= 4.55 silently disables PyTorch when it
+# sees torch < 2.4 (the threshold they bumped in that release) and falls
+# back to a tokenizers-only mode that can't actually run inference — our
+# service then runs in "degraded" mock-response mode instead of failing
+# loudly, which is a very confusing symptom. 4.54.x keeps the torch 2.1+
+# compatibility band and is new enough to load Qwen2.5-VL-3B. Lift the
+# ceiling once the base image is on pytorch 2.5.x or newer.
+transformers>=4.49,<4.55
 accelerate>=1.1.0
+# server.py loads the Qwen VLM with BitsAndBytesConfig int4 quantization so
+# the 3B weights fit in ~2GB VRAM (vs ~7GB fp16). Without this package the
+# service silently falls back to DEGRADED mode and returns mock responses.
+bitsandbytes>=0.43.0
 fastapi>=0.115.0
 uvicorn>=0.32.0
 python-multipart>=0.0.12
 Pillow>=10.0.0
-torch>=2.4.0
 qwen-vl-utils>=0.0.8
