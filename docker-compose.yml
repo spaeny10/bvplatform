@@ -282,6 +282,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        # Baked into Next.js routes-manifest at build time — see
+        # frontend/next.config.js + frontend/Dockerfile for details.
+        # Must match the compose service name of the api container.
+        API_INTERNAL_URL: http://api:8080
     image: localhost/ironsight/frontend:${IRONSIGHT_VERSION:-latest}
     container_name: ironsight-frontend
     restart: unless-stopped
@@ -291,6 +296,11 @@ services:
       # The browser talks to the API via whatever public URL your reverse
       # proxy exposes. In single-host dev we just proxy same-origin.
       NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/api}
+      # Server-side rewrite target for Next.js. The browser calls paths
+      # like /api/... or /auth/... on the frontend origin; next.config.js
+      # rewrites them to this URL internally. Use the compose service
+      # name so the request stays on the backplane network.
+      API_INTERNAL_URL: http://api:8080
       NODE_ENV: production
     ports:
       - "${FRONTEND_PORT:-3000}:3000"

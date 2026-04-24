@@ -14,6 +14,16 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Next.js bakes static rewrites into .next/routes-manifest.json at build
+# time. next.config.js reads process.env.API_INTERNAL_URL to decide where
+# /api, /auth, /ws, etc. get proxied. If the ARG isn't set, the fallback
+# (localhost:8080) gets compiled in, and the frontend container then
+# tries to reach the api on ITS OWN loopback — which always fails.
+# Compose passes this as a build arg (see docker-compose.yml frontend
+# build.args); for native dev builds it stays empty and localhost wins.
+ARG API_INTERNAL_URL=""
+ENV API_INTERNAL_URL=${API_INTERNAL_URL}
+
 # Production build. next.config.js 'output: standalone' is strongly
 # recommended for container deploys — it bundles everything needed into
 # .next/standalone so we don't ship node_modules at runtime. If that
