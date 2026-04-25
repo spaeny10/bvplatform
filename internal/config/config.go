@@ -42,6 +42,16 @@ type Config struct {
 	// rather than the dev-time localhost defaults.
 	AllowedOrigins []string
 
+	// EvidenceSigningKey is a hex-encoded secret used to HMAC-sign
+	// evidence export bundles so a downstream consumer (insurer, court,
+	// PSAP) can detect tampering. The signed manifest sits alongside the
+	// ZIP contents as SIGNATURE.txt; verification requires the same key.
+	// A missing or weak key disables signing — exports still succeed but
+	// without a SIGNATURE.txt file. For UL 827B / TMA-AVS-01 readiness
+	// this should be at least 32 bytes (64 hex chars). Generate with:
+	//   openssl rand -hex 32
+	EvidenceSigningKey string
+
 	// Branding — user-visible product name. Used in generated evidence
 	// bundles, log headers, and any other text the backend produces that
 	// reaches a customer. The frontend gets the same value from
@@ -96,6 +106,7 @@ func Load() *Config {
 		JWTSecret:           getEnv("JWT_SECRET", "onvif-tool-change-me-in-production"),
 		DefaultAdminPass:    getEnv("ADMIN_PASSWORD", "admin"),
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
+		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
 		ProductName:         getEnv("PRODUCT_NAME", "Ironsight"),
 
 		// MediaMTX: embedded spawn is the historical behaviour, still the

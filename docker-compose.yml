@@ -207,6 +207,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (openssl rand -hex 32)}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
+      EVIDENCE_SIGNING_KEY: ${EVIDENCE_SIGNING_KEY:-}
       # Branding — product name used in backend-generated artifacts.
       PRODUCT_NAME: ${PRODUCT_NAME:-Ironsight}
       # Redis pub/sub bridge for multi-replica WS fanout. Leave unset for

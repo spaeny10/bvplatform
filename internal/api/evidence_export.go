@@ -3,8 +3,11 @@ package api
 import (
 	"archive/zip"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 
 	"onvif-tool/internal/config"
 	"onvif-tool/internal/database"
+	"onvif-tool/internal/evidence"
 	"onvif-tool/internal/recording"
 )
 
@@ -40,6 +44,12 @@ type EvidenceManifest struct {
 	// Optional AI enrichment — present when this event was promoted to an
 	// alarm and the Qwen pipeline produced a description.
 	AI *EvidenceAISection `json:"ai,omitempty"`
+
+	// Signature block populated by the SignedZipWriter at export time.
+	// Empty when the deployment hasn't configured EVIDENCE_SIGNING_KEY —
+	// in that case SIGNATURE.txt is omitted from the bundle and the
+	// audit trail records the export as "unsigned."
+	Signature *evidence.SignatureBlock `json:"signature,omitempty"`
 }
 
 type EvidenceAISection struct {
@@ -153,6 +163,13 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 		zw := zip.NewWriter(w)
 		defer zw.Close()
 
+		// SignedZipWriter wraps zw and tracks per-file SHA-256 hashes.
+		// All evidence binaries (clip, snapshot) go through AddBinary so
+		// they end up in the manifest's content_hashes; README.txt goes
+		// through AddTextNoSign because it's regenerable cosmetic text;
+		// event.json + SIGNATURE.txt are emitted by Sign() at the end.
+		sw := evidence.NewSignedZipWriter(zw)
+
 		// 1) clip.mp4 — trimmed video around the event. If we have a segment,
 		//    use our ffmpeg helper to cut the exact window; otherwise skip
 		//    and note the omission in the README.
@@ -166,8 +183,7 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 			tmp := filepath.Join(os.TempDir(), fmt.Sprintf("evidence_clip_%d_%d.mp4", eventID, time.Now().UnixNano()))
 			if _, eerr := recording.ExtractClipFromSegment(cfg.FFmpegPath, *segPath, tmp, clipStart, preSec+postSec); eerr == nil {
 				if data, rerr := os.ReadFile(tmp); rerr == nil && len(data) > 1000 {
-					if f, werr := zw.Create("clip.mp4"); werr == nil {
-						_, _ = f.Write(data)
+					if werr := sw.AddBinary("clip.mp4", data); werr == nil {
 						clipIncluded = true
 					}
 				}
@@ -204,8 +220,7 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 				}
 				if bestPath != "" {
 					if data, rerr := os.ReadFile(bestPath); rerr == nil {
-						if f, werr := zw.Create("snapshot.jpg"); werr == nil {
-							_, _ = f.Write(data)
+						if werr := sw.AddBinary("snapshot.jpg", data); werr == nil {
 							snapshotIncluded = true
 						}
 					}
@@ -224,24 +239,35 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 					thumb64 = thumb64[i+1:]
 				}
 				if raw, bErr := base64.StdEncoding.DecodeString(thumb64); bErr == nil && len(raw) > 0 {
-					if f, werr := zw.Create("snapshot.jpg"); werr == nil {
-						_, _ = f.Write(raw)
+					if werr := sw.AddBinary("snapshot.jpg", raw); werr == nil {
 						snapshotIncluded = true
 					}
 				}
 			}
 		}
 
-		// 3) event.json — machine-readable manifest.
-		if mf, werr := zw.Create("event.json"); werr == nil {
-			enc := json.NewEncoder(mf)
-			enc.SetIndent("", "  ")
-			_ = enc.Encode(manifest)
-		}
+		// 3) README.txt — human-readable summary, intentionally NOT signed
+		//    because it's regenerable from the manifest. We render it to
+		//    a string and pass through AddTextNoSign.
+		var readme strings.Builder
+		writeEvidenceReadme(&readme, manifest, clipIncluded, snapshotIncluded, cfg.ProductName)
+		_ = sw.AddTextNoSign("README.txt", readme.String())
 
-		// 4) README.txt — human-readable summary for the recipient.
-		if rf, werr := zw.Create("README.txt"); werr == nil {
-			writeEvidenceReadme(rf, manifest, clipIncluded, snapshotIncluded, cfg.ProductName)
+		// 4) Sign + emit event.json + SIGNATURE.txt. The Sign call writes
+		//    the manifest and (when a key is configured) a HMAC-SHA256
+		//    signature alongside it. The closure lets us stash the
+		//    SignatureBlock back into the manifest before serialization
+		//    so verifiers see content_hashes inside event.json itself.
+		var signingKey []byte
+		if cfg.EvidenceSigningKey != "" {
+			if k, err := hex.DecodeString(cfg.EvidenceSigningKey); err == nil && len(k) >= 16 {
+				signingKey = k
+			} else {
+				log.Printf("[EVIDENCE] EVIDENCE_SIGNING_KEY invalid (need >=16 bytes hex); export will be unsigned")
+			}
+		}
+		if err := sw.Sign(&manifest, func(b *evidence.SignatureBlock) { manifest.Signature = b }, signingKey); err != nil {
+			log.Printf("[EVIDENCE] sign failed for event %d: %v", eventID, err)
 		}
 
 		// Audit trail: evidence export is a high-value action; log it.
@@ -260,7 +286,11 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 // `productName` comes from cfg.ProductName (env var PRODUCT_NAME, default
 // "Ironsight"). Rebranding the backend is a one-env-var change — the
 // string flows through to the header + footer of every exported bundle.
-func writeEvidenceReadme(w interface{ Write([]byte) (int, error) }, m EvidenceManifest, clip, snap bool, productName string) {
+// writeEvidenceReadme accepts anything that can absorb bytes (zip
+// file writer, strings.Builder, bytes.Buffer). Switched from a custom
+// inline interface to io.Writer so the SignedZipWriter path can pass
+// a Builder for the textual content without per-write copies.
+func writeEvidenceReadme(w io.Writer, m EvidenceManifest, clip, snap bool, productName string) {
 	if productName == "" {
 		productName = "Ironsight"
 	}

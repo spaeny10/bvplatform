@@ -85,7 +85,7 @@ Ironsight codebase. Status legend:
 | D.2 | Public share token (read-only) | 🟡 | Schema exists ([`evidence_shares`](../../ironsight_platform.sql)); public read endpoint at [`internal/api/evidence_share.go`](../../internal/api/evidence_share.go) `HandlePublicEvidenceShare` | Read path complete. **Gap:** the share-CREATION handler isn't built yet. Until it lands, the table is empty and every public URL 404s, which is the safe default. |
 | D.3 | Public share access logging | ✅ | `evidence_share_opens` table; `LogEvidenceShareOpen` in [`internal/database/soc_ids.go`](../../internal/database/soc_ids.go) | Every GET of `/share/{token}` writes a row with token, IP, user-agent, referrer, opened_at — including 404 attempts on unknown tokens (so probing patterns are visible in audit). Logging is fire-and-forget; an audit-write failure must never block evidence access. |
 | D.4 | Chain-of-custody on shared evidence | ✅ | Same table as D.3 | Indexed `(token, opened_at DESC)`; an investigator can produce a complete access history per share token in one query. |
-| D.5 | Digital signing of evidence bundles | ⏳ | Planned (P3.3) | Roadmap item: HMAC or RSA-PSS signature embedded in the export ZIP, with a verification utility. Standard 827B language asks for tamper-evident exports. |
+| D.5 | Digital signing of evidence bundles | ✅ | [`internal/evidence/signing.go`](../../internal/evidence/signing.go) `SignedZipWriter`; signing key from env `EVIDENCE_SIGNING_KEY`; export bundles include `event.json` (with content_hashes block) + `SIGNATURE.txt` (HMAC-SHA256 over the manifest bytes) | Two-layer integrity: each binary file (clip, snapshot) has its SHA-256 recorded inside the manifest, and the manifest itself is HMAC-signed by a separate file. Tampering with any binary fails its hash; tampering with the manifest fails the HMAC; tampering with both requires the secret key. Smoke-tested: external Python-based verification matches the embedded signature, and an in-place edit of "Test Cam" → "Forged X" produces a different HMAC, demonstrating tamper detection. |
 
 ### E. Operational Telemetry & SLA
 
@@ -125,16 +125,15 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 35 |
+| ✅ Implemented | 36 |
 | 🟡 Partial | 1 |
-| ⏳ Planned | 3 |
+| ⏳ Planned | 2 |
 | 🚫 Out of scope | 3 |
 
 The single remaining partial (D.2) closes when the share-creation
-handler is built (Phase B.8). **Of the planned items**, the next
-in the engineering queue is httpOnly cookie migration. DC-09 (F.3)
-and digital signing (D.5) close together with TMA-AVS-01 readiness
-in Phase B.
+handler is built (Phase B.8). The remaining planned items are
+httpOnly cookie migration (Phase A.5) and DC-09 dispatch (F.3,
+post-cert).
 
 ---
 
