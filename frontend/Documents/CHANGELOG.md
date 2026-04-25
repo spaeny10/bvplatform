@@ -21,6 +21,83 @@ phase**, and put the most recent phase at the top.
 
 ---
 
+## Phase F — Operational hardening: backup, DR, security overview · 2026-04-25
+
+The shift from "the product works" to "the product survives a bad
+day." Defensive engineering that any customer's procurement team will
+ask for and that lets the on-call engineer sleep.
+
+### `335fedd` — Automated backups + DR runbook + SecurityOverview
+**Date:** 2026-04-25
+**Files:** `scripts/backup-db.sh` (new), `scripts/restore-db.sh` (new), `scripts/verify-backup.sh` (new), `frontend/Documents/DisasterRecovery.md` (new), `frontend/Documents/SecurityOverview.md` (new) (5 files, +900)
+
+Three interlocking pieces of operational hardening shipped together
+because backups without verification are theatre, restore procedures
+without a runbook are folklore, and a security overview without
+backups behind it is marketing.
+
+**`scripts/backup-db.sh`** — nightly logical backup via
+`pg_dump --format=custom --compress=6` against the running
+`ironsight-db` container. Writes to `backups/daily/` with
+`YYYYMMDD-HHMMSS` filenames. Promotes Sunday's daily into
+`backups/weekly/` and the 1st-of-month daily into `backups/monthly/`
+via hardlink (or copy if the FS does not support it). Rotates each
+bucket to the configured retention (defaults: 7 / 4 / 12). All
+parameters override-able via env so the same script runs across
+deployments. Sanity-checks dump size after write — a sub-1KB dump is
+a failed dump and gets removed rather than rotating real backups out
+of the bucket. Exit codes distinguish "dump failed" from "rotation
+failed" so cron alerting can respond appropriately.
+
+**`scripts/restore-db.sh`** — destructive restore with two-factor
+confirmation. File existence + size sanity, container running check,
+interactive prompt that requires typing the database name to
+confirm (or `IRONSIGHT_RESTORE_CONFIRM=YES` for the verify
+script's automated use). Terminates idle backends, drops + recreates
+the database, runs `pg_restore --no-owner --no-privileges`, and
+emits a table-count sanity SELECT. Does not auto-restart the API and
+worker — that's the human's call after they've verified the restored
+state.
+
+**`scripts/verify-backup.sh`** — the part most teams skip. Spins up a
+throwaway TimescaleDB container, restores the latest (or named)
+backup into it, runs structural sanity queries (presence of `users`,
+`organizations`, `sites`, `cameras`, `audit_log`,
+`security_events`), and tears the sandbox down via trap. Designed to
+run weekly from cron the morning after the weekly-backup promotion.
+Tolerates non-fatal pg_restore notices (extension/owner warnings) but
+fails loud on actual `FATAL`/`could not` lines. Sandbox container is
+named with the PID and bound to a non-default port so multiple
+verifies can run concurrently without colliding.
+
+**`Documents/DisasterRecovery.md`** — the runbook the scripts
+implement. RPO 24h / RTO 4h targets explicit. Asset table covering
+DB, recordings, configuration, code, and images — with backup
+mechanism for each. §3 documents the cron schedule, off-site copy
+sample (S3 sync wrapper with SSE-S3 + Object Lock guidance), tighter-
+RPO options (WAL archiving, streaming replica), and warm-replica
+topology. §4 has three full restore procedures (in-place, new host,
+lost-`.env`) with the explicit caveat that lost evidence-HMAC keys
+invalidate prior signature verification. §5 is a decision tree
+mapping outage shape to procedure. §6 mandates a six-month DR drill
+with written report.
+
+**`Documents/SecurityOverview.md`** — the last pending procurement
+artifact from `USCompliance.md §4`. Customer-readable summary
+covering identity (auth, MFA, RBAC), data protection (TLS, at-rest
+encryption, append-only audit, HMAC evidence signing), reliability
+(backups + DR), third parties (the four-provider list), security
+operations (vuln management, change management, pentest cadence,
+vendor reviews, personnel security), and the full compliance posture
+roll-up — UL 827B, SOC 2, state privacy laws, biometric statutes,
+two-party-consent audio, GDPR-out-of-scope. Ends with the
+security@ironsight.ai disclosure address.
+
+Three shell scripts pass `bash -n`. The runbook references each
+script by exact path so the engineer-on-fire can copy-paste.
+
+---
+
 ## Phase E — Customer Experience: notifications, status, summaries · 2026-04-25
 
 The shift from "operationally compliant" to "actively delights the
