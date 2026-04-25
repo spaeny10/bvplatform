@@ -534,6 +534,22 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
 			ON revoked_tokens(expires_at);
 
+		-- UL 827B multi-factor authentication. TOTP only for the first
+		-- pass — WebAuthn / hardware keys can layer in later. We keep
+		-- the secret in plaintext at rest because the threat model here
+		-- is database-row exfiltration via a compromised app role, and a
+		-- column-level encryption that uses a key the same app can read
+		-- doesn't change that calculus. Production deployments that need
+		-- KMS-managed secrets (AWS KMS, HashiCorp Vault) can layer that
+		-- on without changing the schema.
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret  TEXT NOT NULL DEFAULT '';
+		-- One-time recovery codes. Each entry is a bcrypt hash of the
+		-- code so a leak of this column doesn't immediately bypass MFA.
+		-- The login flow checks each hash, marks the matching one used,
+		-- and leaves the rest in place for future recovery attempts.
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery_hashes JSONB NOT NULL DEFAULT '[]';
+
 		-- UL 827B password rotation. password_changed_at is the source of
 		-- truth for "is this password too old"; the login handler reads it
 		-- and decides whether to flag the response with a forced-change

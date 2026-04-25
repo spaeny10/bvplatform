@@ -43,7 +43,7 @@ Ironsight codebase. Status legend:
 | A.6 | Session expiry | ✅ | [`internal/auth/auth.go:46`](../../internal/auth/auth.go#L46) — JWT 24h with unique `jti`; [`frontend/src/hooks/useSessionManager.tsx`](../../frontend/src/hooks/useSessionManager.tsx) — 30-min idle, 8h cap; revocation via A.7 | Tokens carry a unique `jti` (uuid) which is the lookup key for the revocation list. A stolen token can now be killed server-side without rotating the global signing secret. |
 | A.7 | Server-side logout / token revocation | ✅ | [`internal/database/db.go`](../../internal/database/db.go) `RevokeToken`/`IsTokenRevoked`/`PruneExpiredRevokedTokens`; [`internal/api/auth_handler.go`](../../internal/api/auth_handler.go) `HandleLogout`; route at [`internal/api/router.go`](../../internal/api/router.go) `/auth/logout` | `POST /auth/logout` inserts the bearer token's `jti` into `revoked_tokens`. `RequireAuth` consults the blocklist on every authenticated request and returns 401 "token revoked" when matched. Smoke-tested: login → 200, logout → 204, reuse → 401. The blocklist is also the rotate-JWT_SECRET break-glass: revoke every active session by inserting all live `jti`s. `PruneExpiredRevokedTokens` reclaims rows whose original exp has passed. |
 | A.8 | Password rotation policy | ✅ | `users.password_changed_at` column; [`internal/database/db.go`](../../internal/database/db.go) `PasswordExpired`, `PasswordMaxAge`; [`internal/api/auth_handler.go`](../../internal/api/auth_handler.go) `loginResponse.PasswordExpired` | 180-day soft-enforced rotation. Login still succeeds when expired (so the user can authenticate the change-password call), but the response carries `password_expired: true` for the frontend to gate on a forced-change screen. `UpdateUserPassword` stamps `password_changed_at = NOW()` on every change, restarting the clock. |
-| A.9 | Multi-factor authentication | ⏳ | Planned | No TOTP/WebAuthn scaffolding present. UL 827B reviewers have generally accepted MFA as a documented roadmap item if password policy + lockout + audit are tight. |
+| A.9 | Multi-factor authentication | ✅ | TOTP (RFC 6238) implemented in [`internal/auth/mfa.go`](../../internal/auth/mfa.go); endpoints in [`internal/api/mfa_handler.go`](../../internal/api/mfa_handler.go); user columns `mfa_enabled`, `mfa_secret`, `mfa_recovery_hashes` | Optional, opt-in per user. SHA-1 / 30s / 6 digits — the parameter set every authenticator app expects. ±1 step drift tolerance. Enrollment is two-step (enroll generates secret + 10 recovery codes; confirm validates first code before flipping `mfa_enabled = true`) so a half-finished enrollment can never lock anyone out. Recovery codes stored as bcrypt hashes; consumed atomically on use. Login flow returns `{"mfa_required": true}` with HTTP 401 when MFA is enabled and code is missing — no preauth-half-token leaks. Bad MFA codes count toward the lockout threshold (#A.3) so a primary-credential leak gets a finite TOTP-guess budget. Implemented in-house rather than via third-party library to keep the parameter set pinned and the crypto inspectable. |
 | A.10 | Role-change audit trail | ✅ | [`internal/api/audit.go:131`](../../internal/api/audit.go#L131) — `change_role` action wired in `classifyRequest` middleware | Every PATCH to `/api/users/{id}/role` lands in `audit_log` with target_type=user, target_id={UUID}, IP, timestamp. |
 | A.11 | Role separation enforced | ✅ | [`internal/api/users.go`](../../internal/api/users.go) — admin-only checks; [`frontend/src/contexts/AuthContext.tsx`](../../frontend/src/contexts/AuthContext.tsx) — `ROUTE_PERMISSIONS` matrix | Backend rejects unauthorized role mutations with 403; frontend blocks navigation to roles the user can't access. Six roles defined: `admin`, `soc_supervisor`, `soc_operator`, `site_manager`, `customer`, `viewer`. |
 | A.12 | JWT signing secret externalized | ✅ | [`internal/config/config.go:43`](../../internal/config/config.go#L43) reads `JWT_SECRET` env | The env-default fallback is a placeholder string and is **explicitly unsafe**. Production deployments must set `JWT_SECRET` (compose enforces this with `${JWT_SECRET:?...}`). Operator instructions: `openssl rand -hex 32`. |
@@ -125,16 +125,16 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 34 |
+| ✅ Implemented | 35 |
 | 🟡 Partial | 1 |
-| ⏳ Planned | 4 |
+| ⏳ Planned | 3 |
 | 🚫 Out of scope | 3 |
 
 The single remaining partial (D.2) closes when the share-creation
 handler is built (Phase B.8). **Of the planned items**, the next
-two in the engineering queue are MFA (A.9) and httpOnly cookie
-migration. DC-09 (F.3) and digital signing (D.5) are roadmap items
-that close together with TMA-AVS-01 readiness in Phase B.
+in the engineering queue is httpOnly cookie migration. DC-09 (F.3)
+and digital signing (D.5) close together with TMA-AVS-01 readiness
+in Phase B.
 
 ---
 

@@ -65,6 +65,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	r.With(RequireAuth(cfg, db)).Get("/auth/me", HandleGetMe(db))
 	r.With(RequireAuth(cfg, db)).Post("/auth/logout", HandleLogout(db))
 
+	// MFA management routes. All require an authenticated session;
+	// enrollment uses the session token to bind the new secret to the
+	// caller, and disable requires an active MFA code as proof.
+	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/enroll", HandleMFAEnroll(db, cfg))
+	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
+	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/disable", HandleMFADisable(db))
+
 	// API routes (JWT protected)
 	r.Route("/api", func(r chi.Router) {
 		r.Use(RequireAuth(cfg, db))

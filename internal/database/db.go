@@ -1077,6 +1077,100 @@ func (db *DB) PruneExpiredRevokedTokens(ctx context.Context) (int64, error) {
 // that and still want a calendar trigger.
 const PasswordMaxAge = 180 * 24 * time.Hour
 
+// MFAState holds the authentication second-factor configuration for
+// a user. Loaded by the login handler to decide whether to require a
+// TOTP code, and by enrollment endpoints to provision a fresh secret.
+type MFAState struct {
+	Enabled        bool
+	Secret         string   // base32, present even before Enabled if mid-enrollment
+	RecoveryHashes []string // bcrypt hashes; consumed one at a time
+}
+
+// GetMFAState returns the user's current MFA configuration. Returns a
+// zeroed state (Enabled=false, empty Secret, empty RecoveryHashes) if
+// the user has never enrolled.
+func (db *DB) GetMFAState(ctx context.Context, userID uuid.UUID) (*MFAState, error) {
+	var st MFAState
+	var hashesJSON []byte
+	err := db.Pool.QueryRow(ctx,
+		`SELECT mfa_enabled, COALESCE(mfa_secret, ''), COALESCE(mfa_recovery_hashes, '[]'::jsonb)
+		 FROM users WHERE id = $1`, userID,
+	).Scan(&st.Enabled, &st.Secret, &hashesJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(hashesJSON) > 0 {
+		_ = json.Unmarshal(hashesJSON, &st.RecoveryHashes)
+	}
+	return &st, nil
+}
+
+// SetMFAEnrollment stores a freshly-generated secret and recovery
+// hashes. Used by the enrollment endpoint BEFORE the user has
+// confirmed their authenticator works — mfa_enabled stays false until
+// the confirm-enroll step verifies a real code, so a half-finished
+// enrollment can't lock anyone out.
+func (db *DB) SetMFAEnrollment(ctx context.Context, userID uuid.UUID, secret string, recoveryHashes []string) error {
+	hashesJSON, err := json.Marshal(recoveryHashes)
+	if err != nil {
+		return fmt.Errorf("marshal recovery hashes: %w", err)
+	}
+	_, err = db.Pool.Exec(ctx,
+		`UPDATE users
+		 SET mfa_secret           = $2,
+		     mfa_recovery_hashes  = $3,
+		     mfa_enabled          = false
+		 WHERE id = $1`,
+		userID, secret, hashesJSON,
+	)
+	return err
+}
+
+// EnableMFA flips the user's mfa_enabled flag to true. Called only
+// after the enrollment confirm-code step succeeds.
+func (db *DB) EnableMFA(ctx context.Context, userID uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE users SET mfa_enabled = true WHERE id = $1`, userID,
+	)
+	return err
+}
+
+// DisableMFA clears all MFA state. Called by an admin override or by
+// the user themselves after re-authenticating with a current TOTP code
+// (the handler enforces that — this method just performs the wipe).
+func (db *DB) DisableMFA(ctx context.Context, userID uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE users
+		 SET mfa_enabled         = false,
+		     mfa_secret          = '',
+		     mfa_recovery_hashes = '[]'::jsonb
+		 WHERE id = $1`, userID,
+	)
+	return err
+}
+
+// ConsumeRecoveryCode atomically removes a single recovery hash from
+// the user's stored set. Returns the new count so the handler can
+// surface "you have N recovery codes left." Caller is responsible for
+// having already verified the code matches a hash; this helper just
+// deletes by index.
+func (db *DB) ConsumeRecoveryCode(ctx context.Context, userID uuid.UUID, hashIndex int) (int, error) {
+	st, err := db.GetMFAState(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if hashIndex < 0 || hashIndex >= len(st.RecoveryHashes) {
+		return len(st.RecoveryHashes), fmt.Errorf("recovery hash index out of range")
+	}
+	st.RecoveryHashes = append(st.RecoveryHashes[:hashIndex], st.RecoveryHashes[hashIndex+1:]...)
+	hashesJSON, _ := json.Marshal(st.RecoveryHashes)
+	_, err = db.Pool.Exec(ctx,
+		`UPDATE users SET mfa_recovery_hashes = $2 WHERE id = $1`,
+		userID, hashesJSON,
+	)
+	return len(st.RecoveryHashes), err
+}
+
 // PasswordExpired returns true if the user's password is older than
 // PasswordMaxAge. The login handler uses this to set a flag on the
 // login response so the frontend can route to a forced-change screen.

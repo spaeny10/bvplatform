@@ -19,6 +19,11 @@ import (
 type loginRequest struct {
 	Username string `json:"username"` // accepts username or email
 	Password string `json:"password"`
+	// MFACode is supplied on the second pass after the first pass returned
+	// `mfa_required: true`. Empty on initial requests; if MFA is enabled
+	// for the user it must be a valid TOTP code or one of the user's
+	// remaining recovery codes.
+	MFACode string `json:"mfa_code,omitempty"`
 }
 
 type loginResponse struct {
@@ -30,6 +35,19 @@ type loginResponse struct {
 	// honors the token in the meantime so the change-password call
 	// itself can authenticate.
 	PasswordExpired bool `json:"password_expired,omitempty"`
+}
+
+// mfaChallengeResponse is what the API returns when the username +
+// password are correct but the user has MFA enabled and the request
+// did not include a code. The frontend uses `mfa_required: true` to
+// switch to the TOTP input form and resubmit with `mfa_code`.
+//
+// No token is issued at this stage — there is no preauth-half-token
+// in the API. The user must replay username + password + code on the
+// second submission. This avoids the entire "preauth token leaks"
+// attack class at a small UX cost.
+type mfaChallengeResponse struct {
+	MFARequired bool `json:"mfa_required"`
 }
 
 // logFailedLogin emits one audit_log row for each 401 on /auth/login.
@@ -120,6 +138,36 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 				map[bool]string{true: ", locked", false: ""}[nowLocked])
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
+		}
+
+		// MFA gate. Password was right; if the user has MFA enabled we
+		// either consume the supplied code or signal the frontend to
+		// prompt for one. Failures here count as failed logins so a
+		// password leak doesn't get an unlimited TOTP-guess budget.
+		mfaState, _ := db.GetMFAState(r.Context(), user.ID)
+		if mfaState != nil && mfaState.Enabled {
+			if req.MFACode == "" {
+				// Don't increment failed_login_attempts here — the user
+				// supplied a correct password and we just need a second
+				// step. Returning the challenge object lets the frontend
+				// re-prompt without showing a "wrong credentials" error.
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(mfaChallengeResponse{MFARequired: true})
+				return
+			}
+			if !verifyMFACode(r.Context(), mfaState, req.MFACode, db, user.ID) {
+				attempts, nowLocked, _ := db.RegisterFailedLogin(r.Context(), req.Username)
+				reason := "bad_mfa"
+				if nowLocked {
+					reason = "bad_mfa_lockout_triggered"
+				}
+				logFailedLogin(db, r, req.Username, reason)
+				log.Printf("[AUTH] Bad MFA for %q from %s (attempt %d%s)",
+					req.Username, clientIP(r), attempts,
+					map[bool]string{true: ", locked", false: ""}[nowLocked])
+				http.Error(w, "invalid credentials", http.StatusUnauthorized)
+				return
+			}
 		}
 
 		// Success — clear any stale failure counter so a legitimate user
