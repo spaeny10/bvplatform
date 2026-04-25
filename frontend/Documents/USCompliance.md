@@ -125,14 +125,14 @@ concerns.
 
 | Artifact | Status | Path / link |
 |---|---|---|
-| Privacy notice (US-generic) | ⏳ Planned | `frontend/src/app/portal/privacy/page.tsx` |
-| Sub-processor list (informational) | ⏳ Planned | `frontend/src/app/portal/subprocessors/page.tsx` |
-| Data Processing Addendum (DPA) template | ⏳ Planned | `Documents/templates/DPA-template.md` |
-| Incident-response runbook | ⏳ Planned | `Documents/IncidentResponse.md` |
-| UL 827B compliance summary | ✅ Shipped | `Documents/UL827B_Compliance.md` |
-| Customer-facing security overview | ⏳ Planned | `Documents/SecurityOverview.md` |
+| Privacy notice (US-generic) | ✅ Shipped | `frontend/src/app/portal/privacy/page.tsx` |
+| Sub-processor list (informational) | ✅ Shipped | `frontend/src/app/portal/subprocessors/page.tsx` |
+| Data Processing Addendum (DPA) template | ✅ Shipped | `frontend/Documents/DPA-template.md` |
+| Incident-response runbook | ✅ Shipped | `frontend/Documents/IncidentResponse.md` |
+| UL 827B compliance summary | ✅ Shipped | `frontend/Documents/UL827B_Compliance.md` |
+| Customer-facing security overview | ⏳ Planned | `frontend/Documents/SecurityOverview.md` |
 
-The `⏳` items are tracked in the next compliance milestone.
+The remaining `⏳` item is tracked in the next compliance milestone.
 
 ---
 
