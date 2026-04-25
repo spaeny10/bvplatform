@@ -26,6 +26,30 @@ phase**, and put the most recent phase at the top.
 These commits close the last visible gaps before a customer-facing
 demo or UL 827B walkthrough.
 
+### `1181200` — Supervisor /reports surface — SLA, verification queue, evidence shares
+**Date:** 2026-04-25 11:08 CDT
+**Files:** 11 files (+1,023/-3) — including new `frontend/src/app/reports/` route + 3 card components
+
+Until this commit, every reporting/audit feature added today only
+had a backend; supervisors couldn't use any of it. SOC supervisors
+land on `/operator` (not `/admin`) by route policy, so the reports
+needed their own home that both supervisors and admins can reach.
+New `/reports` route gated to `[admin, soc_supervisor]` with three
+tabs: Performance (SLA report card with date presets + CSV
+download), Verification (queue of un-verified high-severity events
+with one-click ✓ Verify), Evidence shares (per-incident lookup
+with active/revoked/expired tokens + Revoke). Nav link added to
+both `/operator` (gated to supervisor/admin) and `/admin` topbars.
+New API helpers documented in-place for future reuse.
+
+### `eb961fd` — Add CHANGELOG.md — every commit documented
+**Date:** 2026-04-25 10:53 CDT
+**Files:** `frontend/Documents/CHANGELOG.md` (new, +421)
+
+This document. Living changelog mapping every commit on `main` to
+the engineering intent behind it. Updated in-place on every
+follow-up commit.
+
 ### `5efb6b2` — Polish: visible feedback on admin apiFetch failures
 **Date:** 2026-04-25 10:50 CDT
 **Files:** `frontend/src/app/admin/page.tsx` (1 file, +56/-9)
@@ -409,7 +433,7 @@ Repository genesis.
 
 | Phase | Commits | Lines added | Lines removed |
 |---|---:|---:|---:|
-| Phase D — Polish & Customer Completeness | 4 | 544 | 40 |
+| Phase D — Polish & Customer Completeness | 6 | 1,988 | 43 |
 | Phase C — Operational Hardening | 1 | 207 | 3 |
 | Phase B — Evidence Integrity & TMA-AVS-01 | 3 | 983 | 43 |
 | Phase A — UL 827B Auth & Audit | 5 | 1,572 | 51 |
@@ -418,4 +442,4 @@ Repository genesis.
 | Initial Imports | 2 | 96,034 | 1 |
 
 Total post-import work (excluding the initial 96k-line code drop):
-**21 commits, +4,192 / -284 lines.** All 21 are documented above.
+**23 commits, +5,636 / -287 lines.** All 23 are documented above.
