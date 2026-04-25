@@ -419,11 +419,13 @@ func (db *DB) CreateSecurityEvent(ctx context.Context, c *SecurityEventCreate) (
 		`INSERT INTO security_events
 		 (id, alarm_id, site_id, camera_id, severity, type, description,
 		  disposition_code, disposition_label, operator_callsign, operator_notes,
-		  action_log, escalation_depth, clip_url, ts, resolved_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  action_log, escalation_depth, clip_url, ts, resolved_at,
+		  disposed_by_user_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		id, c.AlarmID, c.SiteID, c.CameraID, severity, c.Type, c.Description,
 		c.DispositionCode, c.DispositionLabel, c.OperatorCallsign, c.OperatorNotes,
 		actionLogJSON, c.EscalationDepth, c.ClipURL, now, now,
+		nullableUUID(c.DisposedByUserID),
 	)
 	if err != nil {
 		return nil, err
@@ -446,11 +448,69 @@ func (db *DB) CreateSecurityEvent(ctx context.Context, c *SecurityEventCreate) (
 	return &SecurityEvent{ID: id, AlarmID: c.AlarmID, SiteID: c.SiteID, Ts: now, ResolvedAt: now}, nil
 }
 
+// ErrSelfVerification is returned by VerifySecurityEvent when the
+// supervisor attempting to verify is the same person who originally
+// dispositioned the event. UL 827B's four-eyes rule explicitly
+// forbids this — a single operator can't both make and approve the
+// call. The handler converts this to HTTP 409 Conflict.
+var ErrSelfVerification = fmt.Errorf("verifier must be a different operator from the disposing operator")
+
+// ErrAlreadyVerified is returned when the event already has a
+// non-null verified_at. We don't allow re-verification — the first
+// signature stands, otherwise an attacker with a compromised
+// supervisor account could rewrite history.
+var ErrAlreadyVerified = fmt.Errorf("event already verified")
+
+// VerifySecurityEvent records a second-operator sign-off on a
+// dispositioned event. Returns ErrSelfVerification if the supplied
+// verifier is the same user who disposed of the event. Atomic via a
+// single conditional UPDATE — the WHERE clause encodes both the
+// "not yet verified" and "not the same operator" rules so two
+// supervisors racing each other can't both succeed.
+func (db *DB) VerifySecurityEvent(ctx context.Context, eventID string, verifierID uuid.UUID, verifierCallsign string) error {
+	tag, err := db.Pool.Exec(ctx, `
+		UPDATE security_events
+		SET verified_by_user_id  = $2,
+		    verified_by_callsign = $3,
+		    verified_at          = NOW()
+		WHERE id = $1
+		  AND verified_at IS NULL
+		  AND (disposed_by_user_id IS NULL OR disposed_by_user_id <> $2)`,
+		eventID, verifierID, verifierCallsign,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		// Disambiguate between "already verified" and "self-verification
+		// attempt" so the API layer can return the right status code.
+		var existingVerifiedAt *time.Time
+		var disposedBy *uuid.UUID
+		errFetch := db.Pool.QueryRow(ctx,
+			`SELECT verified_at, disposed_by_user_id FROM security_events WHERE id = $1`,
+			eventID,
+		).Scan(&existingVerifiedAt, &disposedBy)
+		if errFetch != nil {
+			return fmt.Errorf("event %q not found", eventID)
+		}
+		if existingVerifiedAt != nil {
+			return ErrAlreadyVerified
+		}
+		if disposedBy != nil && *disposedBy == verifierID {
+			return ErrSelfVerification
+		}
+		return fmt.Errorf("verification update affected 0 rows")
+	}
+	return nil
+}
+
 func (db *DB) ListSecurityEvents(ctx context.Context, siteID string, viewedOnly *bool) ([]SecurityEvent, error) {
 	query := `SELECT id, alarm_id, site_id, camera_id, severity,
 	       COALESCE(type,''), COALESCE(description,''),
 	       disposition_code, disposition_label, COALESCE(operator_callsign,''), operator_notes,
-	       action_log, escalation_depth, COALESCE(clip_url,''), ts, resolved_at, viewed_by_customer FROM security_events`
+	       action_log, escalation_depth, COALESCE(clip_url,''), ts, resolved_at, viewed_by_customer,
+	       disposed_by_user_id, verified_by_user_id, COALESCE(verified_by_callsign,''), verified_at
+	       FROM security_events`
 	var args []interface{}
 	var conditions []string
 
@@ -480,7 +540,8 @@ func (db *DB) ListSecurityEvents(ctx context.Context, siteID string, viewedOnly 
 		if err := rows.Scan(&e.ID, &e.AlarmID, &e.SiteID, &e.CameraID, &e.Severity,
 			&e.Type, &e.Description,
 			&e.DispositionCode, &e.DispositionLabel, &e.OperatorCallsign, &e.OperatorNotes,
-			&actionLogJSON, &e.EscalationDepth, &e.ClipURL, &e.Ts, &e.ResolvedAt, &e.ViewedByCustomer); err != nil {
+			&actionLogJSON, &e.EscalationDepth, &e.ClipURL, &e.Ts, &e.ResolvedAt, &e.ViewedByCustomer,
+			&e.DisposedByUserID, &e.VerifiedByUserID, &e.VerifiedByCallsign, &e.VerifiedAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(actionLogJSON, &e.ActionLog)

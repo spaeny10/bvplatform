@@ -465,21 +465,25 @@ func HandleCreateSecurityEvent(db *database.DB) http.HandlerFunc {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		// Archive the alarm — remove it from the SOC dispatch queue.
-		// Capture the dispositioning operator's identity on the alarm so
-		// the SLA report can attribute response time correctly.
-		if input.AlarmID != "" {
-			var ackUserID uuid.UUID
-			ackCallsign := input.OperatorCallsign
-			if claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims); claims != nil {
-				if uid, err := uuid.Parse(claims.UserID); err == nil {
-					ackUserID = uid
-				}
-				if ackCallsign == "" {
-					ackCallsign = strings.ToUpper(claims.Username)
-				}
+		// Capture the dispositioning operator's identity for both the
+		// SLA report and the dual-operator self-check. The user_id is
+		// trusted from JWT claims; the callsign falls back to username
+		// only if the client didn't supply one.
+		var disposedByID uuid.UUID
+		ackCallsign := input.OperatorCallsign
+		if claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims); claims != nil {
+			if uid, err := uuid.Parse(claims.UserID); err == nil {
+				disposedByID = uid
 			}
-			_ = db.AcknowledgeAlarm(r.Context(), input.AlarmID, ackUserID, ackCallsign)
+			if ackCallsign == "" {
+				ackCallsign = strings.ToUpper(claims.Username)
+			}
+		}
+		input.DisposedByUserID = disposedByID
+
+		// Archive the alarm — remove it from the SOC dispatch queue.
+		if input.AlarmID != "" {
+			_ = db.AcknowledgeAlarm(r.Context(), input.AlarmID, disposedByID, ackCallsign)
 			// Level 1 AI validation: compare AI threat assessment vs operator disposition
 			_ = db.ComputeAICorrectness(r.Context(), input.AlarmID, input.DispositionCode)
 		}
@@ -496,6 +500,54 @@ func HandleListSecurityEvents(db *database.DB) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, events)
+	}
+}
+
+// HandleVerifySecurityEvent is the dual-operator sign-off endpoint.
+// Restricted to soc_supervisor or admin roles, and the verifier must
+// not be the same user who originally dispositioned the event. UL 827B
+// reviewers expect this for any high-severity disposition that gets
+// escalated to law enforcement; TMA-AVS-01 also wants the structured
+// "video verified by SOC operator" record.
+//
+// Idempotent within the success path: re-verifying a verified event
+// is a deliberate no-op (returns 409 Already Verified) so an attacker
+// with a stolen supervisor token can't rewrite who signed off.
+func HandleVerifySecurityEvent(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "supervisor or admin role required", http.StatusForbidden)
+			return
+		}
+
+		eventID := chi.URLParam(r, "id")
+		if eventID == "" {
+			http.Error(w, "event id required", http.StatusBadRequest)
+			return
+		}
+
+		verifierID, err := uuid.Parse(claims.UserID)
+		if err != nil {
+			http.Error(w, "invalid user id in token", http.StatusBadRequest)
+			return
+		}
+		callsign := strings.ToUpper(claims.Username)
+
+		switch err := db.VerifySecurityEvent(r.Context(), eventID, verifierID, callsign); err {
+		case nil:
+			w.WriteHeader(http.StatusNoContent)
+		case database.ErrSelfVerification:
+			http.Error(w, "verifier must be a different operator", http.StatusConflict)
+		case database.ErrAlreadyVerified:
+			http.Error(w, "event already verified", http.StatusConflict)
+		default:
+			http.Error(w, "verification failed: "+err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 

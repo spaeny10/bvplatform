@@ -48,6 +48,12 @@ Ironsight codebase. Status legend:
 | A.11 | Role separation enforced | ✅ | [`internal/api/users.go`](../../internal/api/users.go) — admin-only checks; [`frontend/src/contexts/AuthContext.tsx`](../../frontend/src/contexts/AuthContext.tsx) — `ROUTE_PERMISSIONS` matrix | Backend rejects unauthorized role mutations with 403; frontend blocks navigation to roles the user can't access. Six roles defined: `admin`, `soc_supervisor`, `soc_operator`, `site_manager`, `customer`, `viewer`. |
 | A.12 | JWT signing secret externalized | ✅ | [`internal/config/config.go:43`](../../internal/config/config.go#L43) reads `JWT_SECRET` env | The env-default fallback is a placeholder string and is **explicitly unsafe**. Production deployments must set `JWT_SECRET` (compose enforces this with `${JWT_SECRET:?...}`). Operator instructions: `openssl rand -hex 32`. |
 
+### Dual-operator verification ("four-eyes rule")
+
+| # | Control | Status | Evidence | Notes |
+|---|---|---|---|---|
+| A.13 | Dual-operator verification on dispositioned events | ✅ | `security_events.disposed_by_user_id`, `verified_by_user_id`, `verified_by_callsign`, `verified_at` columns; `VerifySecurityEvent` in [`internal/database/platform_db.go`](../../internal/database/platform_db.go); handler at [`internal/api/platform.go`](../../internal/api/platform.go) `HandleVerifySecurityEvent`; route `POST /api/v1/events/{id}/verify` | Restricted to `soc_supervisor` and `admin` roles. The verify update is one atomic conditional UPDATE that rejects self-verification (`disposed_by_user_id <> verifier`) and re-verification (`verified_at IS NULL`). 409 distinguishes "already verified" from "self-verify attempt." Smoke-tested all four matrix cells: self → 409, cross → 204, re-verify → 409, non-supervisor → 403. Partial index `idx_security_events_unverified_high` makes "list outstanding high-severity verifications" a fast scan for the supervisor dashboard. |
+
 ### B. Audit Trail
 
 | # | Control | Status | Evidence | Notes |
@@ -119,15 +125,14 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 32 |
+| ✅ Implemented | 33 |
 | 🟡 Partial | 2 |
-| ⏳ Planned | 5 |
+| ⏳ Planned | 4 |
 | 🚫 Out of scope | 3 |
 
-**Of the planned items**, three are next in the engineering queue:
-dual-operator verification, MFA (A.9), and httpOnly cookie migration.
-DC-09 (F.3) and digital signing (D.5) are roadmap items deferred
-until after first-cert.
+**Of the planned items**, the next two in the engineering queue are
+MFA (A.9) and httpOnly cookie migration. DC-09 (F.3) and digital
+signing (D.5) are roadmap items deferred until after first-cert.
 
 ---
 
@@ -233,4 +238,25 @@ curl -sH "Authorization: Bearer $TOKEN" \
 curl -sH "Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/reports/sla?from=$FROM&to=$TO&group=day&format=csv" \
   -o sla_report.csv
+
+# A.13 — dual-operator verification
+# Disposing operator cannot self-verify
+curl -sH "Authorization: Bearer $DISPOSER_TOKEN" -X POST \
+  http://localhost:8080/api/v1/events/EVT-2026-0042/verify
+# Expected: HTTP 409 "verifier must be a different operator"
+
+# A different supervisor verifies
+curl -sH "Authorization: Bearer $SUPERVISOR_TOKEN" -X POST \
+  http://localhost:8080/api/v1/events/EVT-2026-0042/verify
+# Expected: HTTP 204
+
+# Re-verification rejected
+curl -sH "Authorization: Bearer $SUPERVISOR_TOKEN" -X POST \
+  http://localhost:8080/api/v1/events/EVT-2026-0042/verify
+# Expected: HTTP 409 "event already verified"
+
+# Non-supervisor role rejected
+curl -sH "Authorization: Bearer $VIEWER_TOKEN" -X POST \
+  http://localhost:8080/api/v1/events/EVT-2026-0042/verify
+# Expected: HTTP 403 "supervisor or admin role required"
 ```

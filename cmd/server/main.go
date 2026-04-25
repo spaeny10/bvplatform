@@ -287,6 +287,23 @@ func main() {
 		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_operator_agreed BOOLEAN DEFAULT NULL;
 		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_was_correct BOOLEAN DEFAULT NULL;
 
+		-- UL 827B dual-operator verification ("four-eyes rule"). High-
+		-- severity dispositions that get escalated to law enforcement
+		-- need a second operator's sign-off. We capture verifier
+		-- identity + timestamp here; the supervisor endpoint enforces
+		-- "must not be the same user as the disposing operator." This
+		-- is also the structured-evidence trail TMA-AVS-01 wants for
+		-- the "video verified by SOC operator" factor.
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_user_id UUID;
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_callsign TEXT NOT NULL DEFAULT '';
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+		-- The user who originally dispositioned the event. We had
+		-- operator_callsign already but not the user_id, which the
+		-- self-verification check needs to compare against.
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS disposed_by_user_id UUID;
+		CREATE INDEX IF NOT EXISTS idx_security_events_unverified_high
+			ON security_events(ts DESC) WHERE severity IN ('critical', 'high') AND verified_at IS NULL;
+
 		-- Incidents: group related alarms from the same site within a correlation window.
 		-- The SOC dispatch queue shows incidents rather than individual alarms.
 		CREATE TABLE IF NOT EXISTS incidents (

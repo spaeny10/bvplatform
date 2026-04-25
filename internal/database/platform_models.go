@@ -1,6 +1,10 @@
 package database
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // ═══════════════════════════════════════════════════════════════
 // Ironsight Platform Models
@@ -136,6 +140,31 @@ type SecurityEvent struct {
 	Ts               int64                    `json:"ts"`
 	ResolvedAt       int64                    `json:"resolved_at"`
 	ViewedByCustomer bool                     `json:"viewed_by_customer"`
+
+	// Dual-operator verification. Set via POST /api/security-events/{id}/verify
+	// by a supervisor or admin who is NOT the disposing operator. Required
+	// before the event can be escalated to law enforcement or counted as
+	// "video-verified" in TMA-AVS-01 scoring.
+	DisposedByUserID   *uuid.UUID `json:"disposed_by_user_id,omitempty"`
+	VerifiedByUserID   *uuid.UUID `json:"verified_by_user_id,omitempty"`
+	VerifiedByCallsign string     `json:"verified_by_callsign,omitempty"`
+	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
+}
+
+// IsVerificationRequired returns true if this event's severity demands
+// a second-operator sign-off before downstream actions (dispatch,
+// AVS-scored alarm transmission). Lives on the model so the rule is
+// uniform across handlers and the frontend can display a verification
+// badge consistently.
+func (e *SecurityEvent) IsVerificationRequired() bool {
+	return e.Severity == "critical" || e.Severity == "high"
+}
+
+// IsVerified is the boolean shortcut callers want — encapsulates the
+// nullable VerifiedAt so business logic doesn't have to re-check the
+// nil pointer everywhere.
+func (e *SecurityEvent) IsVerified() bool {
+	return e.VerifiedAt != nil
 }
 
 // EvidenceShare represents a shareable evidence link
@@ -378,4 +407,9 @@ type SecurityEventCreate struct {
 	ActionLog        []map[string]interface{} `json:"action_log"`
 	EscalationDepth  int                      `json:"escalation_depth"`
 	ClipURL          string                   `json:"clip_url"`
+	// DisposedByUserID is the authenticated operator's UUID, populated
+	// from the JWT claims at the API layer. It's NOT a JSON field — the
+	// client cannot supply this value, otherwise it could be spoofed
+	// against the dual-operator self-verification check.
+	DisposedByUserID uuid.UUID `json:"-"`
 }

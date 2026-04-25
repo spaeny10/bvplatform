@@ -261,6 +261,10 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// Security Events & Incidents
 			r.Post("/events", HandleCreateSecurityEvent(db))
 			r.Get("/events", HandleListSecurityEvents(db))
+			// Dual-operator verification (UL 827B four-eyes rule).
+			// Restricted to supervisor/admin roles and rejects
+			// self-verification by the disposing operator.
+			r.Post("/events/{id}/verify", HandleVerifySecurityEvent(db))
 			r.Get("/incidents", HandleListIncidents(db))
 			r.Get("/incidents/{id}", HandleGetIncident(db))
 
