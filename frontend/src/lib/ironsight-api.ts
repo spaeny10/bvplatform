@@ -35,9 +35,15 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+// fetchJSON is the authenticated request helper used by every
+// function in this file. Exported (in addition to its in-package use)
+// so portal pages that need to hit a one-off endpoint without
+// duplicating auth-header plumbing can pull it directly.
+export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { ...authHeaders(), ...init?.headers } });
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  // 204 No Content (PUT/DELETE) — the body is empty, return undefined cast.
+  if (res.status === 204) return undefined as unknown as T;
   return res.json();
 }
 
