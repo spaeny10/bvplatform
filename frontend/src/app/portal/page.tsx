@@ -11,6 +11,10 @@ import ErrorBoundary from '@/components/shared/ErrorBoundary';
 import PendingReviewQueue from '@/components/portal/PendingReviewQueue';
 import Logo from '@/components/shared/Logo';
 import UserChip from '@/components/shared/UserChip';
+// Side-effect import: registering the Skeleton component injects its
+// shimmer keyframes into <head> so the inline placeholder cards below
+// can use the `sg-skeleton-shimmer` animation without their own CSS.
+import '@/components/shared/Skeleton';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { SiteFeatureMode } from '@/types/ironsight';
@@ -24,7 +28,7 @@ const MODE_BADGE: Record<SiteFeatureMode, { label: string; color: string; bg: st
 type SiteView = 'cards' | 'list';
 
 function PortalInner() {
-  const { data: sites = [] } = useSites();
+  const { data: sites = [], isLoading: sitesLoading } = useSites();
   const { data: incidents = [] } = useIncidents({ limit: 10 });
   const { dateRange, setDateRange } = usePortalStore();
   const router = useRouter();
@@ -364,6 +368,26 @@ function PortalInner() {
                 gap: 12,
                 padding: '4px 16px 16px',
               }}>
+                {/* Loading skeleton: render placeholder cards while
+                    useSites is still fetching, so the grid shows
+                    "data is on its way" instead of a blank gap. Six
+                    skeleton cards is enough to fill a typical viewport
+                    on the first paint. */}
+                {sitesLoading && filteredSites.length === 0 && Array.from({ length: 6 }).map((_, i) => (
+                  <div
+                    key={`sk-${i}`}
+                    style={{
+                      height: 140,
+                      borderRadius: 8,
+                      background:
+                        'linear-gradient(90deg, var(--sg-surface-1, rgba(255,255,255,0.04)) 0%, var(--sg-surface-2, rgba(255,255,255,0.08)) 50%, var(--sg-surface-1, rgba(255,255,255,0.04)) 100%)',
+                      backgroundSize: '200% 100%',
+                      animation: 'sg-skeleton-shimmer 1.4s ease-in-out infinite',
+                      border: '1px solid var(--sg-border-subtle, rgba(255,255,255,0.06))',
+                    }}
+                    aria-hidden="true"
+                  />
+                ))}
                 {filteredSites.map(site => {
                   const mode = (site.feature_mode ?? 'security_and_safety') as SiteFeatureMode;
                   const badge = MODE_BADGE[mode];

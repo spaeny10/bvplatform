@@ -23,6 +23,7 @@ import RecordingHealthCard from '@/components/RecordingHealthCard';
 import { listCameras, Camera, listUsers, createUser, deleteUser, updateUserPassword, updateUserRole, updateUserProfile, UserPublic } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { ToastProvider, useToast } from '@/components/ToastProvider';
+import { SkeletonRows } from '@/components/shared/Skeleton';
 
 type Tab = 'sites' | 'operators' | 'users' | 'settings' | 'health' | 'audit' | 'integrations';
 
@@ -1091,7 +1092,9 @@ export default function AdminPage() {
                         </span>
                       </div>
                       {usersLoading ? (
-                        <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>Loading...</div>
+                        <div style={{ padding: 16 }}>
+                          <SkeletonRows count={4} height={32} gap={6} />
+                        </div>
                       ) : internalUsers.length === 0 ? (
                         <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No internal staff accounts</div>
                       ) : (
