@@ -446,6 +446,50 @@ func main() {
 		-- when running through escalation.
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS customer_contacts JSONB NOT NULL DEFAULT '[]';
 
+		-- Lightweight customer-to-SOC support ticket system. The customer
+		-- creates a ticket from the portal; SOC supervisors / admins
+		-- respond from the /reports surface. Email fires on every new
+		-- message in either direction so neither side has to babysit
+		-- the UI.
+		--
+		-- Scoped by organization_id: a customer can only see their own
+		-- org's tickets. site_id is optional — most tickets attach to a
+		-- specific site, but "I have a billing question" doesn't.
+		--
+		-- status enum: open / answered / closed.
+		--   open      — customer's most recent message hasn't been
+		--               responded to yet
+		--   answered  — supervisor replied; ticket awaits customer
+		--               follow-up or closure
+		--   closed    — explicitly resolved by either party
+		CREATE TABLE IF NOT EXISTS support_tickets (
+			id                BIGSERIAL PRIMARY KEY,
+			organization_id   TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			site_id           TEXT REFERENCES sites(id) ON DELETE SET NULL,
+			created_by        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			subject           TEXT NOT NULL,
+			status            TEXT NOT NULL DEFAULT 'open',
+			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_message_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			last_message_by   TEXT NOT NULL DEFAULT 'customer'
+		);
+		CREATE INDEX IF NOT EXISTS idx_support_tickets_org_status
+			ON support_tickets(organization_id, status, last_message_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_support_tickets_open
+			ON support_tickets(last_message_at DESC) WHERE status = 'open';
+
+		CREATE TABLE IF NOT EXISTS support_messages (
+			id          BIGSERIAL PRIMARY KEY,
+			ticket_id   BIGINT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+			author_id   UUID NOT NULL REFERENCES users(id),
+			author_role TEXT NOT NULL,  -- 'customer' / 'site_manager' / 'soc_supervisor' / 'admin'
+			body        TEXT NOT NULL,
+			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_support_messages_ticket
+			ON support_messages(ticket_id, created_at);
+
 		-- One-time backfill: for each site whose recording settings are still
 		-- at the default, adopt values from the most-recently-updated camera
 		-- on that site. The recording_backfilled flag prevents re-running

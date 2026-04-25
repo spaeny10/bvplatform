@@ -400,6 +400,99 @@ func statTile(b *strings.Builder, label, value, sub string) {
 	b.WriteString(`</div>`)
 }
 
+// SupportTicketEvent is the payload for the customer ↔ SOC support
+// ticket notifier. Two kinds:
+//
+//	"new"   — customer just opened a ticket; emails go to all SOC
+//	          supervisors so the queue isn't ignored.
+//	"reply" — someone added a message to an existing thread; the
+//	          handler decides which side gets the email (customer
+//	          replied → email supervisors; SOC replied → email the
+//	          customer who opened the ticket).
+//
+// Org is the customer's organization id, included in the email body
+// so a supervisor scanning a queue knows immediately which customer
+// they're hearing from. PortalPath is the deep link the recipient
+// clicks to land on the right thread.
+type SupportTicketEvent struct {
+	Kind       string // "new" | "reply"
+	TicketID   int64
+	Subject    string
+	Body       string
+	FromName   string
+	Org        string
+	PortalPath string // e.g. "/portal?support=42"
+}
+
+// SupportTicketEvent emails the supplied recipients about a ticket
+// event. Email-only — there's no SMS for support threads (a 320-char
+// SMS doesn't render multi-line ticket bodies usefully). Best-effort:
+// a failed send logs but doesn't propagate so the ticket itself
+// stays committed even if the notifier is down.
+func (d *Dispatcher) SupportTicketEvent(ctx context.Context, ev SupportTicketEvent, recipients []Recipient) {
+	if len(recipients) == 0 {
+		return
+	}
+	var emails []string
+	for _, r := range recipients {
+		if r.Email != "" {
+			emails = append(emails, r.Email)
+		}
+	}
+	if len(emails) == 0 {
+		return
+	}
+
+	url := d.publicURL + ev.PortalPath
+	subjectPrefix := "New support ticket"
+	if ev.Kind == "reply" {
+		subjectPrefix = "New reply on ticket"
+	}
+	subject := fmt.Sprintf("[%s] %s #%d — %s", d.productName, subjectPrefix, ev.TicketID, ev.Subject)
+
+	text := strings.Builder{}
+	fmt.Fprintf(&text, "%s support · ticket #%d\n", d.productName, ev.TicketID)
+	fmt.Fprintf(&text, "From: %s", ev.FromName)
+	if ev.Org != "" {
+		fmt.Fprintf(&text, " (%s)", ev.Org)
+	}
+	fmt.Fprintf(&text, "\nSubject: %s\n\n", ev.Subject)
+	body := ev.Body
+	if len(body) > 1500 {
+		body = body[:1500] + "…"
+	}
+	text.WriteString(body)
+	fmt.Fprintf(&text, "\n\nReply: %s\n\n— %s SOC\n", url, d.productName)
+
+	html := strings.Builder{}
+	html.WriteString(`<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1a1a">`)
+	headline := "New support ticket"
+	if ev.Kind == "reply" {
+		headline = "New reply on a support ticket"
+	}
+	fmt.Fprintf(&html, `<h2 style="margin:0 0 4px">%s</h2>`, headline)
+	fmt.Fprintf(&html, `<div style="font-size:12px;color:#6b7280;margin-bottom:18px">Ticket #%d &middot; from %s`, ev.TicketID, htmlEscape(ev.FromName))
+	if ev.Org != "" {
+		fmt.Fprintf(&html, ` &middot; %s`, htmlEscape(ev.Org))
+	}
+	html.WriteString(`</div>`)
+	fmt.Fprintf(&html, `<div style="font-size:14px;font-weight:600;margin-bottom:8px">%s</div>`, htmlEscape(ev.Subject))
+	fmt.Fprintf(&html, `<div style="background:#f3f4f6;padding:14px 16px;border-radius:6px;font-size:13px;line-height:1.55;white-space:pre-wrap;color:#1a1a1a;margin-bottom:18px">%s</div>`, htmlEscape(body))
+	fmt.Fprintf(&html, `<a href="%s" style="display:inline-block;padding:10px 20px;background:#E8732A;color:#fff;text-decoration:none;border-radius:5px;font-weight:600;font-size:14px">Open ticket</a>`, url)
+	fmt.Fprintf(&html, `<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">— %s SOC support</div>`, d.productName)
+	html.WriteString(`</div>`)
+
+	if err := d.email.Send(ctx, Message{
+		To:       emails,
+		Subject:  subject,
+		TextBody: text.String(),
+		HTMLBody: html.String(),
+		Tag:      "support_ticket_" + ev.Kind,
+	}); err != nil {
+		log.Printf("[NOTIFY] support_ticket %s send failed (ticket=%d, n=%d): %v", ev.Kind, ev.TicketID, len(emails), err)
+	}
+}
+
 // firstSentence returns the first sentence of s, capped at maxLen.
 // "Sentence" is "everything up to the first . ! or ? followed by a
 // space"; if no boundary exists within the cap we hard-truncate at

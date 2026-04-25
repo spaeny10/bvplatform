@@ -7,6 +7,7 @@ import { BRAND } from '@/lib/branding';
 import SLAReportCard from '@/components/reports/SLAReportCard';
 import VerificationQueueCard from '@/components/reports/VerificationQueueCard';
 import EvidenceSharesCard from '@/components/reports/EvidenceSharesCard';
+import SupportTicketsCard from '@/components/reports/SupportTicketsCard';
 
 // Reports surface for SOC supervisors and admins.
 //
@@ -20,12 +21,13 @@ import EvidenceSharesCard from '@/components/reports/EvidenceSharesCard';
 // distribution, recording-gap timeline) lands here as a new tab so
 // supervisors don't have to learn another route.
 
-type Tab = 'performance' | 'queue' | 'shares';
+type Tab = 'performance' | 'queue' | 'shares' | 'support';
 
 const TABS: Array<{ key: Tab; label: string; subtitle: string }> = [
   { key: 'performance', label: 'Performance', subtitle: 'SLA response times' },
   { key: 'queue',       label: 'Verification', subtitle: 'Awaiting four-eyes' },
   { key: 'shares',      label: 'Evidence shares', subtitle: 'Public-link lifecycle' },
+  { key: 'support',     label: 'Support', subtitle: 'Customer ticket inbox' },
 ];
 
 export default function ReportsPage() {
@@ -68,6 +70,7 @@ export default function ReportsPage() {
         {tab === 'performance' && <SLAReportCard />}
         {tab === 'queue' && <VerificationQueueCard />}
         {tab === 'shares' && <EvidenceSharesCard />}
+        {tab === 'support' && <SupportTicketsCard />}
       </main>
     </div>
   );

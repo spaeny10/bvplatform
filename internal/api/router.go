@@ -233,6 +233,18 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Get("/me/notifications", HandleListMyNotificationSubs(db))
 		r.Put("/me/notifications", HandleUpsertMyNotificationSub(db))
 
+		// Customer ↔ SOC support tickets. Customer-side users see
+		// only their own org's threads; supervisor + admin see
+		// everything. Email fires on every new ticket and every
+		// reply so neither side has to babysit the UI.
+		// Mounted under the existing /api group, so the actual
+		// paths are /api/support/tickets/* — short and clean.
+		r.Post("/support/tickets",                  HandleCreateSupportTicket(db, notifier))
+		r.Get("/support/tickets",                   HandleListSupportTickets(db))
+		r.Get("/support/tickets/{id}",              HandleGetSupportTicket(db))
+		r.Post("/support/tickets/{id}/messages",    HandleSupportTicketReply(db, notifier))
+		r.Patch("/support/tickets/{id}",            HandleUpdateSupportTicket(db))
+
 		// ════════════════════════════════════════
 		// Ironsight Platform Routes (/api/v1/*)
 		// ════════════════════════════════════════

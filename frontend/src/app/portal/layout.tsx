@@ -2,6 +2,7 @@ import './portal.css';
 import type { ReactNode } from 'react';
 import RouteGuard from '@/components/shared/RouteGuard';
 import PortalMobileNav from '@/components/portal/PortalMobileNav';
+import SupportWidget from '@/components/portal/SupportWidget';
 
 export default function PortalLayout({ children }: { children: ReactNode }) {
     return (
@@ -13,6 +14,10 @@ export default function PortalLayout({ children }: { children: ReactNode }) {
                     Desktop keeps using each portal page's existing
                     top-bar navigation. */}
                 <PortalMobileNav />
+                {/* SOC support chat widget — floating bubble bottom-right
+                    that opens a slide-out panel for ticket history +
+                    new messages. Hides itself for soc_operator role. */}
+                <SupportWidget />
             </div>
         </RouteGuard>
     );
