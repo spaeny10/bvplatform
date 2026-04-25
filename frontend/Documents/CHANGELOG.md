@@ -31,7 +31,7 @@ those messages are actually informative, customer-controllable
 preferences, a trust-signal status page, and an auto-emailed
 monthly summary that proves what the customer paid for.
 
-### `pending` — Customer support tickets + US-only compliance posture + retention extension
+### `e44dd48` — Customer support tickets + US-only compliance posture + retention extension
 **Date:** 2026-04-25
 **Files:** `cmd/server/main.go` (schema), `internal/database/support.go` (new), `internal/api/support.go` (new), `internal/notify/dispatcher.go` (SupportTicketEvent), `internal/api/router.go` (5 routes), `frontend/src/components/portal/SupportWidget.tsx` (new), `frontend/src/app/portal/layout.tsx`, `frontend/src/components/reports/SupportTicketsCard.tsx` (new), `frontend/src/app/reports/page.tsx`, `frontend/Documents/USCompliance.md` (new), `internal/recording/retention.go` (pass 4 + comment refresh), `internal/database/support.go` (PruneClosedSupportTickets) (≈12 files, +900)
 
