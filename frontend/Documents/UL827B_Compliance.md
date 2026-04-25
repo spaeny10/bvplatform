@@ -46,6 +46,7 @@ Ironsight codebase. Status legend:
 | A.9 | Multi-factor authentication | ✅ | TOTP (RFC 6238) implemented in [`internal/auth/mfa.go`](../../internal/auth/mfa.go); endpoints in [`internal/api/mfa_handler.go`](../../internal/api/mfa_handler.go); user columns `mfa_enabled`, `mfa_secret`, `mfa_recovery_hashes` | Optional, opt-in per user. SHA-1 / 30s / 6 digits — the parameter set every authenticator app expects. ±1 step drift tolerance. Enrollment is two-step (enroll generates secret + 10 recovery codes; confirm validates first code before flipping `mfa_enabled = true`) so a half-finished enrollment can never lock anyone out. Recovery codes stored as bcrypt hashes; consumed atomically on use. Login flow returns `{"mfa_required": true}` with HTTP 401 when MFA is enabled and code is missing — no preauth-half-token leaks. Bad MFA codes count toward the lockout threshold (#A.3) so a primary-credential leak gets a finite TOTP-guess budget. Implemented in-house rather than via third-party library to keep the parameter set pinned and the crypto inspectable. |
 | A.10 | Role-change audit trail | ✅ | [`internal/api/audit.go:131`](../../internal/api/audit.go#L131) — `change_role` action wired in `classifyRequest` middleware | Every PATCH to `/api/users/{id}/role` lands in `audit_log` with target_type=user, target_id={UUID}, IP, timestamp. |
 | A.11 | Role separation enforced | ✅ | [`internal/api/users.go`](../../internal/api/users.go) — admin-only checks; [`frontend/src/contexts/AuthContext.tsx`](../../frontend/src/contexts/AuthContext.tsx) — `ROUTE_PERMISSIONS` matrix | Backend rejects unauthorized role mutations with 403; frontend blocks navigation to roles the user can't access. Six roles defined: `admin`, `soc_supervisor`, `soc_operator`, `site_manager`, `customer`, `viewer`. |
+| A.13a | Cross-tenant RBAC isolation on customer-facing endpoints | ✅ | [`internal/database/platform_db.go`](../../internal/database/platform_db.go) `CallerScope` + `ListSitesScoped`; [`internal/api/platform.go`](../../internal/api/platform.go) `callerScope` helper applied in `HandleListSites`, `HandleGetSite`, `HandleListIncidents` | A customer signed in with role=customer + organization_id=co-acme can only see ACME sites; requesting another org's site returns 404 (not 403, no existence leak). SOC roles (admin/supervisor/operator) bypass scoping. AssignedSiteIDs is loaded fresh from `users.assigned_site_ids` on every request, so a re-assignment takes effect on the next call rather than the next login. Smoke-tested with two organizations: admin sees all 4 sites; ACME customer sees only their 2; Zenith customer sees only their 1; cross-tenant fetch returns 404. |
 | A.12 | JWT signing secret externalized | ✅ | [`internal/config/config.go:43`](../../internal/config/config.go#L43) reads `JWT_SECRET` env | The env-default fallback is a placeholder string and is **explicitly unsafe**. Production deployments must set `JWT_SECRET` (compose enforces this with `${JWT_SECRET:?...}`). Operator instructions: `openssl rand -hex 32`. |
 
 ### Dual-operator verification ("four-eyes rule")
@@ -156,7 +157,7 @@ than a re-architecture.
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 44 |
+| ✅ Implemented | 45 |
 | 🟡 Partial | 0 |
 | ⏳ Planned | 3 |
 | 🚫 Out of scope | 3 |

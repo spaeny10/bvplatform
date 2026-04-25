@@ -9,9 +9,39 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"onvif-tool/internal/avs"
 )
+
+// scanSiteRows is the shared row → []Site reader used by both the
+// unscoped ListSites and the RBAC-scoped ListSitesScoped. The column
+// list in the SELECT must match this function exactly; refactoring
+// either side of that pair means refactoring both.
+func scanSiteRows(rows pgx.Rows) ([]Site, error) {
+	var sites []Site
+	for rows.Next() {
+		var s Site
+		var notesJSON []byte
+		if err := rows.Scan(&s.ID, &s.Name, &s.Address, &s.OrganizationID, &s.Latitude, &s.Longitude, &s.Status, &s.MonitoringStart, &s.MonitoringEnd, &notesJSON, &s.FeatureMode,
+			&s.RetentionDays, &s.RecordingMode, &s.PreBufferSec, &s.PostBufferSec, &s.RecordingTriggers, &s.RecordingSchedule,
+			&s.CreatedAt, &s.CamerasOnline, &s.CamerasTotal); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(notesJSON, &s.SiteNotes)
+		if s.SiteNotes == nil {
+			s.SiteNotes = []string{}
+		}
+		s.ComplianceScore = 85
+		s.Trend = "flat"
+		s.LastActivity = time.Now().UTC().Format(time.RFC3339)
+		sites = append(sites, s)
+	}
+	if sites == nil {
+		sites = []Site{}
+	}
+	return sites, nil
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Organization CRUD
@@ -70,6 +100,91 @@ func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
 // ═══════════════════════════════════════════════════════════════
 // Site CRUD
 // ═══════════════════════════════════════════════════════════════
+
+// CallerScope describes how a list query should be filtered for the
+// authenticated user. Built from JWT claims at the handler layer:
+//
+//   - Role: from claims.Role
+//   - OrganizationID: from claims.OrganizationID (set for customer/
+//     site_manager accounts that are tied to a customer org)
+//   - AssignedSiteIDs: from users.assigned_site_ids (loaded fresh
+//     from the DB at request time so a site assignment change takes
+//     effect on the next request, not on the next login)
+//
+// IsUnscoped returns true for SOC-internal roles that should see
+// everything (admin, soc_supervisor, soc_operator). Anyone else is
+// constrained to their org's sites or their explicit assignment.
+type CallerScope struct {
+	Role            string
+	OrganizationID  string
+	AssignedSiteIDs []string
+}
+
+// IsUnscoped reports whether the caller should see global data.
+// Centralized so any handler can ask the same question and get the
+// same answer.
+func (c CallerScope) IsUnscoped() bool {
+	switch c.Role {
+	case "admin", "soc_supervisor", "soc_operator":
+		return true
+	}
+	return false
+}
+
+// ListSitesScoped returns sites the caller is allowed to see. Replaces
+// ListSites in handler call paths to enforce row-level RBAC at the DB
+// layer rather than relying on the frontend to filter — a UL 827B
+// reviewer (and any reasonable security review) wants the boundary
+// checked on every read, not assumed.
+func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, error) {
+	base := `
+		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
+		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
+		       COALESCE(s.feature_mode, 'security_and_safety') AS feature_mode,
+		       COALESCE(s.retention_days, 30),
+		       COALESCE(s.recording_mode, 'continuous'),
+		       COALESCE(s.pre_buffer_sec, 10),
+		       COALESCE(s.post_buffer_sec, 30),
+		       COALESCE(s.recording_triggers, 'motion,object'),
+		       COALESCE(s.recording_schedule, ''),
+		       s.created_at,
+		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
+		       COUNT(c.id) AS cameras_total
+		FROM sites s
+		LEFT JOIN cameras c ON c.site_id = s.id`
+
+	var rows pgx.Rows
+	var err error
+	switch {
+	case scope.IsUnscoped():
+		rows, err = db.Pool.Query(ctx, base+` GROUP BY s.id ORDER BY s.name`)
+	case scope.OrganizationID != "":
+		// Customer / site_manager: scoped to their organization's
+		// sites. Plus any explicitly-assigned sites in case the user
+		// has a cross-org assignment (rare but supported).
+		rows, err = db.Pool.Query(ctx, base+`
+			WHERE s.organization_id = $1
+			   OR ($2::text[] IS NOT NULL AND s.id = ANY($2::text[]))
+			GROUP BY s.id ORDER BY s.name`,
+			scope.OrganizationID, scope.AssignedSiteIDs)
+	case len(scope.AssignedSiteIDs) > 0:
+		rows, err = db.Pool.Query(ctx, base+`
+			WHERE s.id = ANY($1::text[])
+			GROUP BY s.id ORDER BY s.name`,
+			scope.AssignedSiteIDs)
+	default:
+		// No org, no assignments — caller has access to nothing. Return
+		// empty rather than 403 so the UI can render a "no sites yet"
+		// state cleanly. The router still rejects unauthenticated
+		// callers upstream of this method.
+		return []Site{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSiteRows(rows)
+}
 
 func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
 	rows, err := db.Pool.Query(ctx, `

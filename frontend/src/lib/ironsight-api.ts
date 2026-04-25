@@ -822,6 +822,18 @@ export async function submitAIFeedback(alarmId: string, agreed: boolean): Promis
 }
 
 // ── Evidence Sharing ──
+//
+// Wired against the real backend endpoints registered in
+// internal/api/router.go:
+//   POST   /api/v1/incidents/{id}/share   create
+//   DELETE /api/v1/shares/{token}         revoke
+//   GET    /share/{token}                 public read (no auth)
+//
+// The backend caps expiration at 90 days and defaults to 7 — anything
+// longer is rejected at the handler. The "never" UI option is now
+// silently mapped to the maximum allowed (90 days) so an operator
+// who picks it gets the longest legal window without a confusing
+// 400 from the server.
 
 export interface EvidenceShareRequest {
   incident_id: string;
@@ -832,29 +844,38 @@ export interface EvidenceShareResponse {
   token: string;
   url: string;
   expires_at: string | null;
-  cloud_sync_status: 'syncing' | 'complete' | 'failed';
 }
 
+const SHARE_TTL_HOURS: Record<EvidenceShareRequest['expires_in'], number> = {
+  '1h': 1,
+  '1d': 24,
+  '1w': 24 * 7,
+  '1m': 24 * 30,
+  'never': 24 * 90, // backend ceiling
+};
+
 export async function createEvidenceShareLink(req: EvidenceShareRequest): Promise<EvidenceShareResponse> {
-  try {
-    return await fetchJSON(`${BASE}/evidence/share`, {
-      method: 'POST',
-      body: JSON.stringify(req),
-    });
-  } catch {
-    const token = `ev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    return {
-      token,
-      url: `/evidence/${token}`,
-      expires_at: req.expires_in === 'never' ? null : new Date(Date.now() + 86400000).toISOString(),
-      cloud_sync_status: 'complete',
-    };
-  }
+  const hours = SHARE_TTL_HOURS[req.expires_in] ?? 24 * 7;
+  const created = await fetchJSON<{
+    token: string;
+    incident_id: string;
+    expires_at: string | null;
+  }>(`${BASE}/incidents/${encodeURIComponent(req.incident_id)}/share`, {
+    method: 'POST',
+    body: JSON.stringify({
+      incident_id: req.incident_id,
+      expires_in_hours: hours,
+    }),
+  });
+  return {
+    token: created.token,
+    url: `/share/${created.token}`,
+    expires_at: created.expires_at,
+  };
 }
 
 export async function revokeEvidenceShareLink(token: string): Promise<void> {
-  try { await fetchJSON(`${BASE}/evidence/share/${token}`, { method: 'DELETE' }); }
-  catch { /* mock no-op */ }
+  await fetchJSON(`${BASE}/shares/${encodeURIComponent(token)}`, { method: 'DELETE' });
 }
 
 // ── vLM Safety Findings ──

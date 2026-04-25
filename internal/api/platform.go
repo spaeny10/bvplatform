@@ -75,9 +75,32 @@ func HandleDeleteOrganization(db *database.DB) http.HandlerFunc {
 // Sites
 // ═══════════════════════════════════════════════════════════════
 
+// callerScope builds a database.CallerScope from the authenticated
+// user's claims, looking up assigned_site_ids fresh from the DB so a
+// site re-assignment takes effect on the next request rather than the
+// next login. Returns a zero-value scope on error — the scoped DB
+// methods treat that as "no access" and return empty rather than
+// global data, which is the safe default.
+func callerScope(r *http.Request, db *database.DB) database.CallerScope {
+	claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+	if claims == nil {
+		return database.CallerScope{}
+	}
+	scope := database.CallerScope{
+		Role:           claims.Role,
+		OrganizationID: claims.OrganizationID,
+	}
+	if uid, err := uuid.Parse(claims.UserID); err == nil {
+		if u, err := db.GetUserByID(r.Context(), uid); err == nil && u != nil {
+			scope.AssignedSiteIDs = u.AssignedSiteIDs
+		}
+	}
+	return scope
+}
+
 func HandleListSites(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		sites, err := db.ListSites(r.Context())
+		sites, err := db.ListSitesScoped(r.Context(), callerScope(r, db))
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -93,6 +116,27 @@ func HandleGetSite(db *database.DB) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "Site not found", 404)
 			return
+		}
+		// Scope guard: customers and site managers can only view sites
+		// in their org or their explicit assignment list. SOC roles
+		// (admin/supervisor/operator) bypass. Returns 404 (not 403) for
+		// out-of-scope sites so we don't leak existence to a probing
+		// caller — same opacity rule we use for revoked share tokens.
+		scope := callerScope(r, db)
+		if !scope.IsUnscoped() {
+			allowed := scope.OrganizationID != "" && site.OrganizationID == scope.OrganizationID
+			if !allowed {
+				for _, sid := range scope.AssignedSiteIDs {
+					if sid == id {
+						allowed = true
+						break
+					}
+				}
+			}
+			if !allowed {
+				http.Error(w, "Site not found", 404)
+				return
+			}
 		}
 		writeJSON(w, site)
 	}
@@ -280,6 +324,53 @@ func HandleListIncidents(db *database.DB) http.HandlerFunc {
 				limit = n
 			}
 		}
+
+		// Scope clamp: customers / site managers see only incidents at
+		// sites they're allowed to access. We compute the allowed-site
+		// set up front and either use it as the filter (no site_id
+		// supplied) or verify the requested site_id falls within it.
+		// SOC roles bypass.
+		scope := callerScope(r, db)
+		if !scope.IsUnscoped() {
+			allowedSites, err := db.ListSitesScoped(r.Context(), scope)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			allowedIDs := make(map[string]bool, len(allowedSites))
+			for _, s := range allowedSites {
+				allowedIDs[s.ID] = true
+			}
+			if siteID != "" {
+				if !allowedIDs[siteID] {
+					// Out-of-scope: empty list (don't leak existence).
+					writeJSON(w, []interface{}{})
+					return
+				}
+			} else if len(allowedIDs) == 0 {
+				writeJSON(w, []interface{}{})
+				return
+			}
+			// If no site_id was supplied, we'd need the DB layer to
+			// accept a list of allowed ids. For now, fan out per site
+			// and merge — simple, no schema change. Acceptable up to
+			// ~100 sites per customer; beyond that we should add a
+			// proper IN-clause variant.
+			if siteID == "" {
+				var merged []database.IncidentSummary
+				for sid := range allowedIDs {
+					rows, qErr := db.ListIncidents(r.Context(), sid, severity, limit)
+					if qErr != nil {
+						http.Error(w, qErr.Error(), 500)
+						return
+					}
+					merged = append(merged, rows...)
+				}
+				writeJSON(w, merged)
+				return
+			}
+		}
+
 		incidents, err := db.ListIncidents(r.Context(), siteID, severity, limit)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
