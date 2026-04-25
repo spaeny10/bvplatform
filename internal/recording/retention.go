@@ -14,6 +14,26 @@ import (
 //  1. Disk space caps (max_gb per storage location) — highest priority
 //  2. Per-camera retention days
 //  3. Storage location default retention days (fallback when camera's is 0)
+//
+// Scope: this manager touches recording-storage tables ONLY.
+//
+//	cameras, segments, exports, thumbnails, hls, recordings on disk.
+//
+// It MUST NOT touch:
+//
+//	audit_log, playback_audits, deterrence_audits, security_events,
+//	incidents, evidence_share_opens, revoked_tokens.
+//
+// Audit and evidence tables are governed by UL 827B / TMA-AVS-01
+// retention policy (see database.MinAuditRetentionDays — currently
+// 365 days minimum, never automatically purged). The append-only
+// triggers on the audit tables provide a runtime backstop in case a
+// future code change accidentally adds a DELETE here, but the
+// expectation is that this file's surface stays narrow on its own.
+//
+// If a customer ever invokes a GDPR right-to-erasure request, that
+// is a manual operation performed inside a documented signed-
+// maintenance window — never an automated retention purge.
 type RetentionManager struct {
 	db     *database.DB
 	stopCh chan struct{}

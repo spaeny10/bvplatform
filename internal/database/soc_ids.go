@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+// MinAuditRetentionDays is the policy floor for how long audit-trail
+// rows must remain readable in the database. UL 827B reviewers
+// consistently expect 12 months minimum; some state regulators
+// (notably California and New York monitoring statutes) push this to
+// 24 months. We default to 365 here and let an operator extend it via
+// configuration if their jurisdiction demands more.
+//
+// The append-only triggers on audit_log / playback_audits /
+// deterrence_audits enforce this implicitly — without a DELETE path,
+// "minimum retention" is "forever, less manual intervention." The
+// constant is exported so dashboards, status endpoints, and audit-
+// package documentation can quote one canonical number rather than
+// drift apart over time.
+const MinAuditRetentionDays = 365
+
 // Short, phoneticizable identifiers for SOC operations.
 //
 // Why bother: the UUID primary keys work fine inside the app and over

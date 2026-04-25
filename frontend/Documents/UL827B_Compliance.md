@@ -65,7 +65,7 @@ Ironsight codebase. Status legend:
 | B.5 | Operator action auditing (claim, ack, dispose alarms) | ✅ | [`internal/api/audit.go`](../../internal/api/audit.go) — `claim_alarm`, `release_alarm`, `ack_alarm`, `dispose_alarm` action verbs | Sub-path-aware classifier: `/api/alarms/{id}/claim` records distinct verb, not generic `update_alarm`. |
 | B.6 | Recording playback auditing | ✅ | [`internal/api/audit_playback.go`](../../internal/api/audit_playback.go) → `playback_audits` table (append-only) | Separate table from `audit_log` so playback patterns are queryable on their own. Captures user, segment, IP, time. |
 | B.7 | Deterrence-action auditing (strobe/siren) | ✅ | `deterrence_audits` table (append-only) | Records every operator-initiated talk-down/strobe/siren activation with operator id, camera, alarm context. |
-| B.8 | Audit log retention | 🟡 | No automated purge in [`internal/retention`](../../internal/retention) — tables grow unbounded | **Implicitly compliant by virtue of never deleting.** A 365-day-minimum retention floor should be formalized as an explicit policy comment in the retention worker. UL 827B reviewers want to see *intent*, not just absence-of-purge. |
+| B.8 | Audit log retention | ✅ | Policy constant [`database.MinAuditRetentionDays`](../../internal/database/soc_ids.go) = 365; explicit scope comment on [`recording.RetentionManager`](../../internal/recording/retention.go) listing tables it does NOT touch | Append-only triggers (B.2) make retention "forever, less explicit signed-maintenance-window intervention." Policy constant is exported so dashboards and audit deliverables cite one canonical number. The retention worker's docstring enumerates exactly which tables it owns and which are off-limits, so a future contributor can't accidentally extend it onto an audit table. |
 | B.9 | Audit log export | ✅ | [`internal/api/audit.go`](../../internal/api/audit.go) `HandleQueryAuditLog` with `?format=csv` | `GET /api/audit?format=csv` returns the filtered audit log as `text/csv` with a timestamped filename in `Content-Disposition`. Same `username`, `action`, `target_type` filters apply. Limit clamps at 10,000 rows per request; for larger ranges, page by date. |
 
 ### C. Incident & Alarm Identifiers
@@ -117,7 +117,7 @@ Ironsight codebase. Status legend:
 | # | Control | Status | Evidence | Notes |
 |---|---|---|---|---|
 | H.1 | Recording retention enforced per site | ✅ | [`internal/retention`](../../internal/retention); `sites.retention_days` column | Worker purges segments older than the site's contracted retention. |
-| H.2 | Audit table retention | 🟡 | No purge job; tables grow unbounded — see B.8 | Planned: add an explicit "audit tables retain ≥ 365 days; never automatically purged" policy comment in the retention worker so the intent is visible to an auditor. |
+| H.2 | Audit table retention | ✅ | See B.8 | 365-day minimum, codified as `database.MinAuditRetentionDays`. Retention worker's scope comment explicitly enumerates audit tables as off-limits. |
 
 ---
 
@@ -125,14 +125,16 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 33 |
-| 🟡 Partial | 2 |
+| ✅ Implemented | 34 |
+| 🟡 Partial | 1 |
 | ⏳ Planned | 4 |
 | 🚫 Out of scope | 3 |
 
-**Of the planned items**, the next two in the engineering queue are
-MFA (A.9) and httpOnly cookie migration. DC-09 (F.3) and digital
-signing (D.5) are roadmap items deferred until after first-cert.
+The single remaining partial (D.2) closes when the share-creation
+handler is built (Phase B.8). **Of the planned items**, the next
+two in the engineering queue are MFA (A.9) and httpOnly cookie
+migration. DC-09 (F.3) and digital signing (D.5) are roadmap items
+that close together with TMA-AVS-01 readiness in Phase B.
 
 ---
 
