@@ -62,6 +62,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// share state to probes).
 	r.Get("/share/{token}", HandlePublicEvidenceShare(db))
 
+	// Public status endpoint. Unauthenticated — trust signals matter
+	// most when the customer is worried, which is exactly when they
+	// don't want to log in. Returns aggregates only (camera counts,
+	// SOC active, last disposition timestamp); no per-customer data.
+	// Lives under /api so the Next.js frontend proxy already picks it
+	// up; the customer-visible page is at /status (Next route).
+	r.Get("/api/status", HandlePublicStatus(db))
+
 	// Authenticated auth routes
 	r.With(RequireAuth(cfg, db)).Get("/auth/me", HandleGetMe(db))
 	r.With(RequireAuth(cfg, db)).Post("/auth/logout", HandleLogout(db))
