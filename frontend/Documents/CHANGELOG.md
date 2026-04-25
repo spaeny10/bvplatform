@@ -31,6 +31,70 @@ those messages are actually informative, customer-controllable
 preferences, a trust-signal status page, and an auto-emailed
 monthly summary that proves what the customer paid for.
 
+### `e44dd48` — Customer support tickets + US-only compliance posture + retention extension
+**Date:** 2026-04-25
+**Files:** `cmd/server/main.go` (schema), `internal/database/support.go` (new), `internal/api/support.go` (new), `internal/notify/dispatcher.go` (SupportTicketEvent), `internal/api/router.go` (5 routes), `frontend/src/components/portal/SupportWidget.tsx` (new), `frontend/src/app/portal/layout.tsx`, `frontend/src/components/reports/SupportTicketsCard.tsx` (new), `frontend/src/app/reports/page.tsx`, `frontend/Documents/USCompliance.md` (new), `internal/recording/retention.go` (pass 4 + comment refresh), `internal/database/support.go` (PruneClosedSupportTickets) (≈12 files, +900)
+
+Three things in one commit because they answer one question — "are we
+ready to ship to a US B2B customer who reads procurement checklists?"
+
+**Customer support tickets.** A first-class in-app ticket system so
+customers don't have to find an email address to reach the SOC. New
+tables `support_tickets` (id, org, site, creator, subject, status,
+last_message metadata) and `support_messages` (ticket_id, author,
+role, body) with proper FKs, composite indexes, and a partial open-
+only index for the supervisor inbox query. Five API endpoints under
+`/api/support/tickets` with full RBAC scoping (customers/site_managers
+locked to their org, soc_supervisor + admin see globally,
+soc_operator + viewer rejected — cross-tenant attempts return 404 not
+403). State machine: customer creates → `open`, SOC replies →
+`answered`, customer reply on answered → re-opens, explicit close →
+`closed` and stays final. Email fanout via the dispatcher: new ticket
+→ all SOC supervisors, SOC reply → ticket creator, customer reply →
+all SOC supervisors. Customer-side floating bubble widget bottom-
+right of every portal page (hides for soc_operator), three views
+(list / compose / thread), 30s polling, status pills (AWAITING SOC /
+NEW REPLY / CLOSED). Supervisor-side two-pane inbox in the new
+`/reports` Support tab — left filterable list, right thread + reply
++ Close override. Smoke-tested end-to-end: Bob (site_manager)
+creates → admin gets email → admin replies → status flips to
+answered → Bob gets email → admin closes → ticket appears under
+"Closed" filter, no longer in "Open".
+
+**USCompliance.md — US-only compliance posture.** Confirms scope
+decision: BV-Platform sells US-only, no EU customers planned, GDPR
+explicitly out of scope. Documents the regimes that *do* apply: UL
+827B (primary cert target), SOC 2 (B2B procurement expectation),
+CCPA/CPRA + sister state privacy laws (B2B service-provider carve-
+outs), 50-state breach-notification laws, and the strict-liability
+biometric statutes (BIPA / CUBI / WA / NY) plus two-party-consent
+audio statutes that gate two specific features. Inventories the
+controls already shipped (audit log, MFA, RBAC, evidence signing,
+recording retention, lockout) and maps each to the regime it
+satisfies. Marks face recognition and audio capture as **hard-line
+gated** — technically possible in the codebase but not to be turned
+on without per-state legal review. Lists US sub-processors (SendGrid,
+Twilio, self-hosted VLM, cloud host) and confirms data does not leave
+the US. Lists the customer-facing artifacts still pending (privacy
+notice page, sub-processor page, DPA template, incident-response
+runbook). The whole document is the single answer to "are we GDPR-
+compliant?" → "No, and we're not going to be, because we don't sell
+to EU customers; here's what we *are* compliant with."
+
+**Retention extension for support tickets.** Existing recording
+retention manager (`internal/recording/retention.go`) already had
+disk-cap + per-camera + storage-fallback passes. Added pass 4: closed
+tickets older than 180 days are deleted (messages cascade). Open and
+answered tickets are never touched regardless of age. Audit log,
+playback_audits, deterrence_audits, evidence_share_opens — still
+hard-walled off as the chain-of-custody record (UL 827B 365-day
+minimum). Updated the file's header comment to remove the stale GDPR
+reference and point at USCompliance.md instead. New
+`db.PruneClosedSupportTickets(ctx, cutoff)` helper. Sized 180 days so
+operators have ample time for recurrence analysis but customer free-
+text PII (names, gate codes, contact details) doesn't sit
+indefinitely.
+
 ### `10d2d5d` — PWA: service worker + install prompt + mobile bottom-tab nav
 **Date:** 2026-04-25 19:54 CDT
 **Files:** `frontend/public/sw.js` (new), `frontend/src/app/offline/page.tsx` (new), `frontend/src/components/shared/PWAManager.tsx` (new), `frontend/src/components/portal/PortalMobileNav.tsx` (new), `frontend/src/app/layout.tsx`, `frontend/src/app/portal/layout.tsx` (6 files, +437)

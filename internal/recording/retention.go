@@ -15,9 +15,11 @@ import (
 //  2. Per-camera retention days
 //  3. Storage location default retention days (fallback when camera's is 0)
 //
-// Scope: this manager touches recording-storage tables ONLY.
+// Scope: this manager touches recording-storage tables and a small
+// set of explicitly-allowlisted operational tables.
 //
 //	cameras, segments, exports, thumbnails, hls, recordings on disk.
+//	support_tickets + support_messages (closed-and-stale only).
 //
 // It MUST NOT touch:
 //
@@ -31,9 +33,11 @@ import (
 // future code change accidentally adds a DELETE here, but the
 // expectation is that this file's surface stays narrow on its own.
 //
-// If a customer ever invokes a GDPR right-to-erasure request, that
-// is a manual operation performed inside a documented signed-
-// maintenance window — never an automated retention purge.
+// US-only deployment scope. Per-customer data-deletion requests
+// (rare in B2B and usually covered by end-of-contract terms) are a
+// manual operation performed inside a documented signed-maintenance
+// window — never an automated retention purge. See
+// `Documents/USCompliance.md` for the full posture.
 type RetentionManager struct {
 	db     *database.DB
 	stopCh chan struct{}
@@ -93,6 +97,9 @@ func (rm *RetentionManager) cleanup(ctx context.Context) {
 	d, b = rm.enforceRetentionDays(ctx)
 	totalDeleted += d
 	totalBytes += b
+
+	// ── Pass 4: Operational tables (closed support tickets) ──
+	rm.pruneSupportTickets(ctx)
 
 	if totalDeleted > 0 {
 		log.Printf("[RETENTION] Cleanup complete: %d segment(s) deleted, %.2f MB freed",
@@ -263,3 +270,29 @@ func (rm *RetentionManager) enforceRetentionDays(ctx context.Context) (int, int6
 
 	return totalDeleted, totalBytes
 }
+
+// supportTicketRetentionDays — closed tickets older than this are
+// purged. 180 days gives operators ample time to reference the
+// thread for recurrence analysis without letting customer-content
+// PII (names, gate codes, contact details that may appear in free
+// text) sit indefinitely. Open and answered tickets are never
+// purged regardless of age.
+const supportTicketRetentionDays = 180
+
+// pruneSupportTickets removes closed support tickets (and their
+// messages, via ON DELETE CASCADE) older than the retention window.
+// We only purge tickets in status='closed' — open and answered
+// tickets are active state and stay regardless of age.
+func (rm *RetentionManager) pruneSupportTickets(ctx context.Context) {
+	cutoff := time.Now().Add(-time.Duration(supportTicketRetentionDays) * 24 * time.Hour)
+	deleted, err := rm.db.PruneClosedSupportTickets(ctx, cutoff)
+	if err != nil {
+		log.Printf("[RETENTION] Failed to prune closed support tickets: %v", err)
+		return
+	}
+	if deleted > 0 {
+		log.Printf("[RETENTION] Pruned %d closed support ticket(s) older than %d days",
+			deleted, supportTicketRetentionDays)
+	}
+}
+
