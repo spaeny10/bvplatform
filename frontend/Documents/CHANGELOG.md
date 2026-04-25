@@ -27,7 +27,7 @@ The shift from "the product works" to "the product survives a bad
 day." Defensive engineering that any customer's procurement team will
 ask for and that lets the on-call engineer sleep.
 
-### `pending` — Automated backups + DR runbook + SecurityOverview
+### `335fedd` — Automated backups + DR runbook + SecurityOverview
 **Date:** 2026-04-25
 **Files:** `scripts/backup-db.sh` (new), `scripts/restore-db.sh` (new), `scripts/verify-backup.sh` (new), `frontend/Documents/DisasterRecovery.md` (new), `frontend/Documents/SecurityOverview.md` (new) (5 files, +900)
 
