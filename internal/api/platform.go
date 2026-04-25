@@ -1,16 +1,21 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"onvif-tool/internal/auth"
+	"onvif-tool/internal/avs"
 	"onvif-tool/internal/database"
+	"onvif-tool/internal/notify"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -538,7 +543,7 @@ func HandleGetCurrentOperator(db *database.DB) http.HandlerFunc {
 // Security Events
 // ═══════════════════════════════════════════════════════════════
 
-func HandleCreateSecurityEvent(db *database.DB) http.HandlerFunc {
+func HandleCreateSecurityEvent(db *database.DB, notifier *notify.Dispatcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input database.SecurityEventCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -578,7 +583,113 @@ func HandleCreateSecurityEvent(db *database.DB) http.HandlerFunc {
 			// Level 1 AI validation: compare AI threat assessment vs operator disposition
 			_ = db.ComputeAICorrectness(r.Context(), input.AlarmID, input.DispositionCode)
 		}
+
+		// Customer notifications. Fire-and-forget so a slow SMTP relay
+		// doesn't block the operator's disposition flow — they've
+		// finished their work, the customer notification is downstream
+		// of that. The dispatcher itself logs every send (success or
+		// failure) so an op-flow audit can reconstruct what went out.
+		//
+		// CreateSecurityEvent returns a sparse SecurityEvent (only ID
+		// + a few keys for back-compat); we enrich from `input` before
+		// dispatching so the recipient-match SQL sees the right
+		// severity / camera / disposition labels.
+		if notifier != nil {
+			eventCopy := *event
+			eventCopy.Severity = input.Severity
+			eventCopy.CameraID = input.CameraID
+			eventCopy.Type = input.Type
+			eventCopy.Description = input.Description
+			eventCopy.DispositionCode = input.DispositionCode
+			eventCopy.DispositionLabel = input.DispositionLabel
+			eventCopy.OperatorCallsign = input.OperatorCallsign
+			eventCopy.OperatorNotes = input.OperatorNotes
+			// AVSScore was computed inside CreateSecurityEvent; recompute
+			// from factors here so the email body matches what landed
+			// in the row. avs.ComputeScore is a pure function so this
+			// is safe.
+			eventCopy.AVSScore = avs.ComputeScore(input.AVSFactors)
+			inputCopy := input
+			go dispatchAlarmNotifications(db, notifier, &eventCopy, &inputCopy)
+		}
+
 		writeJSON(w, map[string]string{"event_id": event.ID})
+	}
+}
+
+// dispatchAlarmNotifications resolves recipients and hands off to the
+// channel mailers. Runs on its own goroutine; ctx is fresh (with a
+// short timeout) because the request context is already cancelled
+// once the response went out.
+func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev *database.SecurityEvent, input *database.SecurityEventCreate) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	recipients, err := db.MatchAlarmRecipients(ctx, ev.SiteID, ev.Severity, time.Now())
+	if err != nil {
+		log.Printf("[NOTIFY] failed to resolve recipients for event %s: %v", ev.ID, err)
+		return
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	// Pull the camera + site display names for the email body so the
+	// customer doesn't see opaque UUIDs. Best-effort: we fall back to
+	// what's on the event row if the camera lookup fails. Note the
+	// signature is GetCameraWithSite(ctx, cameraIDString) — we pass the
+	// string directly rather than a parsed UUID.
+	cameraName := ev.CameraID
+	siteName := ev.SiteID
+	if cn, _, sn, err := db.GetCameraWithSite(ctx, ev.CameraID); err == nil {
+		if cn != "" {
+			cameraName = cn
+		}
+		if sn != "" {
+			siteName = sn
+		}
+	}
+
+	avsLabel := ""
+	if ev.AVSScore > 0 || input.AVSFactors.VideoVerified {
+		avsLabel = avsScoreLabel(int(ev.AVSScore))
+	}
+
+	dispatchRecipients := make([]notify.Recipient, 0, len(recipients))
+	for _, r := range recipients {
+		dispatchRecipients = append(dispatchRecipients, notify.Recipient{
+			Email: r.Email,
+			SMS:   r.SMS,
+		})
+	}
+
+	notifier.AlarmDispositioned(ctx, notify.AlarmDispositionContext{
+		EventID:          ev.ID,
+		SiteID:           ev.SiteID,
+		SiteName:         siteName,
+		CameraName:       cameraName,
+		Severity:         ev.Severity,
+		DispositionLabel: ev.DispositionLabel,
+		OperatorCallsign: ev.OperatorCallsign,
+		OperatorNotes:    ev.OperatorNotes,
+		AVSScore:         int(ev.AVSScore),
+		AVSLabel:         avsLabel,
+		HappenedAt:       time.UnixMilli(ev.Ts),
+	}, dispatchRecipients)
+}
+
+func avsScoreLabel(s int) string {
+	switch s {
+	case 4:
+		return "CRITICAL"
+	case 3:
+		return "ELEVATED"
+	case 2:
+		return "VERIFIED"
+	case 1:
+		return "MINIMAL"
+	default:
+		return "UNVERIFIED"
 	}
 }
 

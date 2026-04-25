@@ -42,6 +42,30 @@ type Config struct {
 	// rather than the dev-time localhost defaults.
 	AllowedOrigins []string
 
+	// SMTPHost / SMTPPort / SMTPUser / SMTPPass / SMTPFrom configure the
+	// outbound notification mailer. When SMTPHost is empty we fall back
+	// to a stub mailer that logs notifications to stderr instead of
+	// sending — useful for dev / CI environments without an SMTP relay.
+	// PublicURL is the customer-visible base URL the mailer embeds in
+	// links ("View incident: <url>"); production must override the
+	// localhost default so emailed links land on the right hostname.
+	SMTPHost  string
+	SMTPPort  string
+	SMTPUser  string
+	SMTPPass  string
+	SMTPFrom  string
+	PublicURL string
+
+	// Twilio credentials for SMS notifications. AccountSid + AuthToken
+	// from the Twilio console; From is the E.164 number you provisioned
+	// (e.g. "+15551234567"). When any of these are empty SMS sending
+	// falls back to stub mode (logs to stderr) so dev environments
+	// without Twilio credentials still produce visible output through
+	// the dispatcher.
+	TwilioAccountSid string
+	TwilioAuthToken  string
+	TwilioFrom       string
+
 	// EvidenceSigningKey is a hex-encoded secret used to HMAC-sign
 	// evidence export bundles so a downstream consumer (insurer, court,
 	// PSAP) can detect tampering. The signed manifest sits alongside the
@@ -107,6 +131,15 @@ func Load() *Config {
 		DefaultAdminPass:    getEnv("ADMIN_PASSWORD", "admin"),
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
 		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
+		SMTPHost:            getEnv("SMTP_HOST", ""),
+		SMTPPort:            getEnv("SMTP_PORT", "587"),
+		SMTPUser:            getEnv("SMTP_USER", ""),
+		SMTPPass:            getEnv("SMTP_PASS", ""),
+		SMTPFrom:            getEnv("SMTP_FROM", ""),
+		PublicURL:           getEnv("NOTIFY_PUBLIC_URL", ""),
+		TwilioAccountSid:    getEnv("TWILIO_ACCOUNT_SID", ""),
+		TwilioAuthToken:     getEnv("TWILIO_AUTH_TOKEN", ""),
+		TwilioFrom:          getEnv("TWILIO_FROM", ""),
 		ProductName:         getEnv("PRODUCT_NAME", "Ironsight"),
 
 		// MediaMTX: embedded spawn is the historical behaviour, still the

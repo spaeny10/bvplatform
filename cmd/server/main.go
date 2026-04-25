@@ -25,6 +25,7 @@ import (
 	"onvif-tool/internal/drivers"
 	"onvif-tool/internal/export"
 	msdriver "onvif-tool/internal/milesight"
+	"onvif-tool/internal/notify"
 	"onvif-tool/internal/onvif"
 	"onvif-tool/internal/recording"
 	"onvif-tool/internal/streaming"
@@ -550,6 +551,49 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
 			ON revoked_tokens(expires_at);
 
+		-- Customer notification subscriptions. One row per (user, channel,
+		-- event_type) combo so a user can independently opt into "email
+		-- on critical alarms" + "sms on any alarm at site CS-547" + "no
+		-- monthly summary." event_type is a small enum:
+		--   alarm_disposition: per-event email/sms when SOC closes an alarm
+		--   monthly_summary:   the auto-emailed monthly performance report
+		-- channel is "email" or "sms"; future "push" / "webhook" slot in.
+		-- severity_min lets a user say "only critical+high" — events
+		-- below the threshold are filtered before send.
+		-- site_ids: NULL = all sites visible to user; otherwise array of
+		-- specific site ids the subscription applies to.
+		-- quiet hours: HH:MM in user's display timezone (stored UTC, the
+		-- match logic does the conversion). NULL = always on.
+		CREATE TABLE IF NOT EXISTS notification_subscriptions (
+			id           BIGSERIAL PRIMARY KEY,
+			user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			channel      TEXT NOT NULL,
+			event_type   TEXT NOT NULL,
+			severity_min TEXT NOT NULL DEFAULT 'low',
+			site_ids     JSONB,
+			quiet_start  TEXT DEFAULT '',
+			quiet_end    TEXT DEFAULT '',
+			enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (user_id, channel, event_type)
+		);
+		CREATE INDEX IF NOT EXISTS idx_notification_subs_user
+			ON notification_subscriptions(user_id) WHERE enabled = true;
+		-- For each customer/site_manager user that doesn't already have
+		-- alarm_disposition subscriptions, seed defaults: email on any
+		-- alarm at any of their sites. Users opt OUT, not IN — the
+		-- monitoring relationship implies they want to know.
+		INSERT INTO notification_subscriptions (user_id, channel, event_type, severity_min)
+		SELECT u.id, 'email', 'alarm_disposition', 'low'
+		FROM users u
+		WHERE u.role IN ('customer', 'site_manager')
+		  AND COALESCE(u.email, '') <> ''
+		  AND NOT EXISTS (
+		    SELECT 1 FROM notification_subscriptions s
+		    WHERE s.user_id = u.id AND s.channel = 'email' AND s.event_type = 'alarm_disposition'
+		  );
+
 		-- UL 827B multi-factor authentication. TOTP only for the first
 		-- pass — WebAuthn / hardware keys can layer in later. We keep
 		-- the secret in plaintext at rest because the threat model here
@@ -821,9 +865,28 @@ func main() {
 	// Auto-start recording and streaming for cameras that have recording enabled
 	go autoStartCameras(ctx, db, cfg, recEngine, hlsServer, mtxServer, hub, det, subReg, aiClient)
 
+	// Notification dispatcher — feeds the alarm-disposition emails and
+	// (next batch) the monthly-summary report. SMTP and Twilio fall
+	// back to stub mailers when their respective env vars aren't set,
+	// so dev environments still produce visible log output through
+	// the dispatcher without needing real SendGrid / Twilio creds.
+	emailMailer := notify.SelectMailer(notify.SMTPConfig{
+		Host:     cfg.SMTPHost,
+		Port:     cfg.SMTPPort,
+		Username: cfg.SMTPUser,
+		Password: cfg.SMTPPass,
+		From:     cfg.SMTPFrom,
+	})
+	smsMailer := notify.SelectSMSMailer(notify.TwilioConfig{
+		AccountSid: cfg.TwilioAccountSid,
+		AuthToken:  cfg.TwilioAuthToken,
+		From:       cfg.TwilioFrom,
+	})
+	notifier := notify.NewDispatcher(emailMailer, smsMailer, cfg.ProductName, cfg.PublicURL)
+
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()
-	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg)
+	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier)
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)

@@ -13,13 +13,14 @@ import (
 	"onvif-tool/internal/config"
 	"onvif-tool/internal/database"
 	"onvif-tool/internal/detection"
+	"onvif-tool/internal/notify"
 	"onvif-tool/internal/onvif"
 	"onvif-tool/internal/recording"
 	"onvif-tool/internal/streaming"
 )
 
 // NewRouter creates the HTTP router with all API routes
-func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry) http.Handler {
+func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -217,6 +218,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// respond?" — this endpoint is the canonical source.
 		r.Get("/reports/sla", HandleSLAReport(db))
 
+		// Customer notification preferences — both /me/notifications
+		// and the singular upsert. Available to every authenticated
+		// user; the user_id is always pulled from JWT, so a customer
+		// can only see/edit their own subscriptions.
+		r.Get("/me/notifications", HandleListMyNotificationSubs(db))
+		r.Put("/me/notifications", HandleUpsertMyNotificationSub(db))
+
 		// ════════════════════════════════════════
 		// Ironsight Platform Routes (/api/v1/*)
 		// ════════════════════════════════════════
@@ -266,7 +274,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/operators/{operatorId}/handoffs", HandleOperatorHandoffs(db))
 
 			// Security Events & Incidents
-			r.Post("/events", HandleCreateSecurityEvent(db))
+			r.Post("/events", HandleCreateSecurityEvent(db, notifier))
 			r.Get("/events", HandleListSecurityEvents(db))
 			// Dual-operator verification (UL 827B four-eyes rule).
 			// Restricted to supervisor/admin roles and rejects
