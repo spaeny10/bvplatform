@@ -256,6 +256,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Put("/sites/{id}", HandleUpdateSite(db))
 			r.Put("/sites/{id}/recording", HandleUpdateSiteRecording(db))
 			r.Delete("/sites/{id}", HandleDeleteSiteP(db))
+			// Customer-maintained on-site contact list. Distinct
+			// from site_sops (operator call tree). Read scoped to
+			// site-visible roles; edit restricted to site_manager,
+			// soc_supervisor, admin.
+			r.Get("/sites/{id}/contacts", HandleListSiteContacts(db))
+			r.Put("/sites/{id}/contacts", HandleUpdateSiteContacts(db))
 			r.Get("/sites/{siteId}/cameras", HandleGetSiteCameras(db))
 			r.Get("/sites/{siteId}/sops", HandleListSiteSOPs(db))
 			r.Post("/sites/{siteId}/sops", HandleCreateSiteSOP(db))

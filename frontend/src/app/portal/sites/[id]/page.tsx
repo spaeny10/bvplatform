@@ -163,6 +163,23 @@ export default function SiteDrilldownPage({ params }: { params: { id: string } }
           <span style={{ color: T.textWhite, fontWeight: 500 }}>{site.name}</span>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Self-service contacts editor — site_managers reach this from
+              the breadcrumb-line action so they don't have to dig
+              through site settings to update who answers when an
+              alarm fires. */}
+          <Link
+            href={`/portal/sites/${encodeURIComponent(params.id)}/contacts`}
+            style={{
+              padding: '5px 12px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+              border: '1px solid rgba(247,244,239,0.15)',
+              background: 'rgba(247,244,239,0.04)',
+              color: T.textWhite,
+              textDecoration: 'none', fontFamily: 'inherit',
+              display: 'flex', alignItems: 'center', gap: 5,
+            }}
+          >
+            👥 Contacts
+          </Link>
           {/* Snooze / Disarm */}
           <div style={{ position: 'relative' }}>
             {isSnoozed ? (

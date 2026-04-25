@@ -436,6 +436,16 @@ func main() {
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_schedule   TEXT DEFAULT '';
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_backfilled BOOLEAN DEFAULT false;
 
+		-- Customer-maintained on-site contact list. Distinct from the
+		-- SOC-side site_sops.contacts (operators' call tree) — this is
+		-- what the site owner / site manager edits themselves to keep
+		-- their own contact info current. Stored as JSONB array of
+		-- {name, role, phone, email, notify_on_alarm, notes}; the
+		-- portal UI is the source of truth for customer-facing edits,
+		-- and the SOC can mirror the values into a SOP's call tree
+		-- when running through escalation.
+		ALTER TABLE sites ADD COLUMN IF NOT EXISTS customer_contacts JSONB NOT NULL DEFAULT '[]';
+
 		-- One-time backfill: for each site whose recording settings are still
 		-- at the default, adopt values from the most-recently-updated camera
 		-- on that site. The recording_backfilled flag prevents re-running

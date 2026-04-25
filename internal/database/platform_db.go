@@ -101,6 +101,60 @@ func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
 // Site CRUD
 // ═══════════════════════════════════════════════════════════════
 
+// CustomerContact is a single entry in a site's customer-facing
+// contact list. Distinct from the SOC's SOP call tree — these are
+// the names the customer wants their notification channel to know
+// about, plus the on-site operations contacts the SOC asks for
+// during disposition. notify_on_alarm hints whether this person
+// should receive an SMS when an alarm fires (separate from the
+// authenticated-user notification preferences in
+// notification_subscriptions; this flag drives the to-be-built
+// "non-account contact" SMS path).
+type CustomerContact struct {
+	Name           string `json:"name"`
+	Role           string `json:"role"`
+	Phone          string `json:"phone"`
+	Email          string `json:"email"`
+	NotifyOnAlarm  bool   `json:"notify_on_alarm"`
+	Notes          string `json:"notes,omitempty"`
+}
+
+// GetCustomerContacts returns the contact list stored on the site
+// row. Empty array if never edited. Caller is responsible for site-
+// scope authorization — this method just performs the read.
+func (db *DB) GetCustomerContacts(ctx context.Context, siteID string) ([]CustomerContact, error) {
+	var raw []byte
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(customer_contacts, '[]'::jsonb) FROM sites WHERE id=$1`, siteID,
+	).Scan(&raw)
+	if err != nil {
+		return nil, err
+	}
+	var out []CustomerContact
+	_ = json.Unmarshal(raw, &out)
+	if out == nil {
+		out = []CustomerContact{}
+	}
+	return out, nil
+}
+
+// SetCustomerContacts overwrites the entire contact list. We
+// deliberately don't support per-contact upsert: the list is small
+// (rarely more than a dozen entries) and full replacement keeps the
+// audit trail clean — one row in audit_log per save instead of one
+// per contact change.
+func (db *DB) SetCustomerContacts(ctx context.Context, siteID string, contacts []CustomerContact) error {
+	if contacts == nil {
+		contacts = []CustomerContact{}
+	}
+	raw, err := json.Marshal(contacts)
+	if err != nil {
+		return err
+	}
+	_, err = db.Pool.Exec(ctx, `UPDATE sites SET customer_contacts=$2 WHERE id=$1`, siteID, raw)
+	return err
+}
+
 // CallerScope describes how a list query should be filtered for the
 // authenticated user. Built from JWT claims at the handler layer:
 //
