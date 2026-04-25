@@ -22,14 +22,22 @@ import HealthDashboard from '@/components/HealthDashboard';
 import RecordingHealthCard from '@/components/RecordingHealthCard';
 import { listCameras, Camera, listUsers, createUser, deleteUser, updateUserPassword, updateUserRole, updateUserProfile, UserPublic } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
-import { ToastProvider } from '@/components/ToastProvider';
+import { ToastProvider, useToast } from '@/components/ToastProvider';
 
 type Tab = 'sites' | 'operators' | 'users' | 'settings' | 'health' | 'audit' | 'integrations';
 
-/** Authenticated fetch for /api/v1 calls */
+/**
+ * Authenticated fetch for /api/v1 calls. Throws on non-2xx so the
+ * caller's try/catch surfaces a user-visible error rather than the
+ * action silently no-op-ing. The thrown Error includes the response
+ * body when the server provided one (most error handlers do
+ * http.Error which is plain text), so a toast can show "delete
+ * failed: foreign key constraint…" instead of an opaque "something
+ * went wrong."
+ */
 async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
   const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
-  return fetch(url, {
+  const res = await fetch(url, {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -37,6 +45,32 @@ async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> 
       ...init.headers,
     },
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(body || `${init.method || 'GET'} ${url} failed (${res.status})`);
+  }
+  return res;
+}
+
+/**
+ * Toast-wrapped action runner. Used by admin handlers to bracket
+ * their apiFetch calls with consistent success/error notifications.
+ * Returns true on success, false on error — callers that want
+ * post-action UX (e.g. close a modal only on success) can branch.
+ */
+function useApiAction(): (label: string, fn: () => Promise<void>) => Promise<boolean> {
+  const toast = useToast();
+  return async (label, fn) => {
+    try {
+      await fn();
+      toast.push({ type: 'success', title: label, duration: 2500 });
+      return true;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.push({ type: 'error', title: label + ' failed', body: msg, duration: 6000 });
+      return false;
+    }
+  };
 }
 
 function CompanyCard({ company, sites, onConfigSite, onRefresh }: {
@@ -51,22 +85,35 @@ function CompanyCard({ company, sites, onConfigSite, onRefresh }: {
   const [ecContact, setEcContact] = useState(company.contact_name);
   const [ecEmail, setEcEmail] = useState(company.contact_email);
   const [ecPlan, setEcPlan] = useState<string>(company.plan);
+  const runApi = useApiAction();
 
   const handleSaveCompany = async () => {
-    await apiFetch(`/api/v1/companies/${company.id}`, { method: 'PUT', body: JSON.stringify({ name: ecName, plan: ecPlan, contact_name: ecContact, contact_email: ecEmail }) });
-    setEditingCompany(false); onRefresh();
+    const ok = await runApi('Company saved', async () => {
+      await apiFetch(`/api/v1/companies/${company.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: ecName, plan: ecPlan, contact_name: ecContact, contact_email: ecEmail }),
+      });
+    });
+    if (ok) {
+      setEditingCompany(false);
+      onRefresh();
+    }
   };
 
   const handleDeleteCompany = async () => {
     if (!confirm(`Delete "${company.name}" and all its data?`)) return;
-    await apiFetch(`/api/v1/companies/${company.id}`, { method: 'DELETE' });
-    onRefresh();
+    const ok = await runApi('Company deleted', async () => {
+      await apiFetch(`/api/v1/companies/${company.id}`, { method: 'DELETE' });
+    });
+    if (ok) onRefresh();
   };
 
   const handleDeleteSite = async (siteId: string) => {
     if (!confirm(`Delete site ${siteId}? This will remove all its cameras and SOPs.`)) return;
-    await apiFetch(`/api/v1/sites/${siteId}`, { method: 'DELETE' });
-    onRefresh();
+    const ok = await runApi(`Site ${siteId} deleted`, async () => {
+      await apiFetch(`/api/v1/sites/${siteId}`, { method: 'DELETE' });
+    });
+    if (ok) onRefresh();
   };
 
   const inp = { padding: '6px 10px', fontSize: 12 } as const;
