@@ -272,6 +272,15 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// Restricted to supervisor/admin roles and rejects
 			// self-verification by the disposing operator.
 			r.Post("/events/{id}/verify", HandleVerifySecurityEvent(db))
+
+			// Evidence share lifecycle. Read path is the public
+			// /share/{token} endpoint registered at the top level;
+			// these are the authenticated supervisor-only management
+			// endpoints. Audit middleware tags the actions as
+			// create_evidence_share / revoke_evidence_share.
+			r.Post("/incidents/{id}/share", HandleCreateEvidenceShare(db))
+			r.Get("/incidents/{id}/shares", HandleListEvidenceShares(db))
+			r.Delete("/shares/{token}", HandleRevokeEvidenceShare(db))
 			r.Get("/incidents", HandleListIncidents(db))
 			r.Get("/incidents/{id}", HandleGetIncident(db))
 
