@@ -8,6 +8,7 @@ import { I18nProvider } from '@/hooks/useI18n';
 import { SkipToContent } from '@/hooks/useAccessibility';
 import SessionWarningWrapper from '@/components/shared/SessionWarningWrapper';
 import ErrorBoundary from '@/components/shared/ErrorBoundary';
+import PWAManager from '@/components/shared/PWAManager';
 import { BRAND, brandCssVars } from '@/lib/branding';
 
 // All user-visible branding flows from src/lib/branding.ts. The page title,
@@ -51,6 +52,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                                     {children}
                                 </main>
                                 <SessionWarningWrapper />
+                                {/* PWAManager registers the service worker and
+                                    surfaces a brand-styled install prompt on
+                                    eligible mobile viewports. Renders nothing
+                                    on desktop / installed-PWA / dismissed. */}
+                                <PWAManager />
                             </ErrorBoundary>
                         </I18nProvider>
                     </AuthProvider>
