@@ -31,6 +31,57 @@ those messages are actually informative, customer-controllable
 preferences, a trust-signal status page, and an auto-emailed
 monthly summary that proves what the customer paid for.
 
+### `cb657c1` — Procurement artifacts: privacy notice, sub-processor list, DPA template, IR runbook
+**Date:** 2026-04-25
+**Files:** `frontend/src/app/portal/privacy/page.tsx` (new), `frontend/src/app/portal/subprocessors/page.tsx` (new), `frontend/src/components/portal/PortalLegalFooter.tsx` (new), `frontend/Documents/DPA-template.md` (new), `frontend/Documents/IncidentResponse.md` (new), `frontend/src/app/portal/layout.tsx`, `frontend/src/app/portal/portal.css`, `frontend/Documents/USCompliance.md` (≈8 files, +1300)
+
+The four pending items from `USCompliance.md §4` shipped together
+because they're all answers to the same procurement-team question:
+"can we read your privacy story?"
+
+**Privacy notice page** at `/portal/privacy`. US-generic, written
+explicitly under the service-provider/processor framing of CCPA/CPRA
+and sister state laws. Discloses that we do not sell, do not share
+for cross-context behavioral advertising, do not collect biometric
+identifiers by default, and do not record audio by default. Names
+the audit-retention floor (UL 827B 365 days) and points at the
+sub-processor list. Last-updated and effective dates bumped on every
+revision so procurement can compare timestamps.
+
+**Sub-processor list** at `/portal/subprocessors`. Structured table:
+SendGrid (required, US), Twilio (optional, US), cloud provider
+(required, US — specific provider deferred to per-customer DPA), and
+the self-hosted vision-language model (optional, US). Confirms
+recordings are not transmitted to third parties by the platform
+itself. 30-day notice obligation for material changes is documented.
+
+**Portal legal footer** rendered on every page in the portal layout.
+Single low-weight line: copyright, Privacy, Sub-processors, support
+email. Sits below content; padded enough that the mobile bottom-tab
+nav doesn't overlap.
+
+**DPA template** at `Documents/DPA-template.md`. 14 sections covering
+roles, permitted purposes, data categories, sub-processors, security,
+data subject requests, security-incident notification (72-hour clock
+matching the IR runbook), retention (with the audit-floor carve-out),
+audits (SOC 2 substitution clause), and US-only data residency. Bracketed
+fields where sales/legal complete customer-specific names and dates.
+
+**Incident response runbook** at `Documents/IncidentResponse.md`. The
+canonical operating procedure cited by the DPA. Severity matrix
+(SEV-1/2/3/4 with response-time SLAs), named roles (IC, scribe,
+comms lead, SOC supervisor on duty, customer rep), five phases
+(detect → contain → notify → eradicate → review), forensic
+preservation rule (never DELETE from append-only audit/evidence
+tables — the triggers block this anyway), customer-notice template,
+and a quarterly tabletop-exercise schedule with five reusable
+scenarios. Blameless post-incident review is mandatory within 5
+business days and produces a written report filed at
+`Documents/incidents/<date>-<slug>.md`.
+
+**USCompliance.md status flips.** Four `⏳ Planned` rows in §4 are
+now `✅ Shipped`. Only `SecurityOverview.md` remains pending.
+
 ### `e44dd48` — Customer support tickets + US-only compliance posture + retention extension
 **Date:** 2026-04-25
 **Files:** `cmd/server/main.go` (schema), `internal/database/support.go` (new), `internal/api/support.go` (new), `internal/notify/dispatcher.go` (SupportTicketEvent), `internal/api/router.go` (5 routes), `frontend/src/components/portal/SupportWidget.tsx` (new), `frontend/src/app/portal/layout.tsx`, `frontend/src/components/reports/SupportTicketsCard.tsx` (new), `frontend/src/app/reports/page.tsx`, `frontend/Documents/USCompliance.md` (new), `internal/recording/retention.go` (pass 4 + comment refresh), `internal/database/support.go` (PruneClosedSupportTickets) (≈12 files, +900)
