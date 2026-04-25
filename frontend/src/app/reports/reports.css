@@ -1,0 +1,314 @@
+/* Reports page styling — UL 827B supervisor surface.
+ * Uses CSS custom properties from globals.css so light/dark mode
+ * adapts cleanly without per-component color literals.
+ */
+
+.reports-page {
+    min-height: 100vh;
+    background: var(--sg-bg-base, #0c1015);
+    color: var(--sg-text-primary, #E4E8F0);
+    padding: 0;
+}
+
+.reports-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--sg-surface-1, rgba(255, 255, 255, 0.02));
+}
+
+.reports-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.reports-brand {
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--sg-text-primary, #E4E8F0);
+    text-decoration: none;
+    letter-spacing: 0.5px;
+}
+
+.reports-divider {
+    color: var(--sg-text-dim, #6B7280);
+    opacity: 0.6;
+}
+
+.reports-section {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--sg-text-primary, #E4E8F0);
+    letter-spacing: 0.3px;
+}
+
+.reports-user {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sg-text-dim, #9CA3AF);
+}
+
+.reports-tabs {
+    display: flex;
+    gap: 0;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.06));
+    background: var(--sg-bg-base, #0c1015);
+}
+
+.reports-tab {
+    padding: 12px 20px;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--sg-text-dim, #9CA3AF);
+    cursor: pointer;
+    font-family: inherit;
+    text-align: left;
+    transition: all 0.12s;
+}
+
+.reports-tab:hover:not(.active) {
+    color: var(--sg-text-primary, #E4E8F0);
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.03));
+}
+
+.reports-tab.active {
+    color: var(--sg-text-primary, #E4E8F0);
+    border-bottom-color: var(--brand-primary, #E8732A);
+    background: var(--sg-surface-1, rgba(255, 255, 255, 0.02));
+}
+
+.reports-tab-label {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+.reports-tab-subtitle {
+    font-size: 10px;
+    margin-top: 2px;
+    color: var(--sg-text-dim, #6B7280);
+    letter-spacing: 0.4px;
+}
+
+.reports-content {
+    padding: 24px;
+    max-width: 1280px;
+    margin: 0 auto;
+}
+
+/* ── Card primitive (shared by all three card components) ── */
+
+.report-card {
+    background: var(--sg-surface-1, rgba(255, 255, 255, 0.02));
+    border: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: 8px;
+    padding: 18px;
+}
+
+.report-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 16px;
+}
+
+.report-card-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--sg-text-primary, #E4E8F0);
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.report-card-subtitle {
+    font-size: 11px;
+    color: var(--sg-text-dim, #9CA3AF);
+    margin-top: 4px;
+    line-height: 1.4;
+    max-width: 60ch;
+}
+
+.report-pill {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(244, 114, 22, 0.15);
+    color: #F47216;
+    border: 1px solid rgba(244, 114, 22, 0.30);
+    letter-spacing: 0.5px;
+}
+
+.report-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.report-segmented {
+    display: inline-flex;
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.06));
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.report-segment {
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: var(--sg-text-dim, #9CA3AF);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+
+.report-segment:hover:not(.active) {
+    color: var(--sg-text-primary, #E4E8F0);
+}
+
+.report-segment.active {
+    background: var(--brand-primary, #E8732A);
+    color: #fff;
+}
+
+.report-csv-btn,
+.report-verify-btn,
+.report-revoke-btn {
+    padding: 6px 12px;
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.05));
+    border: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.10));
+    border-radius: 4px;
+    color: var(--sg-text-primary, #E4E8F0);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.1s;
+}
+
+.report-csv-btn:hover {
+    background: var(--brand-primary, #E8732A);
+    border-color: var(--brand-primary, #E8732A);
+    color: #fff;
+}
+
+.report-verify-btn {
+    background: rgba(132, 204, 22, 0.10);
+    border-color: rgba(132, 204, 22, 0.30);
+    color: #84CC16;
+}
+.report-verify-btn:hover:not(:disabled) {
+    background: rgba(132, 204, 22, 0.20);
+}
+.report-verify-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.report-revoke-btn {
+    background: rgba(239, 68, 68, 0.10);
+    border-color: rgba(239, 68, 68, 0.30);
+    color: #EF4444;
+}
+.report-revoke-btn:hover {
+    background: rgba(239, 68, 68, 0.20);
+}
+
+.report-input {
+    flex: 1;
+    min-width: 240px;
+    padding: 6px 10px;
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.10));
+    border-radius: 4px;
+    color: var(--sg-text-primary, #E4E8F0);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+}
+
+.report-empty {
+    padding: 32px;
+    text-align: center;
+    color: var(--sg-text-dim, #9CA3AF);
+    font-size: 13px;
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.02));
+    border-radius: 6px;
+}
+
+.report-error {
+    padding: 10px 14px;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+    border-radius: 4px;
+    color: #EF9B8B;
+    font-size: 12px;
+    margin-bottom: 12px;
+}
+
+.report-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.report-table th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--sg-text-dim, #9CA3AF);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.06));
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+}
+
+.report-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--sg-border-subtle, rgba(255, 255, 255, 0.04));
+    color: var(--sg-text-primary, #E4E8F0);
+}
+
+.report-table tr:hover td {
+    background: var(--sg-surface-2, rgba(255, 255, 255, 0.02));
+}
+
+.report-bucket {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--sg-text-dim, #B0B8C8);
+}
+
+.report-good { color: #84CC16; }
+.report-bad { color: #EF4444; font-weight: 600; }
+
+.report-disabled {
+    color: var(--sg-text-dim, #6B7280);
+    font-size: 11px;
+}
+
+.report-sev {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+}
+
+.report-sev-critical { color: #EF4444; border: 1px solid rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.1); }
+.report-sev-high     { color: #F47216; border: 1px solid rgba(244, 114, 22, 0.4); background: rgba(244, 114, 22, 0.1); }
+.report-sev-medium   { color: #E89F2A; border: 1px solid rgba(232, 159, 42, 0.4); background: rgba(232, 159, 42, 0.1); }
+.report-sev-low      { color: #84CC16; border: 1px solid rgba(132, 204, 22, 0.4); background: rgba(132, 204, 22, 0.1); }

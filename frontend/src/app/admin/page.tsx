@@ -462,6 +462,7 @@ export default function AdminPage() {
         <div className="admin-nav">
           <Link href="/operator" className="admin-nav-item">SOC Monitor</Link>
           <Link href="/portal" className="admin-nav-item">Portal</Link>
+          <Link href="/reports" className="admin-nav-item">Reports</Link>
           <span className="admin-nav-item active">Admin</span>
           <Link href="/" className="admin-nav-item">NVR</Link>
         </div>

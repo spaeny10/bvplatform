@@ -18,9 +18,11 @@ import ErrorBoundary from '@/components/shared/ErrorBoundary';
 import UserChip from '@/components/shared/UserChip';
 import Logo from '@/components/shared/Logo';
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
 
 function OperatorConsoleInner() {
   const router = useRouter();
+  const { user: authUser } = useAuth();
 
   // ── Data ──
   const { data: sites = [] } = useSites();
@@ -208,6 +210,13 @@ function OperatorConsoleInner() {
           <button className="op-nav-item active">SOC Monitor</button>
           <Link href="/portal" style={{ textDecoration: 'none' }}><button className="op-nav-item">Portal</button></Link>
           <Link href="/analytics" style={{ textDecoration: 'none' }}><button className="op-nav-item">Analytics</button></Link>
+          {/* Reports surface — supervisors and admins only. SOC operators
+              shouldn't see the verification queue or evidence-share
+              management; the link is hidden for their role rather than
+              showing a 403 on click. */}
+          {(authUser?.role === 'soc_supervisor' || authUser?.role === 'admin') && (
+            <Link href="/reports" style={{ textDecoration: 'none' }}><button className="op-nav-item">Reports</button></Link>
+          )}
           <Link href="/" style={{ textDecoration: 'none' }}><button className="op-nav-item">NVR</button></Link>
         </div>
 

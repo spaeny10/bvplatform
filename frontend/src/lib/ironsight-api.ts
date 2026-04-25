@@ -821,6 +821,137 @@ export async function submitAIFeedback(alarmId: string, agreed: boolean): Promis
   } catch { /* best-effort */ }
 }
 
+// ── Reports & supervisor dashboards ──
+//
+// These endpoints feed the /reports page (admin + soc_supervisor
+// access). All require auth; the backend enforces RBAC on the data
+// surfaces (SLA report aggregates ALL alarms — visible to SOC roles
+// only; verification queue is global; evidence shares are scoped to
+// the calling user's organization unless they're a SOC role).
+
+export interface SLAReportRow {
+  bucket: string;
+  total_alarms: number;
+  acked_alarms: number;
+  within_sla: number;
+  over_sla: number;
+  avg_ack_sec: number;
+  p50_ack_sec: number;
+  p95_ack_sec: number;
+}
+
+export interface SLAReportResponse {
+  from: string;
+  to: string;
+  group: 'operator' | 'day';
+  rows: SLAReportRow[];
+}
+
+export async function getSLAReport(params: {
+  from?: string;        // RFC3339; default = -30 days
+  to?: string;          // RFC3339; default = now
+  group?: 'operator' | 'day';
+}): Promise<SLAReportResponse> {
+  const qs = new URLSearchParams();
+  if (params.from)  qs.set('from', params.from);
+  if (params.to)    qs.set('to', params.to);
+  if (params.group) qs.set('group', params.group);
+  return fetchJSON(`${BASE}/reports/sla?${qs.toString()}`);
+}
+
+export function slaReportCsvUrl(params: {
+  from?: string;
+  to?: string;
+  group?: 'operator' | 'day';
+}): string {
+  const qs = new URLSearchParams({ format: 'csv' });
+  if (params.from)  qs.set('from', params.from);
+  if (params.to)    qs.set('to', params.to);
+  if (params.group) qs.set('group', params.group);
+  return `${BASE}/reports/sla?${qs.toString()}`;
+}
+
+/**
+ * Authenticated download — for endpoints that emit text/csv with
+ * Content-Disposition: attachment. The browser's anchor-tag trick
+ * won't work because the API requires a Bearer token; we fetch the
+ * blob, build a temporary object URL, and trigger the download in
+ * one shot. Works for all our CSV-export endpoints.
+ */
+export async function downloadAuthenticated(url: string, filename: string): Promise<void> {
+  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
+  const res = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`download failed: ${res.status}`);
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+// Verification queue — high-severity dispositioned events that haven't
+// been signed off by a second supervisor yet. Drives the four-eyes
+// follow-through dashboard. Backend filters via the partial index
+// idx_security_events_unverified_high.
+export interface UnverifiedEvent {
+  id: string;
+  alarm_id: string;
+  site_id: string;
+  camera_id: string;
+  severity: string;
+  type: string;
+  description: string;
+  disposition_code: string;
+  disposition_label: string;
+  operator_callsign: string;
+  ts: number;
+  resolved_at: number;
+  avs_score?: number;
+  avs_rubric_version?: string;
+  disposed_by_user_id?: string | null;
+}
+
+export async function listUnverifiedSecurityEvents(): Promise<UnverifiedEvent[]> {
+  // Backend doesn't have a dedicated endpoint yet — we fetch the full
+  // list and filter client-side. Acceptable while the dataset is
+  // small; revisit when active-event volume forces pagination.
+  // Empty site_id intentionally — the backend interprets that as
+  // "across all sites the caller is authorized to see," which is
+  // exactly the supervisor scope.
+  const all = await listSecurityEvents('');
+  return (all as any[]).filter(e =>
+    (e.severity === 'critical' || e.severity === 'high') && !e.verified_at,
+  ) as UnverifiedEvent[];
+}
+
+export async function verifySecurityEvent(eventId: string): Promise<void> {
+  await fetchJSON(`${BASE}/events/${encodeURIComponent(eventId)}/verify`, { method: 'POST' });
+}
+
+// Evidence-share management — list / revoke. Used by the supervisor's
+// "Manage shares" view to see active tokens with their open counts
+// and revoke ones that are no longer needed.
+export interface EvidenceShareWithStats {
+  token: string;
+  incident_id: string;
+  created_by: string;
+  expires_at: string | null;
+  revoked: boolean;
+  created_at: string;
+  open_count: number;
+  active: boolean;
+}
+
+export async function listIncidentShares(incidentId: string): Promise<EvidenceShareWithStats[]> {
+  return fetchJSON(`${BASE}/incidents/${encodeURIComponent(incidentId)}/shares`);
+}
+
 // ── Evidence Sharing ──
 //
 // Wired against the real backend endpoints registered in

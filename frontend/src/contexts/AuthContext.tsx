@@ -51,6 +51,10 @@ const ROUTE_PERMISSIONS: Record<string, UserRole[]> = {
     '/analytics': ['soc_supervisor', 'admin', 'site_manager'],
     '/portal':    ['site_manager', 'customer', 'soc_supervisor', 'admin'],
     '/admin':     ['admin'],
+    // Reports surface is shared between admin and supervisor — supervisors
+    // need to see SLA performance, the verification queue, and evidence
+    // shares without getting the full admin tooling.
+    '/reports':   ['admin', 'soc_supervisor'],
     '/search':    ['soc_supervisor', 'admin'],
     '/':          ['soc_supervisor', 'site_manager', 'customer', 'admin', 'viewer'],
     '/login':     ['soc_operator', 'soc_supervisor', 'site_manager', 'customer', 'admin', 'viewer'],
