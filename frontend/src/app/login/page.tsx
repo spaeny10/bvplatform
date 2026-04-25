@@ -4,15 +4,25 @@ import { useState, FormEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { BRAND } from '@/lib/branding';
+import Logo from '@/components/shared/Logo';
 
-// Generate floating particle data at module level so they don't re-render
+// Generate floating particle data at module level so they don't re-render.
+// Particle colors are pulled from the brand palette so a rebrand to a
+// different color scheme automatically updates the login screen ambience —
+// no hand-editing of hex literals required. BRAND.colors gives us
+// primary / accent2 / accent3; we cycle three particles through each.
+const PARTICLE_COLORS = [
+    BRAND.colors.primary,
+    BRAND.colors.secondary,
+    BRAND.colors.tertiary,
+];
 const PARTICLES = Array.from({ length: 24 }, (_, i) => ({
     id: i,
     size: 3 + Math.random() * 5,
     left: Math.random() * 100,
     duration: 12 + Math.random() * 18,
     delay: Math.random() * 15,
-    color: ['#E8732A', '#B22234', '#E89B2A'][i % 3],
+    color: PARTICLE_COLORS[i % PARTICLE_COLORS.length],
     opacity: 0.15 + Math.random() * 0.25,
 }));
 
@@ -73,25 +83,18 @@ export default function LoginPage() {
             <div className="login-card">
                 {/* Logo */}
                 <div className="login-logo">
-                    {/* IRONSight Wordmark */}
-                    <div className="login-logo-animated" style={{
-                        fontSize: 32, fontWeight: 800, letterSpacing: '-0.03em',
-                        color: '#B0B8C8', lineHeight: 1, marginBottom: 8,
-                    }}>
-                        IRON
-                        <span style={{ position: 'relative', display: 'inline-block' }}>
-                            <span style={{ color: '#E4E8F0' }}>S</span>
-                            {/* 3 brand dots from logo */}
-                            <span className="login-brand-dots" style={{
-                                position: 'absolute', top: -5, left: '50%', transform: 'translateX(-50%)',
-                                display: 'flex', gap: 3,
-                            }}>
-                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#E8732A', boxShadow: '0 0 8px #E8732A60' }} />
-                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#B22234', boxShadow: '0 0 8px #B2223460' }} />
-                                <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#E89B2A', boxShadow: '0 0 8px #E89B2A60' }} />
-                            </span>
-                        </span>
-                        <span style={{ color: '#E4E8F0' }}>ight</span>
+                    {/*
+                     * Wordmark routes through the shared Logo component, which
+                     * derives the letters from BRAND.name and the accent dots
+                     * from BRAND.colors. Two wins over the previous inline
+                     * version: a future product rename Just Works (the old
+                     * version hardcoded "IRON | S | ight" and would render
+                     * wrong text after a rebrand), and the colors come from
+                     * the brand palette rather than light/dark-incompatible
+                     * hex literals on the page.
+                     */}
+                    <div className="login-logo-animated" style={{ marginBottom: 8 }}>
+                        <Logo height={44} />
                     </div>
                     <div className="login-subtitle">{BRAND.tagline} — Sign in to continue</div>
                 </div>
