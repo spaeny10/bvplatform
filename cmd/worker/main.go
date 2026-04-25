@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"onvif-tool/internal/ai"
 	"onvif-tool/internal/config"
@@ -68,6 +69,36 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// ── Leader election ──────────────────────────────────────────
+	// Acquire a Postgres advisory lock before starting any of the
+	// retention / indexer / export loops. If another worker process
+	// already holds the lock, this call blocks (with periodic retry
+	// logging) until it's free — at which point this process takes
+	// over. Combined with restart: unless-stopped on the worker
+	// container, this gives us hot-standby semantics for free: bring
+	// up N worker replicas, exactly one runs jobs at a time, and
+	// failover happens within ~30s of the leader dying. Set
+	// WORKER_LEADER_DISABLED=1 to skip the lock entirely (single-binary
+	// dev where the api process runs the workers in-process).
+	if os.Getenv("WORKER_LEADER_DISABLED") != "1" {
+		leader, err := database.AcquireLeader(ctx, cfg.DatabaseURL, "ironsight-worker-loops", 30*time.Second)
+		if err != nil {
+			log.Fatalf("[FATAL] leader election: %v", err)
+		}
+		defer leader.Release()
+		// If the connection drops out from under us mid-flight, treat
+		// it as a fatal signal: another standby will pick up
+		// leadership, and we exit so the container restart loop
+		// doesn't leave us in a half-leader state.
+		go func() {
+			<-leader.Lost()
+			log.Println("[WORKER] leadership lost, initiating shutdown")
+			cancel()
+		}()
+	} else {
+		log.Println("[WORKER] WORKER_LEADER_DISABLED=1 — skipping advisory-lock leader election")
+	}
+
 	// ── Retention — hourly segment purge ─────────────────────────
 	retentionMgr := recording.NewRetentionManager(db)
 	go retentionMgr.Start(ctx)
@@ -88,8 +119,12 @@ func main() {
 	// completes any in-flight FFmpeg then exits.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("[WORKER] Signal %v received, shutting down...", sig)
+	select {
+	case sig := <-sigCh:
+		log.Printf("[WORKER] Signal %v received, shutting down...", sig)
+	case <-ctx.Done():
+		log.Println("[WORKER] Context cancelled (likely lost leadership), shutting down...")
+	}
 
 	cancel()
 	retentionMgr.Stop()

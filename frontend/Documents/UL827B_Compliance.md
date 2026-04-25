@@ -96,6 +96,17 @@ Ironsight codebase. Status legend:
 | E.3 | Recording health visibility | ✅ | [`/api/recording/health`](../../internal/api/router.go) — `HandleRecordingHealth` | Per-camera last-segment timestamp, online/degraded/offline state. Surfaced on the operator dashboard via `RecordingHealthCard`. |
 | E.4 | System health visibility | ✅ | [`/api/system/health`](../../internal/api/router.go) — `HandleSystemHealth` | Reports DB pool, recording engine, MediaMTX control API, AI service connectivity, storage paths. Admin dashboard "Health" tab consumes it. |
 
+### J. Operational Hardening
+
+These aren't UL 827B audit items per se, but a SOC running in
+production needs them and reviewers will ask "what happens if your
+worker process dies?" An honest answer with a real failover story is
+better than handwaving.
+
+| # | Control | Status | Evidence | Notes |
+|---|---|---|---|---|
+| J.1 | Worker leader election | ✅ | [`internal/database/leader.go`](../../internal/database/leader.go) `AcquireLeader`; wired in [`cmd/worker/main.go`](../../cmd/worker/main.go) | Postgres session-scoped advisory lock (`pg_try_advisory_lock`) gates the retention/indexer/export loops. Multiple worker replicas can run side-by-side; exactly one runs jobs at a time. Failover happens in ≤30s when the leader's connection drops — no etcd / zookeeper required. Smoke-tested: two workers running, second blocks on lock, stop first → second takes over within 30s, loops resume cleanly. `WORKER_LEADER_DISABLED=1` env opt-out for single-binary dev. |
+
 ### F. Communications & Network
 
 | # | Control | Status | Evidence | Notes |
@@ -145,7 +156,7 @@ than a re-architecture.
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 42 |
+| ✅ Implemented | 43 |
 | 🟡 Partial | 1 |
 | ⏳ Planned | 3 |
 | 🚫 Out of scope | 3 |
