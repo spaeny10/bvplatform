@@ -655,6 +655,24 @@ func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev
 		avsLabel = avsScoreLabel(int(ev.AVSScore))
 	}
 
+	// Pull the Qwen VLM enrichment from the originating alarm row so
+	// the customer's email/SMS reads the AI's narrative instead of
+	// just an event code. Best-effort — if the alarm row was already
+	// purged or the indexer hasn't run, the dispatcher gracefully
+	// renders without the AI section.
+	var (
+		aiDesc, aiThreat, aiAction, alarmCode string
+	)
+	if ev.AlarmID != "" {
+		_ = db.Pool.QueryRow(ctx, `
+			SELECT COALESCE(ai_description,''),
+			       COALESCE(ai_threat_level,''),
+			       COALESCE(ai_recommended_action,''),
+			       COALESCE(alarm_code,'')
+			FROM active_alarms WHERE id = $1`, ev.AlarmID,
+		).Scan(&aiDesc, &aiThreat, &aiAction, &alarmCode)
+	}
+
 	dispatchRecipients := make([]notify.Recipient, 0, len(recipients))
 	for _, r := range recipients {
 		dispatchRecipients = append(dispatchRecipients, notify.Recipient{
@@ -664,17 +682,21 @@ func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev
 	}
 
 	notifier.AlarmDispositioned(ctx, notify.AlarmDispositionContext{
-		EventID:          ev.ID,
-		SiteID:           ev.SiteID,
-		SiteName:         siteName,
-		CameraName:       cameraName,
-		Severity:         ev.Severity,
-		DispositionLabel: ev.DispositionLabel,
-		OperatorCallsign: ev.OperatorCallsign,
-		OperatorNotes:    ev.OperatorNotes,
-		AVSScore:         int(ev.AVSScore),
-		AVSLabel:         avsLabel,
-		HappenedAt:       time.UnixMilli(ev.Ts),
+		EventID:             ev.ID,
+		AlarmCode:           alarmCode,
+		SiteID:              ev.SiteID,
+		SiteName:            siteName,
+		CameraName:          cameraName,
+		Severity:            ev.Severity,
+		DispositionLabel:    ev.DispositionLabel,
+		OperatorCallsign:    ev.OperatorCallsign,
+		OperatorNotes:       ev.OperatorNotes,
+		AVSScore:            int(ev.AVSScore),
+		AVSLabel:            avsLabel,
+		HappenedAt:          time.UnixMilli(ev.Ts),
+		AIDescription:       aiDesc,
+		AIThreatLevel:       aiThreat,
+		AIRecommendedAction: aiAction,
 	}, dispatchRecipients)
 }
 

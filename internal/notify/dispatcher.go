@@ -55,6 +55,17 @@ func NewDispatcher(email, sms Mailer, productName, publicURL string) *Dispatcher
 // AlarmDispositionContext carries the data needed to render a
 // disposition-summary email. Built by the API handler that just
 // closed the alarm; passed verbatim to the dispatcher.
+//
+// AI-* fields come from the Qwen Vision-Language Model pipeline that
+// already runs on every alarm. Surfacing the model's narrative and
+// threat assessment in the customer-facing notification is the
+// difference between a good email ("person_detected at TS-100001")
+// and an actually informative one ("Subject in dark clothing
+// approached the loading-dock fence and attempted to scale it.
+// Threat level: high. Recommended: dispatch police."). When the AI
+// fields are empty (Qwen unavailable, alarm pre-dates indexer rollout)
+// the dispatcher falls back gracefully to the operator-supplied
+// description.
 type AlarmDispositionContext struct {
 	EventID          string // EVT-2026-0042
 	AlarmCode        string // ALM-260425-0017 — optional
@@ -69,6 +80,13 @@ type AlarmDispositionContext struct {
 	AVSLabel         string
 	HappenedAt       time.Time
 	IncidentURL      string // optional deep link into the portal
+
+	// AI-generated narrative + assessment from the Qwen VLM pipeline.
+	// All fields are best-effort — empty when the indexer hasn't
+	// produced output yet for this incident.
+	AIDescription       string  // 1–2 sentence factual scene description
+	AIThreatLevel       string  // "low" | "medium" | "high" | "critical"
+	AIRecommendedAction string  // operator-facing recommendation, fine for customers too
 }
 
 // AlarmDispositioned sends the disposition-summary notification to
@@ -110,7 +128,27 @@ func (d *Dispatcher) AlarmDispositioned(ctx context.Context, ev AlarmDisposition
 	fmt.Fprintf(&text, "Site: %s (%s)\n", ev.SiteName, ev.SiteID)
 	fmt.Fprintf(&text, "Camera: %s\n", ev.CameraName)
 	fmt.Fprintf(&text, "Severity: %s\n", strings.ToUpper(ev.Severity))
-	fmt.Fprintf(&text, "When: %s UTC\n\n", ev.HappenedAt.UTC().Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(&text, "When: %s UTC\n", ev.HappenedAt.UTC().Format("2006-01-02 15:04:05"))
+
+	// VLM narrative section. Lead with what happened (description),
+	// then the model's threat assessment and recommendation. A
+	// customer skimming this email on their phone reads the
+	// description first and immediately knows "is this serious?"
+	// without parsing operator codes.
+	if ev.AIDescription != "" || ev.AIThreatLevel != "" {
+		text.WriteString("\nWhat the AI saw:\n")
+		if ev.AIDescription != "" {
+			fmt.Fprintf(&text, "  %s\n", ev.AIDescription)
+		}
+		if ev.AIThreatLevel != "" {
+			fmt.Fprintf(&text, "  Threat assessment: %s\n", strings.ToUpper(ev.AIThreatLevel))
+		}
+		if ev.AIRecommendedAction != "" {
+			fmt.Fprintf(&text, "  Recommended action: %s\n", ev.AIRecommendedAction)
+		}
+	}
+
+	text.WriteString("\n")
 	fmt.Fprintf(&text, "DISPOSITION: %s\n", ev.DispositionLabel)
 	fmt.Fprintf(&text, "Operator: %s\n", ev.OperatorCallsign)
 	if ev.OperatorNotes != "" {
@@ -138,6 +176,32 @@ func (d *Dispatcher) AlarmDispositioned(ctx context.Context, ev AlarmDisposition
 	row("Severity", strings.ToUpper(ev.Severity))
 	row("When", ev.HappenedAt.UTC().Format("2006-01-02 15:04 UTC"))
 	html.WriteString(`</table>`)
+
+	// VLM narrative card — visually distinct so the customer's eye
+	// reads it before the operator's structured fields. The threat
+	// pill is color-coded (low → green, medium → amber, high → orange,
+	// critical → red) using inline styles since email clients strip
+	// <style> blocks.
+	if ev.AIDescription != "" || ev.AIThreatLevel != "" {
+		html.WriteString(`<div style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:6px;margin-bottom:16px;border-left:3px solid #3b82f6">`)
+		html.WriteString(`<div style="font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px">AI Vision Assessment</div>`)
+		if ev.AIDescription != "" {
+			fmt.Fprintf(&html, `<div style="font-size:14px;line-height:1.5;margin-bottom:8px">%s</div>`, htmlEscape(ev.AIDescription))
+		}
+		if ev.AIThreatLevel != "" {
+			pillBg, pillFg := threatPillColors(ev.AIThreatLevel)
+			fmt.Fprintf(&html,
+				`<div style="display:inline-block;padding:3px 10px;border-radius:10px;background:%s;color:%s;font-size:10px;font-weight:700;letter-spacing:0.6px">THREAT: %s</div>`,
+				pillBg, pillFg, strings.ToUpper(ev.AIThreatLevel))
+		}
+		if ev.AIRecommendedAction != "" {
+			fmt.Fprintf(&html,
+				`<div style="font-size:12px;color:#cbd5e1;margin-top:8px"><strong>Recommended:</strong> %s</div>`,
+				htmlEscape(ev.AIRecommendedAction))
+		}
+		html.WriteString(`</div>`)
+	}
+
 	fmt.Fprintf(&html, `<div style="background:#f3f4f6;padding:14px;border-radius:6px;margin-bottom:16px"><div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Disposition</div><div style="font-size:16px;font-weight:600">%s</div>`, htmlEscape(ev.DispositionLabel))
 	fmt.Fprintf(&html, `<div style="font-size:13px;color:#4b5563;margin-top:8px">by %s</div>`, htmlEscape(ev.OperatorCallsign))
 	if ev.OperatorNotes != "" {
@@ -165,12 +229,20 @@ func (d *Dispatcher) AlarmDispositioned(ctx context.Context, ev AlarmDisposition
 	}
 
 	// SMS channel — short, plain text. Twilio's body limit + SMS
-	// concatenation cost dictates a brutally compact format. Lead
-	// with severity and site so a phone-lock-screen preview tells
-	// the recipient everything they need to know in one glance.
+	// concatenation cost dictates a brutally compact format. The
+	// lock-screen preview is the most-read part of any SMS, so the
+	// first 80 characters earn their keep. When the VLM has a
+	// description we lead with its first sentence — that's what
+	// tells the customer "what's actually happening" in plain
+	// English. The disposition label is the fallback for events
+	// without AI enrichment.
 	if len(phones) > 0 && d.sms != nil {
-		smsBody := fmt.Sprintf("[%s] %s at %s — %s. View: %s",
-			d.productName, strings.ToUpper(ev.Severity), ev.SiteID, ev.DispositionLabel, url)
+		summary := firstSentence(ev.AIDescription, 140)
+		if summary == "" {
+			summary = ev.DispositionLabel
+		}
+		smsBody := fmt.Sprintf("[%s] %s · %s — %s View: %s",
+			d.productName, strings.ToUpper(ev.Severity), ev.SiteID, summary, url)
 		if err := d.sms.Send(ctx, Message{
 			To:       phones,
 			Subject:  subject, // unused by SMS but harmless
@@ -179,6 +251,60 @@ func (d *Dispatcher) AlarmDispositioned(ctx context.Context, ev AlarmDisposition
 		}); err != nil {
 			log.Printf("[NOTIFY] alarm_disposition sms send failed (event=%s, n=%d): %v", ev.EventID, len(phones), err)
 		}
+	}
+}
+
+// firstSentence returns the first sentence of s, capped at maxLen.
+// "Sentence" is "everything up to the first . ! or ? followed by a
+// space"; if no boundary exists within the cap we hard-truncate at
+// the last word boundary <= maxLen and append an ellipsis. Used to
+// turn a multi-sentence VLM description into a one-line SMS body
+// without cutting words in half ("Subject in dark hooded clothi…").
+func firstSentence(s string, maxLen int) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	// Look for a sentence terminator within bounds.
+	cut := -1
+	for i := 0; i < len(s)-1 && i < maxLen; i++ {
+		c := s[i]
+		if (c == '.' || c == '!' || c == '?') && (s[i+1] == ' ' || i == len(s)-2) {
+			cut = i + 1
+			break
+		}
+	}
+	if cut > 0 {
+		return strings.TrimSpace(s[:cut])
+	}
+	if len(s) <= maxLen {
+		return s
+	}
+	// Hard-truncate at the last word boundary so we don't slice in
+	// the middle of a word. Reserve 1 char for the ellipsis.
+	trimmed := s[:maxLen-1]
+	if sp := strings.LastIndexByte(trimmed, ' '); sp > 0 {
+		trimmed = trimmed[:sp]
+	}
+	return trimmed + "…"
+}
+
+// threatPillColors picks (background, foreground) pairs for the AI
+// threat-level pill rendered in the email body. Tuned for legibility
+// on a white email background; values are inline-styled because most
+// email clients drop <style> blocks.
+func threatPillColors(level string) (string, string) {
+	switch strings.ToLower(level) {
+	case "critical":
+		return "#dc2626", "#ffffff"
+	case "high":
+		return "#ea580c", "#ffffff"
+	case "medium":
+		return "#ca8a04", "#ffffff"
+	case "low":
+		return "#16a34a", "#ffffff"
+	default:
+		return "#475569", "#ffffff"
 	}
 }
 
