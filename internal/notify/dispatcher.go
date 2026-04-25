@@ -254,6 +254,152 @@ func (d *Dispatcher) AlarmDispositioned(ctx context.Context, ev AlarmDisposition
 	}
 }
 
+// MonthlySummaryContext is the rendering payload for the auto-emailed
+// monthly summary. Built by the worker job from the per-org rollup
+// query; rendered into both HTML (rich layout for desktop email) and
+// text (plain fallback for legacy clients and CLI MUAs).
+type MonthlySummaryContext struct {
+	OrganizationName string
+	PeriodStart      time.Time
+	PeriodEnd        time.Time
+	SiteCount        int
+	CameraCount      int
+	IncidentCount    int
+	AlarmCount       int
+	DispositionCount int
+	VerifiedThreats  int
+	FalsePositives   int
+	AvgAckSec        float64
+	P95AckSec        float64
+	WithinSLA        int
+	OverSLA          int
+	TopEvents        []MonthlyTopEvent
+	PortalURL        string
+}
+
+// MonthlyTopEvent mirrors the database type so the notify package
+// doesn't need to import internal/database — keeps the layering
+// clean.
+type MonthlyTopEvent struct {
+	EventID          string
+	SiteName         string
+	CameraName       string
+	Severity         string
+	HappenedAt       time.Time
+	DispositionLabel string
+	AIDescription    string
+	AVSScore         int
+}
+
+// MonthlySummary emails the per-org rollup to all subscribed
+// recipients. Best-effort across channels; logs any send error but
+// doesn't propagate (one customer's flaky email shouldn't block
+// the next org's summary).
+func (d *Dispatcher) MonthlySummary(ctx context.Context, sum MonthlySummaryContext, recipients []Recipient) {
+	if len(recipients) == 0 {
+		return
+	}
+	var emails []string
+	for _, r := range recipients {
+		if r.Email != "" {
+			emails = append(emails, r.Email)
+		}
+	}
+	if len(emails) == 0 {
+		return // monthly summary is email-only, no fallback
+	}
+
+	period := fmt.Sprintf("%s %d", sum.PeriodStart.Format("January"), sum.PeriodStart.Year())
+	subject := fmt.Sprintf("[%s] %s monitoring summary — %s", d.productName, sum.OrganizationName, period)
+	url := sum.PortalURL
+	if url == "" {
+		url = d.publicURL + "/portal"
+	}
+
+	verifiedPct := 0
+	if sum.DispositionCount > 0 {
+		verifiedPct = (sum.VerifiedThreats * 100) / sum.DispositionCount
+	}
+
+	// Plain text body — readable in any email client + the audit log.
+	text := strings.Builder{}
+	fmt.Fprintf(&text, "%s monitoring summary for %s\nPeriod: %s\n\n",
+		d.productName, sum.OrganizationName, period)
+	fmt.Fprintf(&text, "AT A GLANCE\n  %d sites · %d cameras under monitoring\n  %d alarms received this month\n  %d operator dispositions (%d verified threats, %d false positives)\n",
+		sum.SiteCount, sum.CameraCount, sum.AlarmCount,
+		sum.DispositionCount, sum.VerifiedThreats, sum.FalsePositives)
+	if sum.AlarmCount > 0 {
+		fmt.Fprintf(&text, "\nRESPONSE TIMES\n  Average ack: %ds · 95th percentile: %ds\n  %d alarms within SLA · %d over\n",
+			int(sum.AvgAckSec), int(sum.P95AckSec), sum.WithinSLA, sum.OverSLA)
+	}
+	if len(sum.TopEvents) > 0 {
+		text.WriteString("\nNOTABLE EVENTS\n")
+		for _, ev := range sum.TopEvents {
+			line := ev.AIDescription
+			if line == "" {
+				line = ev.DispositionLabel
+			}
+			fmt.Fprintf(&text, "  · %s — %s · %s\n    %s\n",
+				ev.HappenedAt.Format("Jan 2 15:04"), strings.ToUpper(ev.Severity), ev.SiteName, line)
+		}
+	}
+	fmt.Fprintf(&text, "\nView the full portal: %s\n\n— %s SOC\n", url, d.productName)
+
+	// HTML body — richer rendering for the in-browser case.
+	html := strings.Builder{}
+	html.WriteString(`<div style="font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#1a1a1a">`)
+	fmt.Fprintf(&html, `<h2 style="margin:0 0 4px">%s monitoring summary</h2>`, d.productName)
+	fmt.Fprintf(&html, `<div style="font-size:14px;color:#6b7280;margin-bottom:24px">%s &middot; %s</div>`, htmlEscape(sum.OrganizationName), period)
+
+	html.WriteString(`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">`)
+	statTile(&html, "Alarms", fmt.Sprintf("%d", sum.AlarmCount), "")
+	statTile(&html, "Dispositions", fmt.Sprintf("%d", sum.DispositionCount), fmt.Sprintf("%d%% verified threat", verifiedPct))
+	statTile(&html, "Cameras", fmt.Sprintf("%d", sum.CameraCount), fmt.Sprintf("%d sites", sum.SiteCount))
+	if sum.AlarmCount > 0 {
+		statTile(&html, "P95 ack", fmt.Sprintf("%ds", int(sum.P95AckSec)), fmt.Sprintf("%d/%d within SLA", sum.WithinSLA, sum.WithinSLA+sum.OverSLA))
+	}
+	html.WriteString(`</div>`)
+
+	if len(sum.TopEvents) > 0 {
+		html.WriteString(`<h3 style="font-size:14px;margin:24px 0 10px;color:#0a0f08">Notable events</h3>`)
+		for _, ev := range sum.TopEvents {
+			line := ev.AIDescription
+			if line == "" {
+				line = ev.DispositionLabel
+			}
+			html.WriteString(`<div style="padding:12px;border:1px solid #e5e7eb;border-radius:6px;margin-bottom:8px">`)
+			fmt.Fprintf(&html, `<div style="font-size:11px;color:#6b7280;margin-bottom:4px">%s &middot; %s &middot; %s</div>`,
+				ev.HappenedAt.Format("Jan 2 15:04"), strings.ToUpper(ev.Severity), htmlEscape(ev.SiteName))
+			fmt.Fprintf(&html, `<div style="font-size:13px;line-height:1.4">%s</div>`, htmlEscape(line))
+			html.WriteString(`</div>`)
+		}
+	}
+
+	fmt.Fprintf(&html, `<a href="%s" style="display:inline-block;margin-top:16px;padding:10px 20px;background:#E8732A;color:#fff;text-decoration:none;border-radius:5px;font-weight:600;font-size:14px">View portal</a>`, url)
+	fmt.Fprintf(&html, `<div style="margin-top:24px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">— %s SOC. To stop receiving the monthly summary, visit your notification preferences in the portal.</div>`, d.productName)
+	html.WriteString(`</div>`)
+
+	if err := d.email.Send(ctx, Message{
+		To:       emails,
+		Subject:  subject,
+		TextBody: text.String(),
+		HTMLBody: html.String(),
+		Tag:      "monthly_summary",
+	}); err != nil {
+		log.Printf("[NOTIFY] monthly_summary send failed (org=%s, n=%d): %v", sum.OrganizationName, len(emails), err)
+	}
+}
+
+func statTile(b *strings.Builder, label, value, sub string) {
+	fmt.Fprintf(b, `<div style="flex:1;min-width:120px;padding:12px;background:#f9fafb;border-radius:6px;border:1px solid #e5e7eb">`)
+	fmt.Fprintf(b, `<div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">%s</div>`, label)
+	fmt.Fprintf(b, `<div style="font-size:22px;font-weight:700;color:#0a0f08">%s</div>`, value)
+	if sub != "" {
+		fmt.Fprintf(b, `<div style="font-size:11px;color:#6b7280;margin-top:2px">%s</div>`, sub)
+	}
+	b.WriteString(`</div>`)
+}
+
 // firstSentence returns the first sentence of s, capped at maxLen.
 // "Sentence" is "everything up to the first . ! or ? followed by a
 // space"; if no boundary exists within the cap we hard-truncate at
