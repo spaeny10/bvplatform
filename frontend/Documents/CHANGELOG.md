@@ -21,6 +21,90 @@ phase**, and put the most recent phase at the top.
 
 ---
 
+## Phase E — Customer Experience: notifications, status, summaries · 2026-04-25
+
+The shift from "operationally compliant" to "actively delights the
+customer" — closing the highest-leverage gaps from the customer-
+experience audit. Email + SMS so customers hear from the SOC even
+when they're not staring at the portal, VLM-narrated content so
+those messages are actually informative, customer-controllable
+preferences, a trust-signal status page, and an auto-emailed
+monthly summary that proves what the customer paid for.
+
+### `c861944` — Auto-emailed monthly summary worker
+**Date:** 2026-04-25 19:39 CDT
+**Files:** `internal/database/monthly_summary.go` (new), `internal/notify/dispatcher.go`, `cmd/worker/main.go` (3 files, +488)
+
+Per-organization monthly performance email that fires on the 1st of
+each month. `MonthlyOrgSummary` runs five org-scoped queries (sites,
+cameras, security_events split, response-time aggregates, top events
+by AVS score). The HTML email leads with four stat tiles and lists
+the 5 most actionable events using their AI descriptions where
+available — so the customer reads "Subject in dark hooded clothing
+approached the south fence" instead of "verified-threat × 5." Worker
+scheduler polls hourly, checks for the 1st of a new month, fires
+once per YYYY-MM with in-memory idempotency.
+
+### `1ab6a17` — Public status page at /status
+**Date:** 2026-04-25 19:34 CDT
+**Files:** `internal/api/status_public.go` (new), `internal/api/router.go`, `frontend/src/app/status/page.tsx` (new) (3 files, +325)
+
+Trust signal without sign-in. Unauthenticated `GET /api/status`
+returns platform aggregates (camera counts, SOC operator activity in
+the last 30 minutes, alarm volume in the last hour, last-disposition
+timestamp). Headline indicator rolls up to operational/degraded/
+critical based on conservative thresholds. Frontend page refreshes
+every 30s, color-coded pill, four detail cards, includes the
+"contact your account manager if you're seeing an outage we don't
+reflect" escape hatch every status page needs.
+
+### `9a1d5b7` — Customer notification preferences UI
+**Date:** 2026-04-25 19:30 CDT
+**Files:** `frontend/src/app/portal/notifications/page.tsx` (new), `frontend/src/lib/ironsight-api.ts` (2 files, +272/-1)
+
+Per-(channel × event_type) toggle cards at `/portal/notifications`.
+Each card has title, explanatory subtitle, toggle, and (for alarm
+disposition rows) a minimum-severity select. Auto-save on change
+with a transient ✓ Saved banner. Three cards in v1: email-on-
+disposition, SMS-on-disposition (defaults to high+), monthly
+summary. fetchJSON exported from ironsight-api.ts so portal pages
+can do one-off authenticated calls without re-implementing
+auth-header plumbing.
+
+### `34b2ee7` — VLM-enriched customer notifications
+**Date:** 2026-04-25 19:23 CDT
+**Files:** `internal/notify/dispatcher.go`, `internal/api/platform.go` (2 files, +165/-17)
+
+Per the "build with AI VLM in mind" directive: every notification
+now leads with what Qwen actually saw, not just an event code.
+Email gets a styled "AI Vision Assessment" card with the VLM's
+description, threat-level pill (color-coded low → critical), and
+recommended action. SMS leads with the first sentence of the AI
+description ("Subject in dark hooded clothing approached the
+south chain-link fence.") — the difference between an SMS a
+customer ignores and one they act on at 2am. firstSentence helper
+splits on terminator+space with smart word-boundary fallback.
+
+### `ab42546` — Customer notifications — email (SendGrid) + SMS (Twilio)
+**Date:** 2026-04-25 19:14 CDT
+**Files:** 9 files (+1,110/-4) — including new `internal/notify/` package
+
+The #1 gap from the customer-experience audit. New `internal/notify`
+package: SMTPMailer (works against SendGrid SMTP, Postmark, SES, or
+any RFC 5321 relay) + StubMailer fallback when SMTP_HOST is empty;
+SMSMailer using Twilio's REST endpoint (no SDK dep, just net/http
+with HTTP Basic auth) + StubSMSMailer; Dispatcher fans out one event
+to N channels per Recipient. New `notification_subscriptions` table
+with (user_id, channel, event_type) unique key so toggling email-on-
+disposition is a PUT not a delete+create. First-boot seed gives
+every customer/site_manager with an email a default email-on-any-
+alarm subscription. HandleCreateSecurityEvent fires off a goroutine
+post-disposition; CreateSecurityEvent returns a sparse struct so we
+enrich from the request body before dispatching (subtle bug almost
+shipped silently).
+
+---
+
 ## Phase D — Polish & Customer-Facing Completeness · 2026-04-25
 
 These commits close the last visible gaps before a customer-facing
@@ -466,6 +550,7 @@ Repository genesis.
 
 | Phase | Commits | Lines added | Lines removed |
 |---|---:|---:|---:|
+| Phase E — Customer Experience (notifications, status, summaries) | 5 | 2,360 | 22 |
 | Phase D — Polish & Customer Completeness | 9 | 2,147 | 68 |
 | Phase C — Operational Hardening | 1 | 207 | 3 |
 | Phase B — Evidence Integrity & TMA-AVS-01 | 3 | 983 | 43 |
@@ -475,4 +560,4 @@ Repository genesis.
 | Initial Imports | 2 | 96,034 | 1 |
 
 Total post-import work (excluding the initial 96k-line code drop):
-**26 commits, +5,795 / -312 lines.** All 26 are documented above.
+**31 commits, +8,155 / -334 lines.** All 31 are documented above.
