@@ -112,6 +112,26 @@ Ironsight codebase. Status legend:
 | G.2 | Multi-site console (split view) | ✅ | [`frontend/src/components/operator/MultiSiteSplitView.tsx`](../../frontend/src/components/operator/MultiSiteSplitView.tsx) | Operator can monitor multiple sites simultaneously. |
 | G.3 | Workstation video recording (operator screen capture) | 🚫 | Out of scope — handled by an external recording tool layered over the operator workstation | The 827B plan must name the chosen tool (Verint Impact 360, Imprivata OneSign, RDP-Recorder, etc.). Not a function of the application. |
 
+### I. TMA-AVS-01 Alarm Validation Score
+
+A separate-but-adjacent compliance lane: TMA's published Alarm
+Validation Score standard governs how monitoring centers communicate
+alarm confidence to PSAPs. Implementing AVS readiness here means our
+data model, scoring function, and evidence bundles are aligned with
+TMA-AVS-01 today, so signing on with a UL-listed central station
+(DC-09 path / ASAP-to-PSAP) becomes a vendor-integration step rather
+than a re-architecture.
+
+| # | Control | Status | Evidence | Notes |
+|---|---|---|---|---|
+| I.1 | Structured validation factors captured at disposition | ✅ | [`internal/avs/scoring.go`](../../internal/avs/scoring.go) `Factors` struct; `security_events.avs_factors` JSONB column | 11 boolean attestations: video_verified, person_detected, suspicious_behavior, weapon_observed, active_crime, multi_camera_evidence, multi_sensor_evidence, audio_verified, talkdown_ignored, auth_failure, ai_corroborated. All 11 are stored even when scoring would short-circuit, so a future v2 rubric can be back-applied without re-interrogating the operator. |
+| I.2 | Deterministic 0–4 scoring function | ✅ | `avs.ComputeScore` | Pure function from `Factors` → `Score`. No floats, no randomness — auditors can replay any historical row and get the same number. The rubric version stamp (`avs_rubric_version` = `"1.0"`) on every row pins it to a specific algorithm release. |
+| I.3 | Server-side scoring (no client-supplied score) | ✅ | `CreateSecurityEvent` in [`internal/database/platform_db.go`](../../internal/database/platform_db.go) computes the score from operator-supplied factors and stores both | Clients submit `avs_factors`, never `avs_score`. A malicious client can't claim a higher score than its factors warrant. |
+| I.4 | Dispatch eligibility predicate | ✅ | `avs.DispatchEligible` (returns true when score ≥ 2) | Exposed via `EvidenceAVSSection.dispatch_eligible` in the export bundle. Tightening to score ≥ 3 is a one-character change. |
+| I.5 | Score travels with evidence bundles | ✅ | [`internal/api/evidence_export.go`](../../internal/api/evidence_export.go) `EvidenceAVSSection`; rendered into `event.json` and the human-readable README; covered by `SIGNATURE.txt` HMAC | Smoke-tested end-to-end: weapon disposition → score 4 CRITICAL; verified person → 2 VERIFIED; no video → 0 UNVERIFIED. The signed bundle carries the score so a downstream consumer (PSAP, insurer, court) can see the same confidence level the SOC produced. |
+| I.6 | Score visibility on supervisor dashboard | 🟡 | Backend ready (column + API surface); frontend display deferred to Phase D.13 | The dispatch-readiness dashboard for supervisors is a frontend-only follow-up — backend supplies `avs_score` on every list-events response. |
+| I.7 | DC-09 / ASAP-to-PSAP transmission | ⏳ | Planned (post-cert) | Per the AVS design discussion: direct-to-PSAP transmission goes through a UL-listed central station partner (Rapid Response, Sureview, etc.) using DC-09 packets. Picking that partner is a business decision; the data model is ready when it lands. |
+
 ### H. Data Retention
 
 | # | Control | Status | Evidence | Notes |
@@ -125,15 +145,16 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 36 |
-| 🟡 Partial | 1 |
-| ⏳ Planned | 2 |
+| ✅ Implemented | 41 |
+| 🟡 Partial | 2 |
+| ⏳ Planned | 3 |
 | 🚫 Out of scope | 3 |
 
-The single remaining partial (D.2) closes when the share-creation
-handler is built (Phase B.8). The remaining planned items are
-httpOnly cookie migration (Phase A.5) and DC-09 dispatch (F.3,
-post-cert).
+Two partials remain: D.2 (evidence-share creation handler — closes
+in Phase B.8) and I.6 (AVS supervisor-dashboard frontend — closes
+in Phase D.13). The remaining planned items are httpOnly cookie
+migration (Phase A.5), DC-09 dispatch (F.3, post-cert), and AVS
+PSAP transmission (I.7, post-cert).
 
 ---
 
@@ -260,4 +281,31 @@ curl -sH "Authorization: Bearer $SUPERVISOR_TOKEN" -X POST \
 curl -sH "Authorization: Bearer $VIEWER_TOKEN" -X POST \
   http://localhost:8080/api/v1/events/EVT-2026-0042/verify
 # Expected: HTTP 403 "supervisor or admin role required"
+
+# I.1 + I.2 + I.5 — TMA-AVS-01 scoring through to signed bundle
+curl -sH "Authorization: Bearer $TOKEN" -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "alarm_id":"<alarm>", "site_id":"<site>", "camera_id":"<cam-uuid>",
+    "severity":"critical", "disposition_code":"threat",
+    "operator_callsign":"OP-001",
+    "avs_factors":{
+      "video_verified":true, "person_detected":true,
+      "weapon_observed":true, "ai_corroborated":true
+    }
+  }' \
+  http://localhost:8080/api/v1/events
+psql -U onvif -d onvif_tool -c \
+  "SELECT id, avs_score, avs_rubric_version FROM security_events ORDER BY ts DESC LIMIT 1"
+# Expected: avs_score = 4, avs_rubric_version = '1.0'
+
+# Same factor set rendered into the export bundle
+curl -sH "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/events/<event_id>/export" -o evidence.zip
+python3 -c "
+import zipfile, json
+z = zipfile.ZipFile('evidence.zip')
+print(json.loads(z.read('event.json'))['avs'])
+"
+# Expected: dict with score=4, label='CRITICAL', dispatch_eligible=True
 ```

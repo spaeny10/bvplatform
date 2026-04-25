@@ -297,6 +297,22 @@ func main() {
 		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_user_id UUID;
 		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_callsign TEXT NOT NULL DEFAULT '';
 		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+
+		-- TMA-AVS-01 Alarm Validation Score capture. Factors is the raw
+		-- attestation set the operator filled in at disposition; score is
+		-- the deterministic mapping computed by internal/avs at the time.
+		-- We store both (rather than just factors) so a list-events query
+		-- doesn't have to re-run the scoring function on every row, and
+		-- so an auditor can see the score that PSAP actually received
+		-- alongside the factors that produced it. rubric_version pins the
+		-- score to a specific algorithm release.
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_factors JSONB NOT NULL DEFAULT '{}'::jsonb;
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_score INT NOT NULL DEFAULT 0;
+		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_rubric_version TEXT NOT NULL DEFAULT '';
+		-- Index for quick "show me all critical-score dispositions in the
+		-- last hour" queries; common on the supervisor dashboard.
+		CREATE INDEX IF NOT EXISTS idx_security_events_avs_score
+			ON security_events(avs_score DESC, ts DESC) WHERE avs_score >= 2;
 		-- The user who originally dispositioned the event. We had
 		-- operator_callsign already but not the user_id, which the
 		-- self-verification check needs to compare against.

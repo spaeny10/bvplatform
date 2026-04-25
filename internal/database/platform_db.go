@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"onvif-tool/internal/avs"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -415,17 +417,27 @@ func (db *DB) CreateSecurityEvent(ctx context.Context, c *SecurityEventCreate) (
 		severity = "medium"
 	}
 
+	// Compute AVS server-side from the operator-supplied factors. The
+	// client never sends a score — it sends what they observed; we
+	// derive what that means. avs.RubricVersion is stored on the row
+	// so an audit replay can reproduce the same score even after we
+	// later publish a v2 rubric.
+	avsScore := avs.ComputeScore(c.AVSFactors)
+	avsFactorsJSON, _ := json.Marshal(c.AVSFactors)
+
 	_, err := db.Pool.Exec(ctx,
 		`INSERT INTO security_events
 		 (id, alarm_id, site_id, camera_id, severity, type, description,
 		  disposition_code, disposition_label, operator_callsign, operator_notes,
 		  action_log, escalation_depth, clip_url, ts, resolved_at,
-		  disposed_by_user_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		  disposed_by_user_id,
+		  avs_factors, avs_score, avs_rubric_version)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		id, c.AlarmID, c.SiteID, c.CameraID, severity, c.Type, c.Description,
 		c.DispositionCode, c.DispositionLabel, c.OperatorCallsign, c.OperatorNotes,
 		actionLogJSON, c.EscalationDepth, c.ClipURL, now, now,
 		nullableUUID(c.DisposedByUserID),
+		avsFactorsJSON, int(avsScore), avs.RubricVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -509,7 +521,8 @@ func (db *DB) ListSecurityEvents(ctx context.Context, siteID string, viewedOnly 
 	       COALESCE(type,''), COALESCE(description,''),
 	       disposition_code, disposition_label, COALESCE(operator_callsign,''), operator_notes,
 	       action_log, escalation_depth, COALESCE(clip_url,''), ts, resolved_at, viewed_by_customer,
-	       disposed_by_user_id, verified_by_user_id, COALESCE(verified_by_callsign,''), verified_at
+	       disposed_by_user_id, verified_by_user_id, COALESCE(verified_by_callsign,''), verified_at,
+	       COALESCE(avs_factors, '{}'::jsonb), avs_score, COALESCE(avs_rubric_version,'')
 	       FROM security_events`
 	var args []interface{}
 	var conditions []string
@@ -536,15 +549,19 @@ func (db *DB) ListSecurityEvents(ctx context.Context, siteID string, viewedOnly 
 	var events []SecurityEvent
 	for rows.Next() {
 		var e SecurityEvent
-		var actionLogJSON []byte
+		var actionLogJSON, avsFactorsJSON []byte
+		var avsScoreInt int
 		if err := rows.Scan(&e.ID, &e.AlarmID, &e.SiteID, &e.CameraID, &e.Severity,
 			&e.Type, &e.Description,
 			&e.DispositionCode, &e.DispositionLabel, &e.OperatorCallsign, &e.OperatorNotes,
 			&actionLogJSON, &e.EscalationDepth, &e.ClipURL, &e.Ts, &e.ResolvedAt, &e.ViewedByCustomer,
-			&e.DisposedByUserID, &e.VerifiedByUserID, &e.VerifiedByCallsign, &e.VerifiedAt); err != nil {
+			&e.DisposedByUserID, &e.VerifiedByUserID, &e.VerifiedByCallsign, &e.VerifiedAt,
+			&avsFactorsJSON, &avsScoreInt, &e.AVSRubricVersion); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(actionLogJSON, &e.ActionLog)
+		json.Unmarshal(avsFactorsJSON, &e.AVSFactors)
+		e.AVSScore = avs.Score(avsScoreInt)
 		events = append(events, e)
 	}
 	if events == nil {

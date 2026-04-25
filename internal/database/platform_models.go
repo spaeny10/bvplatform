@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"onvif-tool/internal/avs"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -149,6 +151,15 @@ type SecurityEvent struct {
 	VerifiedByUserID   *uuid.UUID `json:"verified_by_user_id,omitempty"`
 	VerifiedByCallsign string     `json:"verified_by_callsign,omitempty"`
 	VerifiedAt         *time.Time `json:"verified_at,omitempty"`
+
+	// TMA-AVS-01 Alarm Validation Score. AVSFactors is the raw operator
+	// attestation set; AVSScore is the 0–4 mapping computed at
+	// disposition time by internal/avs.ComputeScore. AVSRubricVersion
+	// pins the score to a specific algorithm release so auditors can
+	// reproduce historical scores even after future rubric edits.
+	AVSFactors       avs.Factors `json:"avs_factors,omitempty"`
+	AVSScore         avs.Score   `json:"avs_score,omitempty"`
+	AVSRubricVersion string      `json:"avs_rubric_version,omitempty"`
 }
 
 // IsVerificationRequired returns true if this event's severity demands
@@ -412,4 +423,11 @@ type SecurityEventCreate struct {
 	// client cannot supply this value, otherwise it could be spoofed
 	// against the dual-operator self-verification check.
 	DisposedByUserID uuid.UUID `json:"-"`
+
+	// AVSFactors is the structured TMA-AVS-01 attestation set the
+	// operator captured during disposition. The score is computed
+	// server-side from these factors — clients never supply the score
+	// directly, so a malicious client can't claim a higher score
+	// than its factors warrant.
+	AVSFactors avs.Factors `json:"avs_factors,omitempty"`
 }

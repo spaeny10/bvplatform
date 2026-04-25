@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"onvif-tool/internal/avs"
 	"onvif-tool/internal/config"
 	"onvif-tool/internal/database"
 	"onvif-tool/internal/evidence"
@@ -45,11 +46,29 @@ type EvidenceManifest struct {
 	// alarm and the Qwen pipeline produced a description.
 	AI *EvidenceAISection `json:"ai,omitempty"`
 
+	// AVS section is populated when this event has a dispositioned
+	// security_events row. Lets a recipient (PSAP, insurer, court) see
+	// the same TMA-AVS-01 score the central station consumed when it
+	// decided whether to dispatch.
+	AVS *EvidenceAVSSection `json:"avs,omitempty"`
+
 	// Signature block populated by the SignedZipWriter at export time.
 	// Empty when the deployment hasn't configured EVIDENCE_SIGNING_KEY —
 	// in that case SIGNATURE.txt is omitted from the bundle and the
 	// audit trail records the export as "unsigned."
 	Signature *evidence.SignatureBlock `json:"signature,omitempty"`
+}
+
+// EvidenceAVSSection summarizes the TMA-AVS-01 score and the operator
+// attestations that produced it. Carried inside event.json so the
+// score travels with the bundle for any downstream consumer; covered
+// by SIGNATURE.txt's HMAC like the rest of the manifest.
+type EvidenceAVSSection struct {
+	Score          int         `json:"score"`
+	Label          string      `json:"label"`
+	RubricVersion  string      `json:"rubric_version"`
+	Factors        avs.Factors `json:"factors"`
+	DispatchEligible bool      `json:"dispatch_eligible"`
 }
 
 type EvidenceAISection struct {
@@ -152,6 +171,14 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 		// camera + event time, since events and active_alarms aren't FK-linked).
 		if ai := loadAIForEvent(r, db, cameraID, eventTime); ai != nil {
 			manifest.AI = ai
+		}
+
+		// Enrich with TMA-AVS-01 score if this event was dispositioned
+		// into a security_events row. Same camera/time-window heuristic
+		// as the AI enrichment — security_events doesn't have a direct
+		// FK to events for the same hypertable reason.
+		if avsSection := loadAVSForEvent(r, db, cameraID, eventTime); avsSection != nil {
+			manifest.AVS = avsSection
 		}
 
 		// ── Stream the ZIP back to the client ──
@@ -310,6 +337,27 @@ func writeEvidenceReadme(w io.Writer, m EvidenceManifest, clip, snap bool, produ
 	}
 	fmt.Fprintf(&b, "Camera     : %s (%s)\n\n", m.CameraName, m.CameraID)
 
+	if m.AVS != nil {
+		b.WriteString("TMA-AVS-01 ALARM VALIDATION SCORE\n")
+		b.WriteString(strings.Repeat("-", 40) + "\n")
+		fmt.Fprintf(&b, "Score          : %d (%s)\n", m.AVS.Score, m.AVS.Label)
+		fmt.Fprintf(&b, "Rubric version : %s\n", m.AVS.RubricVersion)
+		fmt.Fprintf(&b, "Dispatch ready : %v\n", m.AVS.DispatchEligible)
+		b.WriteString("Factors:\n")
+		writeFactorLine(&b, "video verified", m.AVS.Factors.VideoVerified)
+		writeFactorLine(&b, "person detected", m.AVS.Factors.PersonDetected)
+		writeFactorLine(&b, "suspicious behavior", m.AVS.Factors.SuspiciousBehavior)
+		writeFactorLine(&b, "weapon observed", m.AVS.Factors.WeaponObserved)
+		writeFactorLine(&b, "active crime", m.AVS.Factors.ActiveCrime)
+		writeFactorLine(&b, "multi-camera evidence", m.AVS.Factors.MultiCameraEvidence)
+		writeFactorLine(&b, "multi-sensor evidence", m.AVS.Factors.MultiSensorEvidence)
+		writeFactorLine(&b, "audio verified", m.AVS.Factors.AudioVerified)
+		writeFactorLine(&b, "talk-down ignored", m.AVS.Factors.TalkdownIgnored)
+		writeFactorLine(&b, "auth failure", m.AVS.Factors.AuthFailure)
+		writeFactorLine(&b, "AI corroborated", m.AVS.Factors.AICorroborated)
+		b.WriteString("\n")
+	}
+
 	if m.AI != nil {
 		b.WriteString("AI ASSESSMENT\n")
 		b.WriteString(strings.Repeat("-", 40) + "\n")
@@ -389,6 +437,65 @@ func loadAIForEvent(r *http.Request, db *database.DB, cameraID string, eventTime
 		FalsePositivePct:  fpPct,
 		OperatorAgreed:    opAgreed,
 		WasCorrect:        wasCorrect,
+	}
+}
+
+// writeFactorLine renders a single yes/no AVS factor as one line of
+// the README. Boolean rendering uses ✓/· glyphs that survive plain-
+// text recipients (versus emoji or true/false strings) and aligns to
+// a fixed column so a reader scans down the column to spot truths.
+func writeFactorLine(w io.Writer, label string, present bool) {
+	mark := "·"
+	if present {
+		mark = "Y"
+	}
+	fmt.Fprintf(w, "  [%s] %s\n", mark, label)
+}
+
+// loadAVSForEvent fetches the TMA-AVS-01 score for the most recent
+// security_events row that matches this event's camera and a tight
+// time window around the event_time. Returns nil if the event hasn't
+// been dispositioned yet (which is normal — exports can happen during
+// investigation, before final disposition).
+//
+// The 30-second window matches loadAIForEvent's heuristic for the same
+// reason: events and security_events aren't directly FK-linked, but
+// the disposition flow guarantees they share camera + a near-identical
+// timestamp.
+func loadAVSForEvent(r *http.Request, db *database.DB, cameraID string, eventTime time.Time) *EvidenceAVSSection {
+	var (
+		factorsJSON   []byte
+		score         int
+		rubricVersion string
+	)
+	err := db.Pool.QueryRow(r.Context(), `
+		SELECT COALESCE(avs_factors, '{}'::jsonb), avs_score, COALESCE(avs_rubric_version,'')
+		FROM security_events
+		WHERE camera_id = $1
+		  AND ABS(EXTRACT(EPOCH FROM (to_timestamp(ts/1000) - $2))) < 30
+		ORDER BY ts DESC
+		LIMIT 1`,
+		cameraID, eventTime).
+		Scan(&factorsJSON, &score, &rubricVersion)
+	if err != nil {
+		return nil
+	}
+	if rubricVersion == "" && score == 0 && len(factorsJSON) <= 2 {
+		// Empty disposition row (predates AVS rollout, or factors not
+		// captured). Don't include the section — better to show "no
+		// score" than to show a misleading 0 when the operator never
+		// answered the questionnaire.
+		return nil
+	}
+	var factors avs.Factors
+	_ = json.Unmarshal(factorsJSON, &factors)
+	s := avs.Score(score)
+	return &EvidenceAVSSection{
+		Score:            int(s),
+		Label:            avs.ScoreLabel(s),
+		RubricVersion:    rubricVersion,
+		Factors:          factors,
+		DispatchEligible: avs.DispatchEligible(s),
 	}
 }
 
