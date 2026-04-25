@@ -5,12 +5,17 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 
 const defaultSecret = "onvif-tool-change-me-in-production"
 
-// Claims is the JWT payload
+// Claims is the JWT payload. jwt.RegisteredClaims provides the
+// standard `jti` (JWT ID), `exp`, and `iat` fields — UL 827B's
+// server-side revocation story relies on `jti` being unique per
+// token so we can blocklist a single session without rotating the
+// shared signing secret.
 type Claims struct {
 	UserID         string `json:"uid"`
 	Username       string `json:"username"`
@@ -31,11 +36,16 @@ func CheckPassword(hash, plain string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)) == nil
 }
 
-// SignToken generates a signed JWT for the given user attributes
-func SignToken(userID, username, role, displayName, organizationID, secret string) (string, error) {
+// SignToken generates a signed JWT for the given user attributes.
+// Each call mints a fresh `jti` (JWT ID) so revocation can target a
+// specific session without invalidating every other live token. The
+// jti is also returned to the caller so the login handler can record
+// it alongside the user-facing audit row if needed.
+func SignToken(userID, username, role, displayName, organizationID, secret string) (token string, jti string, err error) {
 	if secret == "" {
 		secret = defaultSecret
 	}
+	jti = uuid.NewString()
 	claims := Claims{
 		UserID:         userID,
 		Username:       username,
@@ -43,12 +53,14 @@ func SignToken(userID, username, role, displayName, organizationID, secret strin
 		DisplayName:    displayName,
 		OrganizationID: organizationID,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return tok.SignedString([]byte(secret))
+	signed, err := tok.SignedString([]byte(secret))
+	return signed, jti, err
 }
 
 // ParseToken validates a JWT string and returns its claims

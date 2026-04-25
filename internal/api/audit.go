@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -317,6 +318,12 @@ func HandleQueryAuditLog(db *database.DB) http.HandlerFunc {
 		if limit == 0 {
 			limit = 50
 		}
+		// CSV export defaults to the full 10k cap so an auditor running
+		// a report for "last quarter" doesn't silently get the first 50
+		// rows. The query helper still clamps to 10k upstream.
+		if r.URL.Query().Get("format") == "csv" && limit < 10000 {
+			limit = 10000
+		}
 
 		entries, total, err := db.QueryAuditLog(r.Context(), username, action, targetType, limit, offset)
 		if err != nil {
@@ -325,6 +332,42 @@ func HandleQueryAuditLog(db *database.DB) http.HandlerFunc {
 		}
 		if entries == nil {
 			entries = []database.AuditEntry{}
+		}
+
+		// CSV export for UL 827B audit deliverables. Reviewers ask for the
+		// audit log over a date range as a single attachable file; JSON
+		// works but auditors-from-spreadsheet-land want CSV. Triggered by
+		// ?format=csv. Same filter parameters apply, so the operator can
+		// scope the export to one user, action, or target_type.
+		if r.URL.Query().Get("format") == "csv" {
+			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+			w.Header().Set("Content-Disposition",
+				`attachment; filename="audit_log_`+time.Now().UTC().Format("20060102T150405Z")+`.csv"`)
+			cw := csv.NewWriter(w)
+			_ = cw.Write([]string{
+				"id", "created_at", "user_id", "username",
+				"action", "target_type", "target_id",
+				"ip_address", "details",
+			})
+			for _, e := range entries {
+				userIDStr := ""
+				if e.UserID != (uuid.UUID{}) {
+					userIDStr = e.UserID.String()
+				}
+				_ = cw.Write([]string{
+					strconv.FormatInt(e.ID, 10),
+					e.CreatedAt.UTC().Format(time.RFC3339),
+					userIDStr,
+					e.Username,
+					e.Action,
+					e.TargetType,
+					e.TargetID,
+					e.IPAddress,
+					e.Details,
+				})
+			}
+			cw.Flush()
+			return
 		}
 
 		writeJSON(w, map[string]interface{}{

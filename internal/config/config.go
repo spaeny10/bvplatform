@@ -4,6 +4,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 // Config holds all application configuration
@@ -33,6 +34,13 @@ type Config struct {
 	// Auth
 	JWTSecret        string // sign/verify JWTs; set JWT_SECRET in env
 	DefaultAdminPass string // auto-created admin password on first run
+
+	// CORS allowlist for the API. Comma-separated origins in the env;
+	// the helper splits on commas and trims whitespace. UL 827B
+	// reviewers will look for this to be locked down to the
+	// production frontend's exact origin (e.g. https://soc.example.com)
+	// rather than the dev-time localhost defaults.
+	AllowedOrigins []string
 
 	// Branding — user-visible product name. Used in generated evidence
 	// bundles, log headers, and any other text the backend produces that
@@ -87,6 +95,7 @@ func Load() *Config {
 		DetectionIntervalMs: getEnvInt("DETECTION_INTERVAL_MS", 500),
 		JWTSecret:           getEnv("JWT_SECRET", "onvif-tool-change-me-in-production"),
 		DefaultAdminPass:    getEnv("ADMIN_PASSWORD", "admin"),
+		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
 		ProductName:         getEnv("PRODUCT_NAME", "Ironsight"),
 
 		// MediaMTX: embedded spawn is the historical behaviour, still the
@@ -147,4 +156,20 @@ func getEnvBool(key string, fallback bool) bool {
 		return false
 	}
 	return true
+}
+
+// parseAllowedOrigins splits a comma-separated env value into a list of
+// CORS origins. Empty entries are dropped. The result is passed to the
+// chi cors.Handler as-is — wildcards like "*" are honored but heavily
+// discouraged for any deployment that an auditor will see; the env
+// shape lets you list each production frontend origin explicitly.
+func parseAllowedOrigins(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }

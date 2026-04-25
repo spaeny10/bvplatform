@@ -487,6 +487,29 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_evidence_share_opens_token
 			ON evidence_share_opens(token, opened_at DESC);
 
+		-- UL 827B server-side logout / token revocation. The auth layer
+		-- adds a unique jti to every signed JWT; logout inserts that jti
+		-- here, and RequireAuth checks for membership before honoring a
+		-- token. expires_at is the original JWT exp — once it's past, the
+		-- row is harmless (token is invalid anyway) and a future cleanup
+		-- job can reclaim space.
+		CREATE TABLE IF NOT EXISTS revoked_tokens (
+			jti        TEXT PRIMARY KEY,
+			user_id    UUID,
+			revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			expires_at TIMESTAMPTZ NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
+			ON revoked_tokens(expires_at);
+
+		-- UL 827B password rotation. password_changed_at is the source of
+		-- truth for "is this password too old"; the login handler reads it
+		-- and decides whether to flag the response with a forced-change
+		-- indicator. NOW() default keeps existing rows valid for 180 days
+		-- from the moment the migration runs (an operator-friendly grace
+		-- period rather than locking everyone out at deploy time).
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
 		-- Append-only audit tables via trigger. We deliberately don't
 		-- REVOKE UPDATE/DELETE from the app role: the migration itself
 		-- and future scripted maintenance run as this role. Instead a

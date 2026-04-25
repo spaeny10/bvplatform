@@ -955,13 +955,16 @@ func (db *DB) DeleteUser(ctx context.Context, id uuid.UUID) error {
 // UpdateUserPassword updates only the bcrypt hash for a given user.
 // Resets the failed-login counter and any lockout as a side effect —
 // a successful password change is a form of recovery and should clear
-// the lockout the same way a successful login does.
+// the lockout the same way a successful login does. Stamps
+// password_changed_at to NOW() so the rotation policy clock starts
+// fresh.
 func (db *DB) UpdateUserPassword(ctx context.Context, id uuid.UUID, hash string) error {
 	_, err := db.Pool.Exec(ctx,
 		`UPDATE users
 		 SET password_hash         = $1,
 		     failed_login_attempts = 0,
 		     locked_until          = NULL,
+		     password_changed_at   = NOW(),
 		     updated_at            = $2
 		 WHERE id = $3`,
 		hash, time.Now(), id)
@@ -1025,6 +1028,70 @@ func (db *DB) ClearFailedLogins(ctx context.Context, userID uuid.UUID) error {
 		userID,
 	)
 	return err
+}
+
+// RevokeToken inserts a JWT id into the revoked-token blocklist. Idempotent
+// — replaying the same jti is a no-op (PRIMARY KEY conflict ignored). The
+// expiresAt should be the JWT's natural exp; the cleanup job uses it to
+// drop rows that no longer matter.
+func (db *DB) RevokeToken(ctx context.Context, jti string, userID uuid.UUID, expiresAt time.Time) error {
+	_, err := db.Pool.Exec(ctx, `
+		INSERT INTO revoked_tokens (jti, user_id, expires_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (jti) DO NOTHING`,
+		jti, userID, expiresAt,
+	)
+	return err
+}
+
+// IsTokenRevoked is the hot-path check the auth middleware runs on every
+// authenticated request. The jti column is the primary key, so this is
+// an indexed point lookup and stays fast even with thousands of revoked
+// tokens. Returns true only when the row exists AND is not yet expired
+// — once a token is past its natural exp the JWT parser will reject it
+// without our help, so the blocklist row is redundant.
+func (db *DB) IsTokenRevoked(ctx context.Context, jti string) (bool, error) {
+	var exists bool
+	err := db.Pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM revoked_tokens WHERE jti = $1 AND expires_at > NOW())`,
+		jti,
+	).Scan(&exists)
+	return exists, err
+}
+
+// PruneExpiredRevokedTokens drops blocklist rows whose original JWT exp
+// has passed. Safe to call from any background timer — at scale, a
+// daily run is plenty. Returns how many rows were reclaimed.
+func (db *DB) PruneExpiredRevokedTokens(ctx context.Context) (int64, error) {
+	tag, err := db.Pool.Exec(ctx, `DELETE FROM revoked_tokens WHERE expires_at <= NOW()`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// PasswordMaxAge is how long a user can keep their password before
+// the login flow nags them to change it. 180 days is the median that
+// UL 827B reviewers expect; the actual NIST guidance is "no rotation
+// unless evidence of compromise," but 827B / SOC contexts predate
+// that and still want a calendar trigger.
+const PasswordMaxAge = 180 * 24 * time.Hour
+
+// PasswordExpired returns true if the user's password is older than
+// PasswordMaxAge. The login handler uses this to set a flag on the
+// login response so the frontend can route to a forced-change screen.
+// Returning true does NOT block authentication — UL 827B treats the
+// rotation requirement as a soft enforcement, gated by user action,
+// not a hard lockout.
+func (db *DB) PasswordExpired(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var changedAt time.Time
+	err := db.Pool.QueryRow(ctx,
+		`SELECT password_changed_at FROM users WHERE id = $1`, userID,
+	).Scan(&changedAt)
+	if err != nil {
+		return false, err
+	}
+	return time.Since(changedAt) > PasswordMaxAge, nil
 }
 
 // IsUserLocked returns true if the user has an active lockout. Cheap
@@ -1359,8 +1426,12 @@ func (db *DB) QueryAuditLog(ctx context.Context, username, action, targetType st
 	if limit <= 0 {
 		limit = 50
 	}
-	if limit > 200 {
-		limit = 200
+	// 10k is the audit-export ceiling. For UI list views the caller still
+	// passes ~50; for UL 827B CSV exports of a multi-month range they can
+	// pass the full ceiling. Above 10k we expect the operator to page by
+	// date so the response stays a reasonable size.
+	if limit > 10000 {
+		limit = 10000
 	}
 
 	// Build WHERE clause

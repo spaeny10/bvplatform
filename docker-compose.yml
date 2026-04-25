@@ -206,6 +206,7 @@ services:
       # explicitly unsafe; fail hard when the operator forgot to set them.
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (openssl rand -hex 32)}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8080}
       # Branding — product name used in backend-generated artifacts.
       PRODUCT_NAME: ${PRODUCT_NAME:-Ironsight}
       # Redis pub/sub bridge for multi-replica WS fanout. Leave unset for

@@ -26,8 +26,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
+	// Origins come from cfg.AllowedOrigins which is populated by the
+	// ALLOWED_ORIGINS env var (comma-separated). Default at config-load
+	// time is the dev-mode localhost pair; production deployments must
+	// override with the actual frontend origin(s).
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"http://localhost:3000", "http://localhost:8080"},
+		AllowedOrigins:   cfg.AllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},
@@ -58,11 +62,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	r.Get("/share/{token}", HandlePublicEvidenceShare(db))
 
 	// Authenticated auth routes
-	r.With(RequireAuth(cfg)).Get("/auth/me", HandleGetMe(db))
+	r.With(RequireAuth(cfg, db)).Get("/auth/me", HandleGetMe(db))
+	r.With(RequireAuth(cfg, db)).Post("/auth/logout", HandleLogout(db))
 
 	// API routes (JWT protected)
 	r.Route("/api", func(r chi.Router) {
-		r.Use(RequireAuth(cfg))
+		r.Use(RequireAuth(cfg, db))
 		r.Use(AuditMiddleware(db))
 		// Camera CRUD
 		r.Route("/cameras", func(r chi.Router) {

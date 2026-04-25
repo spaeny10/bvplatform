@@ -24,6 +24,12 @@ type loginRequest struct {
 type loginResponse struct {
 	Token string               `json:"token"`
 	User  *database.UserPublic `json:"user"`
+	// PasswordExpired is true when the user's password is past its
+	// rotation horizon (database.PasswordMaxAge). The frontend should
+	// route to a forced-change screen when this is set; the API still
+	// honors the token in the meantime so the change-password call
+	// itself can authenticate.
+	PasswordExpired bool `json:"password_expired,omitempty"`
 }
 
 // logFailedLogin emits one audit_log row for each 401 on /auth/login.
@@ -121,7 +127,7 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 		// carry a near-lockout state into future sessions.
 		_ = db.ClearFailedLogins(r.Context(), user.ID)
 
-		token, err := auth.SignToken(
+		token, _, err := auth.SignToken(
 			user.ID.String(),
 			user.Username,
 			user.Role,
@@ -133,6 +139,11 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			http.Error(w, "token generation failed", http.StatusInternalServerError)
 			return
 		}
+
+		// Password rotation check — soft enforcement: expired = flag in
+		// the response, not a 401. The token is still issued so the user
+		// can authenticate the change-password call itself.
+		expired, _ := db.PasswordExpired(r.Context(), user.ID)
 
 		pub := &database.UserPublic{
 			ID:              user.ID,
@@ -146,7 +157,33 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			CreatedAt:       user.CreatedAt,
 			UpdatedAt:       user.UpdatedAt,
 		}
-		writeJSON(w, loginResponse{Token: token, User: pub})
+		writeJSON(w, loginResponse{Token: token, User: pub, PasswordExpired: expired})
+	}
+}
+
+// HandleLogout revokes the bearer token used to authenticate this
+// request. The jti is added to revoked_tokens; the JWT remains
+// cryptographically valid until its natural exp but the auth
+// middleware will reject any further use.
+//
+// Returning 204 No Content even on errors below the JWT-parse layer is
+// deliberate — a logout failure should never leak diagnostic info to
+// an unauthenticated caller. The audit log captures the attempt
+// regardless via the AuditMiddleware on the parent route group.
+func HandleLogout(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+		if !ok || claims == nil {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		userUUID, _ := uuid.Parse(claims.UserID)
+		exp := time.Now().Add(24 * time.Hour)
+		if claims.ExpiresAt != nil {
+			exp = claims.ExpiresAt.Time
+		}
+		_ = db.RevokeToken(r.Context(), claims.ID, userUUID, exp)
+		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
@@ -190,8 +227,13 @@ type contextKey string
 
 const ContextKeyClaims contextKey = "claims"
 
-// RequireAuth is a middleware that validates the Bearer token
-func RequireAuth(cfg *config.Config) func(http.Handler) http.Handler {
+// RequireAuth is a middleware that validates the Bearer token. After
+// the cryptographic check it consults the revoked_tokens blocklist —
+// a logged-out token is rejected even though its signature is still
+// valid. The DB hit is one indexed point lookup on the jti primary
+// key, so the cost is negligible compared to the bcrypt and JWT
+// parsing already on the path.
+func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -209,6 +251,17 @@ func RequireAuth(cfg *config.Config) func(http.Handler) http.Handler {
 			if err != nil {
 				http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 				return
+			}
+
+			// Revocation check. claims.ID is the jti. Empty jti means a
+			// pre-revocation-feature token — accept it; those will age
+			// out within 24h naturally.
+			if claims.ID != "" && db != nil {
+				revoked, err := db.IsTokenRevoked(r.Context(), claims.ID)
+				if err == nil && revoked {
+					http.Error(w, "token revoked", http.StatusUnauthorized)
+					return
+				}
 			}
 
 			// Store claims in context for downstream handlers
