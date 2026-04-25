@@ -8,6 +8,7 @@ import { useSites } from '@/hooks/useSites';
 import { useCompanies } from '@/hooks/useCustomers';
 import { useAdminStore } from '@/stores/admin-store';
 import { createCompany } from '@/lib/ironsight-api';
+import { BRAND } from '@/lib/branding';
 import CreateSiteModal from '@/components/admin/CreateSiteModal';
 import SiteConfigModal from '@/components/admin/SiteConfigModal';
 import AuditLogPanel from '@/components/admin/AuditLogPanel';
@@ -743,7 +744,7 @@ export default function AdminPage() {
                   {/* User type toggle */}
                   <div style={{ padding: '14px 18px 0', display: 'flex', gap: 8 }}>
                     {([
-                      { key: 'internal', label: '🛡 Internal Staff', hint: 'Ironsight / Jetstream employees' },
+                      { key: 'internal', label: '🛡 Internal Staff', hint: `${BRAND.name} employees and operators` },
                       { key: 'customer', label: '🏢 Customer User', hint: 'Belongs to a client company' },
                     ] as const).map(opt => (
                       <button
@@ -842,7 +843,7 @@ export default function AdminPage() {
 
                   {newUserType === 'internal' && (
                     <div style={{ margin: '0 18px 12px', padding: '8px 12px', borderRadius: 5, background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', fontSize: 10, color: '#ef9b8b' }}>
-                      Admin and SOC Operator roles give full platform access. Assign only to Ironsight staff.
+                      Admin and SOC Operator roles give full platform access. Assign only to {BRAND.name} staff.
                     </div>
                   )}
 
@@ -1034,7 +1035,7 @@ export default function AdminPage() {
                     <div className="admin-card" style={{ marginBottom: 16 }}>
                       <div className="admin-card-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div className="admin-card-title">Ironsight Staff</div>
+                          <div className="admin-card-title">{BRAND.name} Staff</div>
                           <span style={{ fontSize: 8, padding: '1px 6px', borderRadius: 4, background: 'rgba(239,68,68,0.1)', color: '#ef9b8b', fontWeight: 700, border: '1px solid rgba(239,68,68,0.2)', letterSpacing: 0.5 }}>INTERNAL</span>
                         </div>
                         <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>

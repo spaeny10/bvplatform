@@ -3,6 +3,7 @@
 import { useState, FormEvent } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
+import { BRAND } from '@/lib/branding';
 
 // Generate floating particle data at module level so they don't re-render
 const PARTICLES = Array.from({ length: 24 }, (_, i) => ({
@@ -92,7 +93,7 @@ export default function LoginPage() {
                         </span>
                         <span style={{ color: '#E4E8F0' }}>ight</span>
                     </div>
-                    <div className="login-subtitle">Surveillance Platform — Sign in to continue</div>
+                    <div className="login-subtitle">{BRAND.tagline} — Sign in to continue</div>
                 </div>
 
                 <form className="login-form" onSubmit={handleSubmit}>
