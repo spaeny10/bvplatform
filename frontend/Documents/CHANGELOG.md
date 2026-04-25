@@ -31,7 +31,7 @@ those messages are actually informative, customer-controllable
 preferences, a trust-signal status page, and an auto-emailed
 monthly summary that proves what the customer paid for.
 
-### `pending` — Procurement artifacts: privacy notice, sub-processor list, DPA template, IR runbook
+### `cb657c1` — Procurement artifacts: privacy notice, sub-processor list, DPA template, IR runbook
 **Date:** 2026-04-25
 **Files:** `frontend/src/app/portal/privacy/page.tsx` (new), `frontend/src/app/portal/subprocessors/page.tsx` (new), `frontend/src/components/portal/PortalLegalFooter.tsx` (new), `frontend/Documents/DPA-template.md` (new), `frontend/Documents/IncidentResponse.md` (new), `frontend/src/app/portal/layout.tsx`, `frontend/src/app/portal/portal.css`, `frontend/Documents/USCompliance.md` (≈8 files, +1300)
 
