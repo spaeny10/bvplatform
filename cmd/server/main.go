@@ -460,6 +460,21 @@ func main() {
 		CREATE INDEX IF NOT EXISTS idx_active_alarms_event
 			ON active_alarms(triggering_event_id) WHERE triggering_event_id IS NOT NULL;
 
+		-- UL 827B SLA tracking. We already track sla_deadline_ms (the
+		-- deadline the alarm was created with); these columns capture the
+		-- *actual* response so a reviewer can compute "did we meet our
+		-- SLA?" with one SELECT instead of joining audit_log to alarms by
+		-- timestamp. acknowledged_by_callsign denormalizes the operator's
+		-- callsign at ack time so the report stays meaningful even if the
+		-- operator's callsign changes later.
+		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_by_user_id UUID;
+		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_by_callsign TEXT NOT NULL DEFAULT '';
+		-- Index on (acknowledged_at, ts) so the SLA report can scan a date
+		-- range without touching un-acked alarms.
+		CREATE INDEX IF NOT EXISTS idx_active_alarms_ack_window
+			ON active_alarms(acknowledged_at, ts) WHERE acknowledged_at IS NOT NULL;
+
 		-- Polymorphic target on audit_log. target_type is one of a small
 		-- enum ("camera", "site", "user", "alarm", etc.) and target_id is
 		-- whatever format that entity uses. Lets us answer "who touched

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+
 	"onvif-tool/internal/auth"
 	"onvif-tool/internal/database"
 )
@@ -463,9 +465,21 @@ func HandleCreateSecurityEvent(db *database.DB) http.HandlerFunc {
 			http.Error(w, err.Error(), 500)
 			return
 		}
-		// Archive the alarm — remove it from the SOC dispatch queue
+		// Archive the alarm — remove it from the SOC dispatch queue.
+		// Capture the dispositioning operator's identity on the alarm so
+		// the SLA report can attribute response time correctly.
 		if input.AlarmID != "" {
-			_ = db.AcknowledgeAlarm(r.Context(), input.AlarmID)
+			var ackUserID uuid.UUID
+			ackCallsign := input.OperatorCallsign
+			if claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims); claims != nil {
+				if uid, err := uuid.Parse(claims.UserID); err == nil {
+					ackUserID = uid
+				}
+				if ackCallsign == "" {
+					ackCallsign = strings.ToUpper(claims.Username)
+				}
+			}
+			_ = db.AcknowledgeAlarm(r.Context(), input.AlarmID, ackUserID, ackCallsign)
 			// Level 1 AI validation: compare AI threat assessment vs operator disposition
 			_ = db.ComputeAICorrectness(r.Context(), input.AlarmID, input.DispositionCode)
 		}

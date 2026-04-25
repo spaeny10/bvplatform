@@ -85,8 +85,8 @@ Ironsight codebase. Status legend:
 
 | # | Control | Status | Evidence | Notes |
 |---|---|---|---|---|
-| E.1 | SLA deadline tracked per alarm | 🟡 | `active_alarms.sla_deadline_ms` column | Deadline is set at alarm creation (90 seconds default). **Gap:** there's no `acknowledged_at` timestamp recorded against it, so we can't compute "actual ack time vs SLA" or report 95th percentile. Planned next. |
-| E.2 | Operator response-time reporting | ⏳ | Planned | Builds on E.1. Auditor will ask for "show me the 95th percentile ack time for last month, per operator." |
+| E.1 | SLA deadline tracked per alarm | ✅ | `active_alarms.sla_deadline_ms`, `acknowledged_at`, `acknowledged_by_user_id`, `acknowledged_by_callsign` columns; `AcknowledgeAlarm` in [`internal/database/platform_db.go`](../../internal/database/platform_db.go) records ack metadata atomically with the disposition write | Index `idx_active_alarms_ack_window` on `(acknowledged_at, ts)` makes the report query touch only acked rows. Operator callsign is denormalized at ack time so a future rename can't rewrite the SLA narrative. |
+| E.2 | Operator response-time reporting | ✅ | [`internal/api/reports.go`](../../internal/api/reports.go) `HandleSLAReport` at `GET /api/reports/sla` | Query parameters: `from`, `to` (RFC3339, default 30 days), `group=operator|day`, `format=json|csv`. Returns total/acked/within-SLA/over-SLA counts plus avg, p50, p95 ack-time-in-seconds per bucket. Smoke-tested with seeded data: OP-001 p95=43.5s (within 90s SLA), OP-002 p95=174s (1 of 2 over SLA). |
 | E.3 | Recording health visibility | ✅ | [`/api/recording/health`](../../internal/api/router.go) — `HandleRecordingHealth` | Per-camera last-segment timestamp, online/degraded/offline state. Surfaced on the operator dashboard via `RecordingHealthCard`. |
 | E.4 | System health visibility | ✅ | [`/api/system/health`](../../internal/api/router.go) — `HandleSystemHealth` | Reports DB pool, recording engine, MediaMTX control API, AI service connectivity, storage paths. Admin dashboard "Health" tab consumes it. |
 
@@ -119,16 +119,15 @@ Ironsight codebase. Status legend:
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 30 |
-| 🟡 Partial | 3 |
-| ⏳ Planned | 6 |
+| ✅ Implemented | 32 |
+| 🟡 Partial | 2 |
+| ⏳ Planned | 5 |
 | 🚫 Out of scope | 3 |
 
-**Of the planned items**, four are tracked in the engineering todo list
-as deliberate next-batch work: SLA ack tracking (E.1/E.2),
+**Of the planned items**, three are next in the engineering queue:
 dual-operator verification, MFA (A.9), and httpOnly cookie migration.
-DC-09 (F.3) and digital signing (D.5) are roadmap items deliberately
-deferred until after first-cert.
+DC-09 (F.3) and digital signing (D.5) are roadmap items deferred
+until after first-cert.
 
 ---
 
@@ -218,4 +217,20 @@ psql -U onvif -d onvif_tool -c \
 # F.1 — CORS allowlist
 podman exec ironsight-api env | grep ALLOWED_ORIGINS
 # Expected: ALLOWED_ORIGINS=https://soc.<your-host>   (in production)
+
+# E.1 + E.2 — SLA report
+TOKEN=$(curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"<pw>"}' \
+  http://localhost:8080/auth/login | jq -r .token)
+FROM=$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)
+TO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+curl -sH "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/reports/sla?from=$FROM&to=$TO&group=operator" | jq .
+# Expected: rows[].bucket = operator callsign, with within_sla/over_sla counts
+#           and avg/p50/p95 ack times in seconds.
+
+# CSV variant for download
+curl -sH "Authorization: Bearer $TOKEN" \
+  "http://localhost:8080/api/reports/sla?from=$FROM&to=$TO&group=day&format=csv" \
+  -o sla_report.csv
 ```

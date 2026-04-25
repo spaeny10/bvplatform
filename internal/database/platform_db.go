@@ -428,8 +428,21 @@ func (db *DB) CreateSecurityEvent(ctx context.Context, c *SecurityEventCreate) (
 	if err != nil {
 		return nil, err
 	}
-	// Close the active alarm if one exists
-	db.Pool.Exec(ctx, `UPDATE active_alarms SET acknowledged=true WHERE id=$1`, c.AlarmID)
+	// Close the active alarm if one exists. SecurityEvent creation
+	// already implies the operator who dispositioned this is the same
+	// person who's "ack'ing" the alarm — record their callsign for the
+	// SLA report. No user_id available at this layer; the API-level
+	// HandleCreateSecurityEvent has already called AcknowledgeAlarm
+	// with full attribution before reaching here, so this fallback only
+	// fires for direct DB callers (tests, migration tools).
+	db.Pool.Exec(ctx, `UPDATE active_alarms
+	                   SET acknowledged             = true,
+	                       acknowledged_at          = COALESCE(acknowledged_at, NOW()),
+	                       acknowledged_by_callsign = CASE
+	                           WHEN acknowledged_by_callsign = '' THEN $2
+	                           ELSE acknowledged_by_callsign
+	                       END
+	                   WHERE id = $1`, c.AlarmID, c.OperatorCallsign)
 	return &SecurityEvent{ID: id, AlarmID: c.AlarmID, SiteID: c.SiteID, Ts: now, ResolvedAt: now}, nil
 }
 
@@ -768,10 +781,116 @@ func (db *DB) CreateActiveAlarm(ctx context.Context, a *ActiveAlarm) (bool, erro
 
 // AcknowledgeAlarm marks an alarm as acknowledged (archived) so it no longer
 // appears in the SOC dispatch queue.
-func (db *DB) AcknowledgeAlarm(ctx context.Context, alarmID string) error {
+//
+// Records the operator who acknowledged it and when, along with their
+// callsign-at-ack-time (denormalized so a future callsign rename
+// doesn't rewrite the audit narrative). Pass uuid.Nil and "" for
+// system-initiated acks (e.g., dispose-by-incident-close); the SLA
+// report filters those out.
+//
+// Idempotent on the timestamp side — re-acking an already-acked alarm
+// preserves the original acknowledged_at, so the SLA metric still
+// reflects the first action, not the latest. Achieved via the
+// COALESCE on acknowledged_at.
+func (db *DB) AcknowledgeAlarm(ctx context.Context, alarmID string, userID uuid.UUID, callsign string) error {
 	_, err := db.Pool.Exec(ctx,
-		`UPDATE active_alarms SET acknowledged = true WHERE id = $1`, alarmID)
+		`UPDATE active_alarms
+		 SET acknowledged             = true,
+		     acknowledged_at          = COALESCE(acknowledged_at, NOW()),
+		     acknowledged_by_user_id  = COALESCE(acknowledged_by_user_id, $2),
+		     acknowledged_by_callsign = CASE
+		         WHEN acknowledged_by_callsign = '' THEN $3
+		         ELSE acknowledged_by_callsign
+		     END
+		 WHERE id = $1`,
+		alarmID, nullableUUID(userID), callsign)
 	return err
+}
+
+// nullableUUID converts a zero-UUID to a database NULL. The
+// acknowledged_by_user_id column is nullable, and inserting the
+// 00000000-... sentinel makes "system-initiated ack" indistinguishable
+// from "Mr. Zero ack'd it." Using NULL keeps the report cleaner.
+func nullableUUID(id uuid.UUID) interface{} {
+	if id == (uuid.UUID{}) {
+		return nil
+	}
+	return id
+}
+
+// SLAReportRow is one slice of the response-time report — typically
+// per-operator or per-day, depending on the grouping. Counts split by
+// whether the alarm was ack'd within the SLA deadline.
+type SLAReportRow struct {
+	Bucket          string  `json:"bucket"` // operator callsign or YYYY-MM-DD
+	TotalAlarms     int     `json:"total_alarms"`
+	AckedAlarms     int     `json:"acked_alarms"`
+	WithinSLA       int     `json:"within_sla"`
+	OverSLA         int     `json:"over_sla"`
+	AvgAckSec       float64 `json:"avg_ack_sec"`
+	P50AckSec       float64 `json:"p50_ack_sec"`
+	P95AckSec       float64 `json:"p95_ack_sec"`
+}
+
+// GetSLAReport aggregates response-time stats for alarms acknowledged
+// within [from, to). Group is either "operator" (rows per
+// acknowledged_by_callsign) or "day" (rows per UTC date). Bucketing is
+// done in SQL so a year-long report stays in one round trip.
+//
+// "Within SLA" is computed as acknowledged_at - ts <= sla_deadline_ms,
+// where ts and sla_deadline_ms are both already on the alarm row at
+// creation time. p50/p95 use Postgres's percentile_cont aggregator.
+func (db *DB) GetSLAReport(ctx context.Context, from, to time.Time, group string) ([]SLAReportRow, error) {
+	if group != "operator" && group != "day" {
+		group = "day"
+	}
+
+	bucketExpr := "TO_CHAR(acknowledged_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+	if group == "operator" {
+		bucketExpr = "COALESCE(NULLIF(acknowledged_by_callsign, ''), '<unattributed>')"
+	}
+
+	q := `
+		SELECT ` + bucketExpr + ` AS bucket,
+		       COUNT(*) AS total,
+		       COUNT(*) FILTER (WHERE acknowledged_at IS NOT NULL) AS acked,
+		       COUNT(*) FILTER (
+		           WHERE acknowledged_at IS NOT NULL
+		             AND EXTRACT(EPOCH FROM (acknowledged_at - to_timestamp(ts/1000.0))) * 1000 <= sla_deadline_ms
+		       ) AS within_sla,
+		       COUNT(*) FILTER (
+		           WHERE acknowledged_at IS NOT NULL
+		             AND EXTRACT(EPOCH FROM (acknowledged_at - to_timestamp(ts/1000.0))) * 1000 > sla_deadline_ms
+		       ) AS over_sla,
+		       COALESCE(AVG(EXTRACT(EPOCH FROM (acknowledged_at - to_timestamp(ts/1000.0))))
+		           FILTER (WHERE acknowledged_at IS NOT NULL), 0) AS avg_ack,
+		       COALESCE(percentile_cont(0.5) WITHIN GROUP (
+		           ORDER BY EXTRACT(EPOCH FROM (acknowledged_at - to_timestamp(ts/1000.0)))
+		       ) FILTER (WHERE acknowledged_at IS NOT NULL), 0) AS p50,
+		       COALESCE(percentile_cont(0.95) WITHIN GROUP (
+		           ORDER BY EXTRACT(EPOCH FROM (acknowledged_at - to_timestamp(ts/1000.0)))
+		       ) FILTER (WHERE acknowledged_at IS NOT NULL), 0) AS p95
+		FROM active_alarms
+		WHERE ts >= $1 AND ts < $2
+		GROUP BY 1
+		ORDER BY 1`
+
+	rows, err := db.Pool.Query(ctx, q, from.UnixMilli(), to.UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("sla report query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SLAReportRow
+	for rows.Next() {
+		var r SLAReportRow
+		if err := rows.Scan(&r.Bucket, &r.TotalAlarms, &r.AckedAlarms,
+			&r.WithinSLA, &r.OverSLA, &r.AvgAckSec, &r.P50AckSec, &r.P95AckSec); err != nil {
+			return nil, fmt.Errorf("sla report scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // ListActiveAlarms returns all unacknowledged alarms, newest first.

@@ -205,6 +205,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Audit log
 		r.Get("/audit", HandleQueryAuditLog(db))
 
+		// Operator response-time / SLA report. UL 827B reviewers expect
+		// quantitative answers to "how fast does your SOC actually
+		// respond?" — this endpoint is the canonical source.
+		r.Get("/reports/sla", HandleSLAReport(db))
+
 		// ════════════════════════════════════════
 		// Ironsight Platform Routes (/api/v1/*)
 		// ════════════════════════════════════════
