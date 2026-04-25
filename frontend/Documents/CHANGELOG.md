@@ -31,6 +31,39 @@ those messages are actually informative, customer-controllable
 preferences, a trust-signal status page, and an auto-emailed
 monthly summary that proves what the customer paid for.
 
+### `10d2d5d` — PWA: service worker + install prompt + mobile bottom-tab nav
+**Date:** 2026-04-25 19:54 CDT
+**Files:** `frontend/public/sw.js` (new), `frontend/src/app/offline/page.tsx` (new), `frontend/src/components/shared/PWAManager.tsx` (new), `frontend/src/components/portal/PortalMobileNav.tsx` (new), `frontend/src/app/layout.tsx`, `frontend/src/app/portal/layout.tsx` (6 files, +437)
+
+Construction owners are not desk people. This batch makes the
+customer portal feel like an app on phones. Service worker
+provides installability (browsers gate the install prompt on a
+registered SW) and a graceful offline shell — cache-first for
+hashed static assets, network-first for navigations with cached
+fallback, live-data paths bypass the cache entirely so stale
+alarms are impossible. PWAManager registers the SW + surfaces a
+brand-styled "Install Ironsight on your home screen" prompt on
+mobile viewports (with 30-day dismiss memory). PortalMobileNav
+is a bottom-tab nav (Dashboard / Sites / History / Alerts /
+Status) that renders only at ≤640px, honors iOS safe-area-
+inset, and reserves matching body padding so content doesn't
+sit behind it.
+
+### `9105949` — Self-service site contacts — customers maintain their own call list
+**Date:** 2026-04-25 19:46 CDT
+**Files:** `cmd/server/main.go`, `internal/database/platform_db.go`, `internal/api/site_contacts.go` (new), `internal/api/router.go`, `frontend/src/app/portal/sites/[id]/contacts/` (new), `frontend/src/app/portal/sites/[id]/page.tsx` (6 files, +463)
+
+Customers and site_managers can edit the on-site contact list
+for any site they have access to without filing a ticket. New
+`customer_contacts JSONB` column on sites; CustomerContact carries
+{name, role, phone, email, notify_on_alarm, notes}. Read scoped
+via callerScope() (cross-tenant returns 404, no leak); edit
+restricted to site_manager/soc_supervisor/admin. Editor at
+/portal/sites/{id}/contacts with card-per-contact UI, "Notify on
+alarm" toggle, explicit save. "👥 Contacts" link added to the
+site-detail topbar so it's one click from where customers
+already are.
+
 ### `c861944` — Auto-emailed monthly summary worker
 **Date:** 2026-04-25 19:39 CDT
 **Files:** `internal/database/monthly_summary.go` (new), `internal/notify/dispatcher.go`, `cmd/worker/main.go` (3 files, +488)
@@ -550,7 +583,7 @@ Repository genesis.
 
 | Phase | Commits | Lines added | Lines removed |
 |---|---:|---:|---:|
-| Phase E — Customer Experience (notifications, status, summaries) | 5 | 2,360 | 22 |
+| Phase E — Customer Experience (notifications, status, summaries, mobile, contacts) | 7 | 3,260 | 22 |
 | Phase D — Polish & Customer Completeness | 9 | 2,147 | 68 |
 | Phase C — Operational Hardening | 1 | 207 | 3 |
 | Phase B — Evidence Integrity & TMA-AVS-01 | 3 | 983 | 43 |
@@ -560,4 +593,4 @@ Repository genesis.
 | Initial Imports | 2 | 96,034 | 1 |
 
 Total post-import work (excluding the initial 96k-line code drop):
-**31 commits, +8,155 / -334 lines.** All 31 are documented above.
+**33 commits, +9,055 / -334 lines.** All 33 are documented above.
