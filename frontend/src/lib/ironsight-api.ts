@@ -709,6 +709,29 @@ export async function getAlarmQueue(): Promise<{ depth: number; oldest_ts: numbe
 
 // ── Security Events ──
 
+/**
+ * TMA-AVS-01 validation factors captured by the operator at
+ * disposition. The backend computes the 0–4 score from these flags
+ * deterministically — clients never supply a score directly. See the
+ * Go side at internal/avs/scoring.go for the canonical rubric. Every
+ * field is intentionally a discrete yes/no observation grounded in
+ * specific evidence ("I saw / heard / verified X"). Auditors can
+ * reconstruct the operator's mental state from the row alone.
+ */
+export interface AVSFactors {
+  video_verified: boolean;
+  person_detected: boolean;
+  suspicious_behavior: boolean;
+  weapon_observed: boolean;
+  active_crime: boolean;
+  multi_camera_evidence: boolean;
+  multi_sensor_evidence: boolean;
+  audio_verified: boolean;
+  talkdown_ignored: boolean;
+  auth_failure: boolean;
+  ai_corroborated: boolean;
+}
+
 export interface SecurityEventPayload {
   alarm_id: string;
   site_id: string;
@@ -723,6 +746,23 @@ export interface SecurityEventPayload {
   type?: string;
   description?: string;
   operator_callsign?: string;
+  avs_factors?: AVSFactors;      // TMA-AVS-01 validation attestations
+}
+
+/**
+ * Mirror of internal/avs/scoring.go ComputeScore. Kept on the
+ * frontend so the disposition UI can show a live preview of the score
+ * the backend will record. The backend value is still authoritative
+ * — never trust this for any persisted decision.
+ */
+export function previewAVSScore(f: Partial<AVSFactors>): { score: 0|1|2|3|4; label: string; dispatch: boolean } {
+  if (!f.video_verified) return { score: 0, label: 'UNVERIFIED', dispatch: false };
+  if (f.weapon_observed || f.active_crime) return { score: 4, label: 'CRITICAL', dispatch: true };
+  const corroborated = !!(f.suspicious_behavior || f.multi_camera_evidence ||
+    f.multi_sensor_evidence || f.audio_verified || f.talkdown_ignored || f.auth_failure);
+  if (corroborated) return { score: 3, label: 'ELEVATED', dispatch: true };
+  if (f.person_detected) return { score: 2, label: 'VERIFIED', dispatch: true };
+  return { score: 1, label: 'MINIMAL', dispatch: false };
 }
 
 export async function createSecurityEvent(payload: SecurityEventPayload): Promise<{ event_id: string }> {

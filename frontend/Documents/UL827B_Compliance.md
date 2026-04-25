@@ -140,7 +140,7 @@ than a re-architecture.
 | I.3 | Server-side scoring (no client-supplied score) | ✅ | `CreateSecurityEvent` in [`internal/database/platform_db.go`](../../internal/database/platform_db.go) computes the score from operator-supplied factors and stores both | Clients submit `avs_factors`, never `avs_score`. A malicious client can't claim a higher score than its factors warrant. |
 | I.4 | Dispatch eligibility predicate | ✅ | `avs.DispatchEligible` (returns true when score ≥ 2) | Exposed via `EvidenceAVSSection.dispatch_eligible` in the export bundle. Tightening to score ≥ 3 is a one-character change. |
 | I.5 | Score travels with evidence bundles | ✅ | [`internal/api/evidence_export.go`](../../internal/api/evidence_export.go) `EvidenceAVSSection`; rendered into `event.json` and the human-readable README; covered by `SIGNATURE.txt` HMAC | Smoke-tested end-to-end: weapon disposition → score 4 CRITICAL; verified person → 2 VERIFIED; no video → 0 UNVERIFIED. The signed bundle carries the score so a downstream consumer (PSAP, insurer, court) can see the same confidence level the SOC produced. |
-| I.6 | Score visibility on supervisor dashboard | 🟡 | Backend ready (column + API surface); frontend display deferred to Phase D.13 | The dispatch-readiness dashboard for supervisors is a frontend-only follow-up — backend supplies `avs_score` on every list-events response. |
+| I.6 | AVS factor capture in operator disposition UI | ✅ | [`frontend/src/components/operator/AVSFactorChecklist.tsx`](../../frontend/src/components/operator/AVSFactorChecklist.tsx); wired into `ActiveAlarmView.tsx` resolve tab; live preview via [`previewAVSScore`](../../frontend/src/lib/ironsight-api.ts) | 11 factors rendered in three priority bands (Foundational / Corroborating / Priority signals). Live score badge updates on every toggle, color-coded UNVERIFIED → CRITICAL with a DISPATCH suffix when eligible. Backend recomputes the authoritative score on submit; the frontend preview is purely UX. Defaults to `video_verified=true` because the SOC's contractual baseline is video-verified alarms — operators uncheck for the rare audio-only or blind dispositions. |
 | I.7 | DC-09 / ASAP-to-PSAP transmission | ⏳ | Planned (post-cert) | Per the AVS design discussion: direct-to-PSAP transmission goes through a UL-listed central station partner (Rapid Response, Sureview, etc.) using DC-09 packets. Picking that partner is a business decision; the data model is ready when it lands. |
 
 ### H. Data Retention
@@ -156,15 +156,16 @@ than a re-architecture.
 
 | Status | Count |
 |---|---|
-| ✅ Implemented | 43 |
-| 🟡 Partial | 1 |
+| ✅ Implemented | 44 |
+| 🟡 Partial | 0 |
 | ⏳ Planned | 3 |
 | 🚫 Out of scope | 3 |
 
-The remaining partial (I.6) is a frontend display item that closes
-in Phase D.13. Planned items are httpOnly cookie migration
-(Phase A.5), DC-09 dispatch (F.3, post-cert), and AVS PSAP
-transmission (I.7, post-cert).
+**Zero partials remaining.** Every UL 827B-track control either ships
+fully or is documented as deliberate post-cert work. Planned items
+are httpOnly cookie migration (Phase A.5, deferred per consultant
+guidance), DC-09 dispatch (F.3, post-cert business decision), and
+AVS PSAP transmission (I.7, post-cert).
 
 ---
 

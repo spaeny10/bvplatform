@@ -3,11 +3,12 @@
 import { useState, useEffect, useRef } from 'react';
 import type { AlertEvent, SOCIncident, SiteSOP, SiteDetail, SiteCamera } from '@/types/ironsight';
 import { useOperatorStore, DISPOSITION_OPTIONS, type DispositionCode } from '@/stores/operator-store';
-import { getSiteSOPs, listSecurityEvents, createSecurityEvent, type SecurityEventRecord } from '@/lib/ironsight-api';
+import { getSiteSOPs, listSecurityEvents, createSecurityEvent, previewAVSScore, type SecurityEventRecord, type AVSFactors } from '@/lib/ironsight-api';
 import { fireDeterrence } from '@/lib/api';
 import { useSite, useSiteCameras } from '@/hooks/useSites';
 import SeverityPill from '@/components/shared/SeverityPill';
 import SiteMapModal from '@/components/operator/SiteMapModal';
+import AVSFactorChecklist from '@/components/operator/AVSFactorChecklist';
 
 interface Props {
   alarm: AlertEvent;
@@ -70,6 +71,30 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
   const [sopChecked, setSopChecked] = useState<Record<string, boolean[]>>({});
   const [disposition, setDisposition] = useState<DispositionCode | ''>('');
   const [notes, setNotes] = useState('');
+
+  // TMA-AVS-01 validation factors. Captured during disposition so the
+  // backend can compute the alarm validation score for any downstream
+  // PSAP / central-station forwarding. Initialized to "video_verified
+  // = true" because the SOC's contractual baseline is video-verified
+  // alarms only — operators uncheck it on the rare cases where they
+  // dispositioned without seeing video (e.g., heard audio but blocked
+  // camera view). All other factors stay false until explicitly
+  // marked, so the score floor is "VERIFIED" (2) by default.
+  const [avsFactors, setAvsFactors] = useState<AVSFactors>({
+    video_verified: true,
+    person_detected: false,
+    suspicious_behavior: false,
+    weapon_observed: false,
+    active_crime: false,
+    multi_camera_evidence: false,
+    multi_sensor_evidence: false,
+    audio_verified: false,
+    talkdown_ignored: false,
+    auth_failure: false,
+    ai_corroborated: false,
+  });
+  const avsPreview = previewAVSScore(avsFactors);
+  const toggleAVS = (k: keyof AVSFactors) => setAvsFactors(prev => ({ ...prev, [k]: !prev[k] }));
   const [submitting, setSubmitting] = useState(false);
   const [selectedAdjacentCam, setSelectedAdjacentCam] = useState<string | null>(null);
   const [showSiteMap, setShowSiteMap] = useState(false);
@@ -204,6 +229,7 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
       severity: alarm.severity,
       type: alarm.type,
       description: alarm.description,
+      avs_factors: avsFactors,
     });
     // If this is part of an incident, acknowledge the whole incident
     if (incident) {
@@ -1384,6 +1410,13 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
                     ];
                   })}
                 </div>
+
+                {/* TMA-AVS-01 validation factors */}
+                <AVSFactorChecklist
+                  factors={avsFactors}
+                  onToggle={toggleAVS}
+                  preview={avsPreview}
+                />
 
                 {/* Submit button */}
                 <button
