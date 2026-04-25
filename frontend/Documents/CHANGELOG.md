@@ -26,6 +26,39 @@ phase**, and put the most recent phase at the top.
 These commits close the last visible gaps before a customer-facing
 demo or UL 827B walkthrough.
 
+### `77405ab` — Polish: route login wordmark + particle colors through BRAND module
+**Date:** 2026-04-25 11:24 CDT
+**Files:** `frontend/src/app/login/page.tsx` (1 file, +24/-21)
+
+The Phase D audit flagged the login page as the worst offender for
+hardcoded color literals — 50+ hex values that wouldn't adapt to
+light mode and a hand-rendered "IRON-S-ight" wordmark that would
+literally render the wrong product name after a rebrand. Replaced
+the inline wordmark with `<Logo />` (derives letters from
+`BRAND.name`, dots from `BRAND.colors`) and routed the floating
+particle colors through `BRAND.colors.{primary,secondary,tertiary}`
+instead of hardcoded hex.
+
+### `f42c9f6` — Polish: loading skeletons on admin user list + portal site grid
+**Date:** 2026-04-25 11:18 CDT
+**Files:** `frontend/src/components/shared/Skeleton.tsx` (new), `frontend/src/app/admin/page.tsx`, `frontend/src/app/portal/page.tsx` (3 files, +109/-2)
+
+Phase D audit flagged blank panels during data fetches as a
+demo-killer ("appears unresponsive on first impression"). New
+shared `Skeleton` component with shimmer keyframes injected at
+mount time. Applied to admin "Internal Staff" loading state (4
+rows) and the portal site card grid (6 placeholder cards). Other
+surfaces (search results, evidence viewer, /reports cards)
+already render skeleton-equivalent loading states.
+
+### `47b292e` — CHANGELOG: document the supervisor reports + previous commit
+**Date:** 2026-04-25 11:11 CDT
+**Files:** `frontend/Documents/CHANGELOG.md` (1 file, +26/-2)
+
+Self-documenting policy: every commit that ships compliance-
+relevant work updates the CHANGELOG in the same push so the
+history is always navigable from one document.
+
 ### `1181200` — Supervisor /reports surface — SLA, verification queue, evidence shares
 **Date:** 2026-04-25 11:08 CDT
 **Files:** 11 files (+1,023/-3) — including new `frontend/src/app/reports/` route + 3 card components
@@ -433,7 +466,7 @@ Repository genesis.
 
 | Phase | Commits | Lines added | Lines removed |
 |---|---:|---:|---:|
-| Phase D — Polish & Customer Completeness | 6 | 1,988 | 43 |
+| Phase D — Polish & Customer Completeness | 9 | 2,147 | 68 |
 | Phase C — Operational Hardening | 1 | 207 | 3 |
 | Phase B — Evidence Integrity & TMA-AVS-01 | 3 | 983 | 43 |
 | Phase A — UL 827B Auth & Audit | 5 | 1,572 | 51 |
@@ -442,4 +475,4 @@ Repository genesis.
 | Initial Imports | 2 | 96,034 | 1 |
 
 Total post-import work (excluding the initial 96k-line code drop):
-**23 commits, +5,636 / -287 lines.** All 23 are documented above.
+**26 commits, +5,795 / -312 lines.** All 26 are documented above.
