@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,7 +23,6 @@ import (
 	"onvif-tool/internal/config"
 	"onvif-tool/internal/database"
 	"onvif-tool/internal/detection"
-	"onvif-tool/internal/drivers"
 	"onvif-tool/internal/export"
 	msdriver "onvif-tool/internal/milesight"
 	"onvif-tool/internal/notify"
@@ -57,6 +57,19 @@ func main() {
 
 	// Auto-migrate: add new columns if they don't exist
 	_, err = db.Pool.Exec(context.Background(), `
+		-- Camera device class: 'continuous' = traditional always-on IP
+		-- camera (RTSP stream + ONVIF subscription, current behavior),
+		-- 'sense_pushed' = battery-powered PIR-triggered cameras like
+		-- the Milesight SC4xx Sense series that POST event payloads to
+		-- our webhook instead of streaming. Default 'continuous' so
+		-- the migration is a no-op for existing rows.
+		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_class TEXT DEFAULT 'continuous';
+		-- Per-camera secret for the inbound webhook URL we hand to the
+		-- camera's Alarm Server config. Only populated for sense_pushed
+		-- cameras; null for continuous.
+		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS sense_webhook_token TEXT;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_cameras_sense_token
+			ON cameras(sense_webhook_token) WHERE sense_webhook_token IS NOT NULL;
 		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS recording_mode TEXT DEFAULT 'continuous';
 		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS pre_buffer_sec INT DEFAULT 10;
 		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS post_buffer_sec INT DEFAULT 30;
@@ -81,7 +94,7 @@ func main() {
 			label TEXT NOT NULL,
 			path TEXT NOT NULL,
 			purpose TEXT NOT NULL DEFAULT 'recordings',
-			retention_days INT DEFAULT 30,
+			retention_days INT DEFAULT 3,
 			max_gb INT DEFAULT 0,
 			priority INT DEFAULT 0,
 			enabled BOOLEAN DEFAULT true,
@@ -428,7 +441,11 @@ func main() {
 		-- reads from sites after this migration. Backfill below copies a
 		-- reasonable default from the most-recently-updated camera on each
 		-- site on first run.
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS retention_days       INT  DEFAULT 30;
+		ALTER TABLE sites ADD COLUMN IF NOT EXISTS retention_days       INT  DEFAULT 3;
+		-- Tighten the default for any future site row inserted without
+		-- an explicit retention. Existing rows are unaffected; an admin
+		-- bumps a site to a higher tier (7/14/30/60/90) per contract.
+		ALTER TABLE sites ALTER COLUMN retention_days SET DEFAULT 3;
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_mode       TEXT DEFAULT 'continuous';
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS pre_buffer_sec       INT  DEFAULT 10;
 		ALTER TABLE sites ADD COLUMN IF NOT EXISTS post_buffer_sec      INT  DEFAULT 30;
@@ -672,6 +689,60 @@ func main() {
 		-- period rather than locking everyone out at deploy time).
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
+		-- ── VLM Active-Learning Labeling Queue ─────────────────────────
+		-- Passive capture: every time Qwen successfully analyses an alarm
+		-- frame, a row lands here so internal annotators can review the
+		-- VLM output and submit ground-truth labels for fine-tuning.
+		-- Operators never see this table; it is drained off-hours by
+		-- internal staff via /admin/labeling.
+		--
+		-- status lifecycle:
+		--   pending  → claimed (annotator opens the job)
+		--   claimed  → labeled | skipped
+		--
+		-- snapshot_url may be a relative /snapshots/… path or an
+		-- absolute URL depending on deployment.
+		CREATE TABLE IF NOT EXISTS vlm_label_jobs (
+			id              BIGSERIAL    PRIMARY KEY,
+			alarm_id        TEXT         NOT NULL,
+			camera_id       TEXT         NOT NULL DEFAULT '',
+			site_id         TEXT         NOT NULL DEFAULT '',
+			snapshot_url    TEXT         NOT NULL DEFAULT '',
+			vlm_description TEXT         NOT NULL DEFAULT '',
+			vlm_threat      TEXT         NOT NULL DEFAULT '',
+			vlm_model       TEXT         NOT NULL DEFAULT '',
+			yolo_detections JSONB        NOT NULL DEFAULT '[]',
+			status          TEXT         NOT NULL DEFAULT 'pending',
+			claimed_by      UUID,
+			claimed_at      TIMESTAMPTZ,
+			created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_vlm_label_jobs_status
+			ON vlm_label_jobs(status, created_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_vlm_label_jobs_alarm
+			ON vlm_label_jobs(alarm_id);
+
+		-- Ground-truth labels submitted by internal annotators.
+		-- verdict: 'correct' | 'incorrect' | 'needs_correction'
+		-- corrected_description is non-empty only when verdict != correct.
+		-- Tags are free-form strings (e.g. 'false_positive', 'ppe_violation',
+		-- 'person_with_weapon') to seed the training dataset filter UI.
+		CREATE TABLE IF NOT EXISTS vlm_labels (
+			id                     BIGSERIAL    PRIMARY KEY,
+			job_id                 BIGINT       NOT NULL REFERENCES vlm_label_jobs(id) ON DELETE CASCADE,
+			annotator_id           UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			verdict                TEXT         NOT NULL,
+			corrected_description  TEXT         NOT NULL DEFAULT '',
+			corrected_threat       TEXT         NOT NULL DEFAULT '',
+			tags                   TEXT[]       NOT NULL DEFAULT '{}',
+			notes                  TEXT         NOT NULL DEFAULT '',
+			labeled_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+		);
+		CREATE INDEX IF NOT EXISTS idx_vlm_labels_job
+			ON vlm_labels(job_id);
+		CREATE INDEX IF NOT EXISTS idx_vlm_labels_annotator
+			ON vlm_labels(annotator_id, labeled_at DESC);
+
 		-- Append-only audit tables via trigger. We deliberately don't
 		-- REVOKE UPDATE/DELETE from the app role: the migration itself
 		-- and future scripted maintenance run as this role. Instead a
@@ -701,11 +772,157 @@ func main() {
 		CREATE TRIGGER deterrence_audits_append_only
 			BEFORE UPDATE OR DELETE ON deterrence_audits
 			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
+
+		-- ════════════════════════════════════════════════════════════
+		-- Multi-tenant integrity backfill
+		-- ════════════════════════════════════════════════════════════
+		-- These ALTERs add the organization_id column and tenancy
+		-- indexes to tables that originally only had site_id. Until the
+		-- column is populated, queries still scope correctly via
+		-- site→org joins; the new column is for direct-filter perf and
+		-- defence-in-depth (a buggy join can't cross tenants if the
+		-- handler also filters by organization_id directly).
+		ALTER TABLE incidents       ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE active_alarms   ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE evidence_shares ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
+		ALTER TABLE vlm_label_jobs  ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
+		CREATE INDEX IF NOT EXISTS idx_incidents_org       ON incidents(organization_id, last_alarm_ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_active_alarms_org   ON active_alarms(organization_id, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_evidence_shares_org ON evidence_shares(organization_id);
+
+		-- Backfill organization_id from sites where it's still empty.
+		-- Idempotent: only updates rows that haven't been backfilled.
+		UPDATE incidents i
+		   SET organization_id = COALESCE(s.organization_id, '')
+		  FROM sites s
+		 WHERE i.site_id = s.id AND i.organization_id = '';
+		UPDATE active_alarms a
+		   SET organization_id = COALESCE(s.organization_id, '')
+		  FROM sites s
+		 WHERE a.site_id = s.id AND a.organization_id = '';
+
+		-- ════════════════════════════════════════════════════════════
+		-- Foreign key + uniqueness backfill
+		-- ════════════════════════════════════════════════════════════
+		-- Wrapped in DO blocks so re-running the migration is a no-op.
+		-- We catch undefined_table for tables only created by external
+		-- SQL files (evidence_shares lives in ironsight_platform.sql),
+		-- and duplicate_object for constraints already added.
+		DO $migrate$
+		BEGIN
+			-- vlm_label_jobs.alarm_id should be unique. The Go enqueue
+			-- path uses ON CONFLICT (alarm_id) DO NOTHING which silently
+			-- inserts duplicates without this constraint.
+			BEGIN
+				ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_alarm_id_key UNIQUE (alarm_id);
+			EXCEPTION WHEN duplicate_object THEN NULL;
+				WHEN duplicate_table THEN NULL;
+				WHEN unique_violation THEN
+					-- Existing duplicates would block the constraint. Drop
+					-- the older copies first, then retry.
+					DELETE FROM vlm_label_jobs a USING vlm_label_jobs b
+					 WHERE a.alarm_id = b.alarm_id AND a.id < b.id;
+					BEGIN
+						ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_alarm_id_key UNIQUE (alarm_id);
+					EXCEPTION WHEN duplicate_object THEN NULL;
+					END;
+			END;
+
+			-- evidence_shares.incident_id → incidents(id). Skip silently
+			-- if either side is missing (shouldn't happen in prod).
+			BEGIN
+				ALTER TABLE evidence_shares
+					ADD CONSTRAINT evidence_shares_incident_fk
+					FOREIGN KEY (incident_id) REFERENCES incidents(id) ON DELETE CASCADE
+					NOT VALID; -- NOT VALID skips backfill check; new rows enforced
+			EXCEPTION WHEN duplicate_object THEN NULL;
+				WHEN undefined_table THEN NULL;
+			END;
+		END;
+		$migrate$;
+
+		-- ════════════════════════════════════════════════════════════
+		-- CHECK constraints on TEXT enums
+		-- ════════════════════════════════════════════════════════════
+		-- Guards against typos in code creating orphan rows that no
+		-- query filter recognizes. NOT VALID = don't scan history (some
+		-- legacy rows may have been written with the old enum set).
+		DO $checks$
+		BEGIN
+			BEGIN
+				ALTER TABLE users ADD CONSTRAINT users_role_chk
+					CHECK (role IN ('admin','soc_operator','soc_supervisor','site_manager','customer','viewer','guard')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE incidents ADD CONSTRAINT incidents_status_chk
+					CHECK (status IN ('active','acknowledged','resolved','closed')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE incidents ADD CONSTRAINT incidents_severity_chk
+					CHECK (severity IN ('low','medium','high','critical')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE active_alarms ADD CONSTRAINT active_alarms_severity_chk
+					CHECK (severity IN ('low','medium','high','critical')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE support_tickets ADD CONSTRAINT support_tickets_status_chk
+					CHECK (status IN ('open','answered','closed')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+				WHEN undefined_table THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE vlm_labels ADD CONSTRAINT vlm_labels_verdict_chk
+					CHECK (verdict IN ('correct','incorrect','needs_correction')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+			BEGIN
+				ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_status_chk
+					CHECK (status IN ('pending','claimed','labeled','skipped')) NOT VALID;
+			EXCEPTION WHEN duplicate_object THEN NULL;
+			END;
+		END;
+		$checks$;
 	`)
 	if err != nil {
 		log.Printf("[DB] Migration warning (non-fatal): %v", err)
 	} else {
 		log.Println("[DB] Schema migration check complete")
+	}
+
+	// AI runtime metrics hypertable. One row per (service, sample_ts) tick;
+	// we record deltas (calls, confirmed, filtered) since the previous tick
+	// rather than cumulative counters, so range queries can SUM() without
+	// worrying about api restarts that reset in-process atomics. GPU
+	// fields are absolute readings sampled at tick time. Kept in its own
+	// migration block so a Timescale-specific failure (e.g. extension not
+	// loaded) doesn't cascade into the main schema migrations above.
+	if _, err := db.Pool.Exec(context.Background(), `
+		CREATE TABLE IF NOT EXISTS ai_runtime_metrics (
+			ts                  TIMESTAMPTZ NOT NULL,
+			service             TEXT NOT NULL,
+			site_id             UUID,
+			gpu_util_pct        INT,
+			gpu_memory_used_mb  INT,
+			gpu_memory_total_mb INT,
+			gpu_temperature_c   INT,
+			calls_delta         INT NOT NULL DEFAULT 0,
+			confirmed_delta     INT NOT NULL DEFAULT 0,
+			filtered_delta      INT NOT NULL DEFAULT 0,
+			avg_inference_ms    INT
+		);
+		ALTER TABLE ai_runtime_metrics ADD COLUMN IF NOT EXISTS site_id UUID;
+		SELECT create_hypertable('ai_runtime_metrics', 'ts', if_not_exists => TRUE);
+		CREATE INDEX IF NOT EXISTS idx_ai_metrics_service_ts
+			ON ai_runtime_metrics (service, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_ai_metrics_site_ts
+			ON ai_runtime_metrics (site_id, ts DESC) WHERE site_id IS NOT NULL;
+	`); err != nil {
+		log.Printf("[DB] ai_runtime_metrics migration warning (non-fatal): %v", err)
 	}
 
 	// Override config paths from DB storage locations (if any are configured)
@@ -756,18 +973,31 @@ func main() {
 		}
 	}
 
+	// Seed the demo portfolio (orgs + sites + ~30 days of dispositioned
+	// events) BEFORE seedDemoUsers so users can be linked to existing
+	// orgs. Idempotent: skips entirely if any of the demo orgs already
+	// exists, so restarts don't pile on duplicate events.
+	seedDemoPortfolio(context.Background(), db)
+
 	// Seed demo platform users (SOC operators and portal users) if they don't exist
 	seedDemoUsers(context.Background(), db)
+
+	// Root context for all background goroutines. Cancelled on SIGINT /
+	// SIGTERM so the WS hub, recording engine, retention manager, and
+	// other long-runners exit cleanly. Defined here (before hub.Run)
+	// rather than down by the signal-wait so every spawn point can use it.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
 	// Initialize subsystems
 	hub := api.NewHub()
 	// Optional: Redis pub/sub bridge for multi-replica WS fanout. Silently
 	// no-ops when REDIS_URL is unset (single-replica deployments don't
 	// need it). See internal/api/websocket.go for the bridge design.
-	if err := hub.AttachRedisBridge(context.Background(), cfg.RedisURL, cfg.RedisWSChannel); err != nil {
+	if err := hub.AttachRedisBridge(rootCtx, cfg.RedisURL, cfg.RedisWSChannel); err != nil {
 		log.Printf("[WS] Redis bridge attach failed: %v — continuing in-memory only", err)
 	}
-	go hub.Run()
+	go hub.Run(rootCtx)
 
 	recEngine := recording.NewEngine(cfg, db)
 	hlsServer := streaming.NewHLSServer(cfg, db)
@@ -806,6 +1036,11 @@ func main() {
 		Enabled:      os.Getenv("AI_ENABLED") != "false",
 	})
 	aiClient.CheckHealth(context.Background())
+
+	// Persisted runtime metrics for the Services dashboard. Samples
+	// every 30s; rows go to the ai_runtime_metrics hypertable created
+	// during the migration block above.
+	api.StartAIMetricsSampler(context.Background(), db, aiClient, aiYOLO, aiQwen, 30*time.Second)
 
 	// Background VLM indexer: enriches every recording segment with a
 	// searchable description during idle hours. Scales with INDEXER_CONCURRENCY
@@ -902,8 +1137,10 @@ func main() {
 	// Subscriber registry — tracks ONVIF event subscribers for cleanup on camera delete
 	subReg := api.NewSubscriberRegistry()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// `ctx` here is the same root context used by the WS hub above —
+	// we alias for backwards-compat with the variable name used
+	// throughout this function.
+	ctx := rootCtx
 
 	// Start background services — only when this process owns them.
 	// When RUN_WORKERS=false these are nil and the sibling worker
@@ -940,7 +1177,7 @@ func main() {
 
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()
-	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier)
+	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier, aiClient)
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
@@ -965,7 +1202,9 @@ func main() {
 			retentionMgr.Stop()
 		}
 		subReg.StopAll()
-		cancel()
+		// Cancels rootCtx → WS hub, retention manager, export worker,
+		// and any other long-running consumer of rootCtx all wind down.
+		rootCancel()
 
 		os.Exit(0)
 	}()
@@ -1039,6 +1278,300 @@ func seedDemoUsers(ctx context.Context, db *database.DB) {
 	}
 }
 
+// seedDemoPortfolio creates a believable customer portfolio so the
+// portal's "what we handled for you" panel and incident-detail
+// "How the SOC handled this" block render with real numbers
+// instead of zeros on a clean install.
+//
+// Three orgs, five sites, a 30-day spread of dispositioned events
+// weighted toward false positives — that's the actual story the SOC
+// tells the customer ("most events are noise; we filtered them so
+// you didn't have to"). Operator callsigns match the SOC users that
+// seedDemoUsers creates so the same names appear consistently
+// across the portal and the operator console.
+//
+// Idempotent: bails out if the first demo org already exists, so
+// restarts don't append duplicate events.
+func seedDemoPortfolio(ctx context.Context, db *database.DB) {
+	var existing string
+	_ = db.Pool.QueryRow(ctx, `SELECT id FROM organizations WHERE id='co-alpha001'`).Scan(&existing)
+	if existing != "" {
+		return // already seeded
+	}
+
+	type orgSeed struct {
+		ID           string
+		Name         string
+		Plan         string
+		ContactName  string
+		ContactEmail string
+	}
+	type siteSeed struct {
+		ID      string
+		OrgID   string
+		Name    string
+		Address string
+		Lat     float64
+		Lng     float64
+	}
+
+	orgs := []orgSeed{
+		{"co-alpha001", "Apex Construction Group", "enterprise", "Sandra Pierce", "spierce@apexcg.com"},
+		{"co-beta002", "Meridian Development Ventures", "professional", "Priya Sharma", "priya@meridiandv.com"},
+		{"co-gamma003", "Ironclad Site Services", "professional", "Derek Lawson", "dlawson@ironcladsites.com"},
+	}
+	sites := []siteSeed{
+		{"ACG-301", "co-alpha001", "Apex Tower — Phase 2", "1450 N Wells St, Chicago, IL", 41.9089, -87.6342},
+		{"ACG-302", "co-alpha001", "Apex Riverside Plaza", "200 W Wacker Dr, Chicago, IL", 41.8870, -87.6350},
+		{"MDV-501", "co-beta002", "Meridian Industrial Park", "5500 E Riverside Dr, Austin, TX", 30.2389, -97.7197},
+		{"MDV-502", "co-beta002", "Meridian Logistics Hub", "10000 W Cesar Chavez St, Austin, TX", 30.2562, -97.7986},
+		{"ISS-201", "co-gamma003", "Ironclad HQ Yard", "4400 N 32nd St, Phoenix, AZ", 33.4938, -112.0118},
+	}
+
+	// Insert orgs and sites.
+	for _, o := range orgs {
+		if _, err := db.Pool.Exec(ctx, `
+			INSERT INTO organizations (id, name, plan, contact_name, contact_email)
+			VALUES ($1,$2,$3,$4,$5)
+			ON CONFLICT (id) DO NOTHING`,
+			o.ID, o.Name, o.Plan, o.ContactName, o.ContactEmail,
+		); err != nil {
+			log.Printf("[SEED] org %s: %v", o.ID, err)
+		}
+	}
+	for _, s := range sites {
+		if _, err := db.Pool.Exec(ctx, `
+			INSERT INTO sites (id, name, address, organization_id, latitude, longitude, status)
+			VALUES ($1,$2,$3,$4,$5,$6,'active')
+			ON CONFLICT (id) DO NOTHING`,
+			s.ID, s.Name, s.Address, s.OrgID, s.Lat, s.Lng,
+		); err != nil {
+			log.Printf("[SEED] site %s: %v", s.ID, err)
+		}
+	}
+	log.Printf("[SEED] %d demo orgs and %d sites created", len(orgs), len(sites))
+
+	// Generate 30 days of dispositioned events. The distribution is
+	// shaped to match what a real SOC tells customers: most alarms
+	// are noise (animals, weather, lighting), a smaller slice are
+	// activity-without-action (workers on schedule), and a thin
+	// minority are verified threats. Response times follow a
+	// log-normal-ish curve clamped to reasonable SOC SLAs.
+	type dispMix struct {
+		code   string
+		label  string
+		weight int
+	}
+	dispositions := []dispMix{
+		{"false-positive-shadow", "False Positive — Shadow / Light", 22},
+		{"false-positive-animal", "False Positive — Animal", 18},
+		{"false-positive-weather", "False Positive — Weather / Foliage", 14},
+		{"false-positive-vehicle", "False Positive — Authorized Vehicle", 8},
+		{"no-action-scheduled-activity", "Activity Within Schedule", 12},
+		{"activity-logs", "Logged Activity — No Action", 8},
+		{"verified-threat-trespasser", "Verified — Trespasser, Deterrence Fired", 8},
+		{"verified-threat-attempted-entry", "Verified — Attempted Entry, Police Dispatched", 4},
+		{"verified-threat-vandalism", "Verified — Vandalism in Progress", 3},
+		{"test-system-test", "Test — System Verification", 3},
+	}
+	totalWeight := 0
+	for _, d := range dispositions {
+		totalWeight += d.weight
+	}
+	pickDisp := func(r *rand.Rand) dispMix {
+		n := r.Intn(totalWeight)
+		for _, d := range dispositions {
+			if n < d.weight {
+				return d
+			}
+			n -= d.weight
+		}
+		return dispositions[0]
+	}
+
+	severityFor := func(code string, r *rand.Rand) string {
+		switch {
+		case strings.HasPrefix(code, "verified"):
+			if r.Intn(3) == 0 {
+				return "critical"
+			}
+			return "high"
+		case strings.HasPrefix(code, "activity-logs"), strings.HasPrefix(code, "no-action"):
+			return "low"
+		default:
+			// false-positives skew low/medium
+			if r.Intn(4) == 0 {
+				return "high"
+			}
+			if r.Intn(2) == 0 {
+				return "medium"
+			}
+			return "low"
+		}
+	}
+
+	eventTypes := []string{"intrusion", "linecross", "person", "vehicle", "loitering"}
+	operators := []struct {
+		ID, Callsign string
+	}{
+		{"op-001", "JHAYES"},
+		{"op-002", "CTORRES"},
+		{"op-003", "RMORGAN"},
+	}
+
+	r := rand.New(rand.NewSource(42)) // deterministic seed → stable demo
+	now := time.Now()
+	startWindow := now.Add(-30 * 24 * time.Hour)
+
+	// Roughly 6 events per site per day, more during business hours.
+	// Total: 5 sites × 30 days × ~6 = ~900 events. Plenty for the
+	// "we handled X events" panel to show convincing numbers.
+	eventCount := 0
+	alarmCount := 0
+	for _, s := range sites {
+		// Per-site volume varies — bigger sites get more events.
+		dailyAvg := 4 + r.Intn(5) // 4-8 events/day per site
+		for day := 0; day < 30; day++ {
+			eventsToday := dailyAvg + r.Intn(4) - 2 // ±2 jitter
+			if eventsToday < 0 {
+				eventsToday = 0
+			}
+			for i := 0; i < eventsToday; i++ {
+				// Time of day: bias toward 18:00-06:00 (active monitoring window).
+				// 70% events at night, 30% during the day.
+				var hour int
+				if r.Intn(10) < 7 {
+					// Night hours: 18-23 or 0-5
+					if r.Intn(2) == 0 {
+						hour = 18 + r.Intn(6)
+					} else {
+						hour = r.Intn(6)
+					}
+				} else {
+					hour = 6 + r.Intn(12) // 6-17
+				}
+				dayBase := startWindow.Add(time.Duration(day) * 24 * time.Hour)
+				eventTime := time.Date(dayBase.Year(), dayBase.Month(), dayBase.Day(),
+					hour, r.Intn(60), r.Intn(60), 0, time.UTC)
+				if eventTime.After(now) {
+					continue // don't seed events in the future
+				}
+
+				disp := pickDisp(r)
+				sev := severityFor(disp.code, r)
+				op := operators[r.Intn(len(operators))]
+				evType := eventTypes[r.Intn(len(eventTypes))]
+
+				// Response time: log-ish curve. Most under 60s; tail to ~5min.
+				// Verified threats get faster response; informational slower.
+				baseSec := 20 + r.Intn(60)
+				if strings.HasPrefix(disp.code, "verified") {
+					baseSec = 8 + r.Intn(25) // 8-33s
+				} else if strings.HasPrefix(disp.code, "test") {
+					baseSec = 3 + r.Intn(8)
+				}
+				// Long-tail: 10% of responses run 2-5min
+				if r.Intn(10) == 0 {
+					baseSec = 120 + r.Intn(180)
+				}
+				ackTime := eventTime.Add(time.Duration(baseSec) * time.Second)
+
+				// Resolved-at trails ack by another 30-180s while the
+				// operator finishes notes / disposition.
+				resolvedAt := ackTime.Add(time.Duration(30+r.Intn(150)) * time.Second)
+
+				alarmID := fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), eventCount+1)
+				eventID := fmt.Sprintf("EVT-%s-%04d", eventTime.Format("060102"), eventCount+1)
+				camID := fmt.Sprintf("%s-CAM-%02d", s.ID, 1+r.Intn(6))
+
+				// Active alarm row — needed for the response-time
+				// metrics (acknowledged_at - ts).
+				_, err := db.Pool.Exec(ctx, `
+					INSERT INTO active_alarms
+					  (id, alarm_code, site_id, site_name, camera_id, camera_name,
+					   severity, type, description, ts, acknowledged, acknowledged_at,
+					   acknowledged_by_callsign, sla_deadline_ms, organization_id, created_at)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,$15)
+					ON CONFLICT (id) DO NOTHING`,
+					alarmID,
+					fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), alarmCount+1),
+					s.ID, s.Name,
+					camID, fmt.Sprintf("%s Camera %d", s.Name, 1+r.Intn(6)),
+					sev, evType,
+					fmt.Sprintf("%s detected at %s", evType, s.Name),
+					eventTime.UnixMilli(),
+					ackTime,
+					op.Callsign,
+					eventTime.UnixMilli()+90_000, // 90s SLA
+					s.OrgID,
+					eventTime,
+				)
+				if err != nil {
+					log.Printf("[SEED] active_alarm: %v", err)
+					continue
+				}
+
+				// Action log: 2-4 entries per event so the timeline panel renders.
+				actionLog := []map[string]interface{}{
+					{"ts": eventTime.UnixMilli(), "text": "Alarm received", "auto": true},
+					{"ts": ackTime.Add(-2 * time.Second).UnixMilli(), "text": fmt.Sprintf("Operator %s engaged", op.Callsign), "auto": false},
+					{"ts": ackTime.UnixMilli(), "text": fmt.Sprintf("Disposition: %s", disp.label), "auto": false},
+				}
+				if strings.HasPrefix(disp.code, "verified-threat-trespasser") {
+					actionLog = append(actionLog, map[string]interface{}{
+						"ts": ackTime.Add(15 * time.Second).UnixMilli(), "text": "Audio deterrence fired (3x)", "auto": false,
+					})
+				}
+				if disp.code == "verified-threat-attempted-entry" {
+					actionLog = append(actionLog, map[string]interface{}{
+						"ts": ackTime.Add(20 * time.Second).UnixMilli(), "text": "Police dispatched (911)", "auto": false,
+					})
+				}
+				actionLogJSON, _ := json.Marshal(actionLog)
+
+				notes := ""
+				switch {
+				case disp.code == "verified-threat-trespasser":
+					notes = "Single subject in restricted zone. Deterrence audio fired; subject left within 30s."
+				case disp.code == "verified-threat-attempted-entry":
+					notes = "Two subjects testing perimeter gate. PD dispatched; arrived in 6m."
+				case disp.code == "false-positive-animal":
+					notes = "Confirmed wildlife (deer / coyote pattern). No action."
+				case disp.code == "false-positive-shadow":
+					notes = "Tree shadow movement triggered detection. False positive."
+				}
+
+				_, err = db.Pool.Exec(ctx, `
+					INSERT INTO security_events
+					  (id, alarm_id, site_id, camera_id, severity, type, description,
+					   disposition_code, disposition_label, operator_id, operator_callsign,
+					   operator_notes, action_log, ts, resolved_at)
+					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+					ON CONFLICT (id) DO NOTHING`,
+					eventID, alarmID, s.ID, camID,
+					sev, evType,
+					fmt.Sprintf("%s detected at %s", evType, s.Name),
+					disp.code, disp.label,
+					op.ID, op.Callsign, notes,
+					actionLogJSON,
+					eventTime.UnixMilli(),
+					resolvedAt.UnixMilli(),
+				)
+				if err != nil {
+					log.Printf("[SEED] security_event: %v", err)
+					continue
+				}
+
+				eventCount++
+				alarmCount++
+			}
+		}
+	}
+
+	log.Printf("[SEED] %d alarms + %d dispositioned events seeded across %d sites",
+		alarmCount, eventCount, len(sites))
+}
+
 // autoStartCameras initializes recording and HLS for cameras with recording enabled
 func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *api.Hub, det *detection.Manager, subReg *api.SubscriberRegistry, aiClient *ai.Client) {
 	// Wait a moment for the server to be ready
@@ -1050,11 +1583,49 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 		return
 	}
 
-	// Alarm rate-limiter: max 1 SOC alarm per camera+type per 60s
+	// Alarm rate-limiter. Most VCA topics describe the SAME physical
+	// activity from different angles (linecross + object + intrusion +
+	// loitering + human + vehicle all fire together when a person walks
+	// past). Keying the cooldown by event type lets them all through
+	// simultaneously, which (a) buries the operator in duplicate alarms
+	// for one event and (b) queues a Qwen inference per topic and
+	// saturates the GPU. We bucket those motion-style topics under one
+	// camera-level key. lpr/face stay per-type because they carry
+	// identifying information that's lost if coalesced.
+	motionTopics := map[string]bool{
+		"linecross": true, "object": true, "intrusion": true,
+		"loitering": true, "human": true, "vehicle": true, "motion": true,
+	}
+	// Per-camera AI in-flight gate. Qwen takes 5–30s; if a second alarm
+	// fires for the same camera while Qwen is still running, queueing
+	// another inference behind it just deepens the latency hole and
+	// keeps the GPU pegged. Skip the AI step when one is already in
+	// flight — the alarm itself still gets created and recorded, the
+	// operator just doesn't get the second AI verdict.
+	var aiInFlightMu sync.Mutex
+	aiInFlight := make(map[string]bool)
+	tryAcquireAI := func(camID string) bool {
+		aiInFlightMu.Lock()
+		defer aiInFlightMu.Unlock()
+		if aiInFlight[camID] {
+			return false
+		}
+		aiInFlight[camID] = true
+		return true
+	}
+	releaseAI := func(camID string) {
+		aiInFlightMu.Lock()
+		defer aiInFlightMu.Unlock()
+		delete(aiInFlight, camID)
+	}
+
 	var alarmCooldownMu sync.Mutex
 	alarmLastFired := make(map[string]time.Time)
 	allowAlarm := func(camID, evtType string) bool {
 		key := camID + ":" + evtType
+		if motionTopics[evtType] {
+			key = camID + ":motion"
+		}
 		alarmCooldownMu.Lock()
 		defer alarmCooldownMu.Unlock()
 		if t, ok := alarmLastFired[key]; ok && time.Since(t) < 60*time.Second {
@@ -1146,6 +1717,13 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 				if alarmTypes[eventType] && allowAlarm(cameraID.String(), eventType) {
 					eventTimestamp := evt.EventTime // capture before goroutine — this is the exact event time
 					go func() {
+						// Panic guard: a single bad event must not crash the
+						// whole event loop. Recover, log, and move on.
+						defer func() {
+							if rec := recover(); rec != nil {
+								log.Printf("[ALARM] PANIC in alarm-generation goroutine: %v", rec)
+							}
+						}()
 						cn, siteID, siteName, err := db.GetCameraWithSite(context.Background(), cameraID.String())
 						if err != nil || siteID == "" {
 							return
@@ -1268,6 +1846,20 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 						}
 						created, err := db.CreateActiveAlarm(context.Background(), alarm)
 						if err != nil || !created {
+							// Compensating delete: we just created an incident
+							// in this path and now the alarm row didn't take.
+							// Without cleanup we'd leave an "incident with 0
+							// alarms" orphan. Best-effort — if the delete also
+							// fails the retention manager will reap it later.
+							if isNewIncident && inc != nil && inc.ID != "" {
+								if _, delErr := db.Pool.Exec(context.Background(),
+									`DELETE FROM incidents WHERE id=$1 AND alarm_count=1`, inc.ID); delErr != nil {
+									log.Printf("[ALARM] orphan incident %s cleanup failed: %v", inc.ID, delErr)
+								}
+							}
+							if err != nil {
+								log.Printf("[ALARM] CreateActiveAlarm failed for %s: %v", alarmID, err)
+							}
 							return
 						}
 						log.Printf("[ALARM] %s → alarm %s → incident %s (%s at %s, %d alarms)",
@@ -1318,6 +1910,14 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 							evtSiteContext := fmt.Sprintf("Site: %s. Camera: %s. Event type: %s.", siteName, cn, eventType)
 
 							go func() {
+								// Panic guard: snapshot/AI pipeline touches a lot of
+								// external state (RTSP, FFmpeg, AI service). A panic
+								// here must not bring down the server.
+								defer func() {
+									if rec := recover(); rec != nil {
+										log.Printf("[ALARM] PANIC in snapshot/AI goroutine for alarm %s: %v", snapAlarmID, rec)
+									}
+								}()
 								var jpegFrame []byte
 								var snapshotURL string
 
@@ -1385,8 +1985,14 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 								}
 
 								// ── AI Pipeline: YOLO → Qwen ──
-								if len(jpegFrame) > 0 {
-									aiResult := aiClient.Analyze(context.Background(), jpegFrame, evtSiteContext)
+								// Per-camera in-flight gate: drop the AI step
+								// when another inference for this camera is
+								// already running. Snapshot + alarm are still
+								// captured; we just skip the (now redundant)
+								// AI verdict for this burst.
+								if len(jpegFrame) > 0 && tryAcquireAI(snapCameraID) {
+									defer releaseAI(snapCameraID)
+									aiResult := aiClient.Analyze(context.Background(), jpegFrame, siteID, evtSiteContext)
 									if aiResult != nil && aiResult.Description != "" {
 										ppeInfo := ""
 										if len(aiResult.PPEViolations) > 0 {
@@ -1425,6 +2031,26 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
 										aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
 
+										// ── Passive labeling capture ──
+										// Enqueue the frame + VLM output for off-SOC annotation.
+										// Non-blocking best-effort: a failure here must never affect
+										// the alarm pipeline. Operators see nothing; internal staff
+										// drain this queue via /admin/labeling.
+										go func(alarmID, camID, siteID, snapURL, desc, threat, model string, det []byte) {
+											defer func() {
+												if rec := recover(); rec != nil {
+													log.Printf("[LABELING] PANIC in enqueue goroutine for alarm %s: %v", alarmID, rec)
+												}
+											}()
+											if err := db.EnqueueLabelJob(
+												context.Background(),
+												alarmID, camID, siteID, snapURL, desc, threat, model, det,
+											); err != nil {
+												log.Printf("[LABELING] enqueue failed for alarm %s: %v", alarmID, err)
+											}
+										}(snapAlarmID, snapCameraID, siteID, snapshotURL,
+											aiResult.Description, aiResult.ThreatLevel, aiResult.QwenModel, detectionsJSON)
+
 										// ── Video enrichment pass ──
 										// Now that the initial snapshot analysis is out to operators,
 										// extract a short clip around the event and feed it through
@@ -1456,7 +2082,7 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 												case len(clipBytes) <= 1000:
 													log.Printf("[AI] video clip too small (%d bytes) for alarm %s (seg=%s offset=%.1fs) — likely FFmpeg seeked past end of segment", len(clipBytes), snapAlarmID, filepath.Base(segAbsPath), clipOffset)
 												default:
-													if vidResult := aiClient.AnalyzeVideo(context.Background(), clipBytes, aiResult.Detections, evtSiteContext); vidResult == nil || vidResult.Description == "" {
+													if vidResult := aiClient.AnalyzeVideo(context.Background(), clipBytes, aiResult.Detections, siteID, evtSiteContext); vidResult == nil || vidResult.Description == "" {
 														// No-op — network/decode error already logged by the client.
 													} else if vidResult.Degraded {
 														// Qwen fell back to mock_analysis (video_fps error, OOM, etc).
@@ -1514,6 +2140,11 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 					case thumbSem <- struct{}{}:
 						go func() {
 							defer func() { <-thumbSem }()
+							defer func() {
+								if rec := recover(); rec != nil {
+									log.Printf("[THUMB] PANIC in thumbnail goroutine for event %d: %v", eventID, rec)
+								}
+							}()
 							thumb, err := recording.CaptureFrame(cfg.FFmpegPath, rtspUri, 3)
 							if err != nil {
 								log.Printf("[THUMB] Failed to capture thumbnail for event %d: %v", eventID, err)
@@ -1551,31 +2182,13 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 					}
 				}
 			})
-			// Milesight cameras: use WebSocket /webstream/track instead of ONVIF PullPoint.
-			// The WS provides real-time JSON analytics with AI confidence scores,
-			// object types, and rule metadata — and avoids the ONVIF subscription
-			// limit and ResourceUnknownFault issues on Milesight firmware.
-			isMilesight := strings.Contains(strings.ToLower(cam.Manufacturer), "milesight")
-			if isMilesight && cam.OnvifAddress != "" {
-				msCam := msdriver.New(cam.OnvifAddress, cam.Username, cam.Password)
-				camIDForMS := cam.ID
-				msStream := msdriver.NewEventStream(msCam, cam.Name, func(eventType string, metadata map[string]interface{}) {
-					subscriber.InjectEvent(camIDForMS, eventType, metadata)
-				})
-				msStream.Start(ctx)
-				log.Printf("[STARTUP] Camera %s: Milesight WebSocket event stream active (ONVIF PullPoint skipped)", cam.Name)
-			} else {
-				// Non-Milesight cameras: use standard ONVIF PullPoint subscription
-				info := &onvif.DeviceInfo{Manufacturer: cam.Manufacturer, Model: cam.Model}
-				if drv := drivers.ForDevice(info); drv != nil {
-					subscriber.Classify = drv.ClassifyEvent
-					subscriber.Enrich = drv.EnrichEvent
-					log.Printf("[STARTUP] Camera %s: %s driver attached for events", cam.Name, drv.Name())
-				}
-				subscriber.Start(ctx)
-				subReg.Register(cam.ID, subscriber)
-				log.Printf("[STARTUP] Camera %s: ONVIF events subscription active", cam.Name)
-			}
+			// Vendor-specific event source selection — extracted into
+			// api.StartCameraEventSource so the runtime-add path
+			// (HandleCreateCamera) routes through the same logic.
+			// Without this shared helper, Milesight cameras added at
+			// runtime were silently downgraded to ONVIF PullPoint and
+			// produced zero events.
+			api.StartCameraEventSource(ctx, &cam, subscriber, subReg, "STARTUP")
 		} else {
 			log.Printf("[STARTUP] Camera %s: events subscription disabled", cam.Name)
 		}

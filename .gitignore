@@ -74,3 +74,26 @@ Thumbs.db
 cam_snapshot.jpg
 clear_db.go.bak
 *.bak
+
+# ── Ad-hoc dev / debugging scripts in bin/ ─────────────────────
+# Real ops scripts (Start Ironsight.bat, AI Status.bat) are
+# whitelisted below. Everything else in bin/ is one-off shell
+# scripts, .err captures, and fix-* snapshots — those don't
+# belong in history.
+bin/*.sh
+bin/*.log.err
+bin/diag*.log
+bin/fix-*.sql
+bin/reset-*.sql
+
+# ── Claude / agent session scratch ─────────────────────────────
+.claude-tmp-*
+**/.claude-tmp-*
+.claude/
+**/.claude/
+
+# ── Dev-loop scratch ───────────────────────────────────────────
+# stderr captures and temp files spat out during local development.
+dev.log.err
+**/dev.log.err
+**/*.log.err

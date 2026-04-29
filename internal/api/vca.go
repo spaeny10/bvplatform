@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os/exec"
@@ -277,11 +278,14 @@ func HandleVCASnapshot(db *database.DB) http.HandlerFunc {
 }
 
 // ffmpegFrameGrab captures a single JPEG frame from an RTSP stream using FFmpeg.
+// Timeout is generous because cellular/WAN cameras can take several seconds
+// to negotiate RTSP and produce a first I-frame. We don't run this on a hot
+// path — it fires on demand when the operator opens the VCA zone editor.
 func ffmpegFrameGrab(rtspURI string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	var buf bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-rtsp_transport", "tcp",
 		"-i", rtspURI,
@@ -291,11 +295,17 @@ func ffmpegFrameGrab(rtspURI string) ([]byte, error) {
 		"-vcodec", "mjpeg",
 		"pipe:1",
 	)
-	cmd.Stdout = &buf
-	cmd.Stderr = nil // suppress FFmpeg logs
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, err
+		// Pull the last line of FFmpeg's stderr for the caller's log —
+		// otherwise "exit status 1" tells us nothing.
+		tail := stderr.String()
+		if i := strings.LastIndex(strings.TrimRight(tail, "\n"), "\n"); i >= 0 {
+			tail = tail[i+1:]
+		}
+		return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(tail))
 	}
-	return buf.Bytes(), nil
+	return stdout.Bytes(), nil
 }

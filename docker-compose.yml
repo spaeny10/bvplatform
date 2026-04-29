@@ -268,6 +268,11 @@ services:
       AI_ENABLED: ${AI_ENABLED:-true}
       SEGMENT_DURATION: ${SEGMENT_DURATION:-60}
       PRODUCT_NAME: ${PRODUCT_NAME:-Ironsight}
+      # Worker shares config.Load() with api, which fail-fasts on
+      # missing JWT_SECRET / ADMIN_PASSWORD. Workers don't actually
+      # use either, but passing them keeps both binaries on one .env.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env (openssl rand -hex 32)}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
       # Worker writes export outputs into the same shared volume the api
       # reads from; paths match the api's subdir layout.
       STORAGE_PATH: /data/recordings

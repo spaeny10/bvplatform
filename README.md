@@ -27,25 +27,24 @@ Everything worth knowing lives under [`frontend/Documents/`](frontend/Documents)
 | [`HOUSEKEEPING.md`](frontend/Documents/HOUSEKEEPING.md) | Design token system, light/dark theming. |
 | [`MobileAppPlan.md`](frontend/Documents/MobileAppPlan.md) | Mobile apps (customer + operator) — paused, planning captured. |
 | [`MSDriver/MILESIGHT_DRIVER_BRIEF.MD`](frontend/Documents/MSDriver/MILESIGHT_DRIVER_BRIEF.MD) | Camera driver implementation notes. |
+| [`SenseCamera.md`](frontend/Documents/SenseCamera.md) | Push-only PIR / solar perimeter cameras (Milesight SC4xx). Webhook integration, payload format, security model. |
 
 ## Quick start
 
+**The canonical 5-minute "clone and launch" guide:** [`QUICKSTART.md`](QUICKSTART.md). Covers Linux+Docker, Windows+WSL+Podman, GPU CDI setup, and `Failed to fetch` troubleshooting.
+
+Shortest path:
+
 ```bash
-# Dev (Windows or Linux — single-binary, everything in-process)
-go build ./cmd/server
-./server          # or server.exe on Windows
-
-# Frontend (separate terminal)
-cd frontend
-npm install
-npm run dev       # → http://localhost:3000
-
-# Docker production
-cp .env.example .env    # then edit secrets
-docker compose up -d --build
+git clone https://github.com/spaeny10/bvplatform.git && cd bvplatform
+cp .env.example .env                    # edit secrets — see QUICKSTART §3
+docker compose up -d --build            # or podman compose up -d --build
+# → http://localhost:3000  (admin / admin)
 ```
 
-Full deployment walk-through: [`MasterDeployment.md`](frontend/Documents/MasterDeployment.md).
+For Windows, double-click [`bin/Start Ironsight.bat`](bin/Start%20Ironsight.bat) after the `.env` step — it handles the WSL+Podman+CDI bring-up.
+
+Long-form production walk-through: [`MasterDeployment.md`](frontend/Documents/MasterDeployment.md).
 
 ## Status
 

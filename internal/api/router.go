@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"onvif-tool/internal/ai"
 	"onvif-tool/internal/config"
 	"onvif-tool/internal/database"
 	"onvif-tool/internal/detection"
@@ -20,7 +21,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all API routes
-func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher) http.Handler {
+func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher, aiClient *ai.Client) http.Handler {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -61,6 +62,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// revoked, or expired token returns 404 with no detail (don't leak
 	// share state to probes).
 	r.Get("/share/{token}", HandlePublicEvidenceShare(db))
+
+	// Sense / push-only camera webhook. Public; the long random token
+	// in the URL is the authentication. Used by Milesight SC4xx PIR
+	// cameras whose Alarm Server config POSTs JSON+snapshot on every
+	// triggered event.
+	r.Post("/api/integrations/milesight/sense/{token}", HandleSenseWebhook(cfg, db, hub))
 
 	// Public status endpoint. Unauthenticated — trust signals matter
 	// most when the customer is worried, which is exactly when they
@@ -151,6 +158,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// for the Profile G fallback playback path.
 		r.Get("/cameras/{id}/sd/status", HandleSDStatus(db))
 
+			// ONVIF-driven reboot (admin / supervisor only). Useful when
+			// the camera gets into a bad state — stuck event-subscription
+			// pool, wedged RTSP, stale driver state. Camera goes offline
+			// for ~30-90s while it restarts.
+			r.Post("/cameras/{id}/reboot", HandleRebootCamera(db))
+
 		// Unified historical search: events (filtered by RBAC) with playback
 		// URLs resolved in one round trip. Frontend uses this to render a
 		// clickable list — each row carries the segment + seek offset.
@@ -195,6 +208,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Patch("/users/{id}", HandleUpdateUserProfile(db))
 		r.Patch("/users/{id}/password", HandleUpdateUserPassword(db))
 		r.Patch("/users/{id}/role", HandleUpdateUserRole(db))
+		r.Post("/users/{id}/mfa/reset", HandleAdminMFAReset(db))
 
 		// Storage status (available to all authenticated users)
 		r.Get("/storage/status", func(w http.ResponseWriter, r *http.Request) {
@@ -217,6 +231,9 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 		// System health
 		r.Get("/system/health", HandleSystemHealth(cfg, db, recEngine, mtxServer))
+		r.Get("/system/services", HandleServicesHealth(cfg, db, aiClient))
+		r.Get("/system/services/timeseries", HandleAIMetricsTimeseries(db))
+		r.Get("/system/services/usage", HandleAIUsageBySite(db))
 
 		// Audit log
 		r.Get("/audit", HandleQueryAuditLog(db))
@@ -266,7 +283,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/sites/{id}", HandleGetSite(db))
 			r.Post("/sites", HandleCreateSiteP(db))
 			r.Put("/sites/{id}", HandleUpdateSite(db))
-			r.Put("/sites/{id}/recording", HandleUpdateSiteRecording(db))
+			// Partial update of a site's recording config — PATCH (not PUT)
+			// because the body sets only the recording-related fields and
+			// leaves the rest of the site row untouched. Frontend must use
+			// PATCH to match.
+			r.Patch("/sites/{id}/recording", HandleUpdateSiteRecording(db))
 			r.Delete("/sites/{id}", HandleDeleteSiteP(db))
 			// Customer-maintained on-site contact list. Distinct
 			// from site_sops (operator call tree). Read scoped to
@@ -317,6 +338,8 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Delete("/shares/{token}", HandleRevokeEvidenceShare(db))
 			r.Get("/incidents", HandleListIncidents(db))
 			r.Get("/incidents/{id}", HandleGetIncident(db))
+
+			r.Get("/portal/summary", HandlePortalSummary(db))
 
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))
@@ -379,6 +402,19 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 				}
 				writeJSON(w, map[string]interface{}{"ok": true, "incident_id": incidentID})
 			})
+		})
+
+		// ── ML Labeling (internal staff / admin only) ──────────────────
+		// Off-SOC active-learning queue. Passively populated when Qwen
+		// analyses an alarm frame; drained by internal annotators at
+		// /admin/labeling. SOC operators never see or interact with this.
+		r.Route("/admin/labeling", func(r chi.Router) {
+			r.Get("/stats",           HandleLabelingStats(db))
+			r.Get("/jobs",            HandleListLabelJobs(db))
+			r.Post("/jobs/next",      HandleClaimNextLabelJob(db))
+			r.Post("/jobs/{id}/claim", HandleClaimLabelJob(db))
+			r.Post("/jobs/{id}/label", HandleSubmitLabel(db))
+			r.Get("/export",          HandleExportLabeledDataset(db))
 		})
 
 		// Bookmarks / Incident markers

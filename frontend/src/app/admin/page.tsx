@@ -20,32 +20,30 @@ import UserChip from '@/components/shared/UserChip';
 import SettingsPage from '@/components/SettingsPage';
 import HealthDashboard from '@/components/HealthDashboard';
 import RecordingHealthCard from '@/components/RecordingHealthCard';
-import { listCameras, Camera, listUsers, createUser, deleteUser, updateUserPassword, updateUserRole, updateUserProfile, UserPublic } from '@/lib/api';
+import ServicesHealthCard from '@/components/admin/ServicesHealthCard';
+import AIMetricsChart from '@/components/admin/AIMetricsChart';
+import AIUsageBySiteCard from '@/components/admin/AIUsageBySiteCard';
+import { listCameras, Camera, listUsers, createUser, deleteUser, updateUserPassword, updateUserRole, updateUserProfile, UserPublic, authFetch } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { ToastProvider, useToast } from '@/components/ToastProvider';
 import { SkeletonRows } from '@/components/shared/Skeleton';
 
-type Tab = 'sites' | 'operators' | 'users' | 'settings' | 'health' | 'audit' | 'integrations';
+type Tab = 'sites' | 'operators' | 'users' | 'settings' | 'health' | 'audit' | 'integrations' | 'labeling';
 
 /**
- * Authenticated fetch for /api/v1 calls. Throws on non-2xx so the
- * caller's try/catch surfaces a user-visible error rather than the
- * action silently no-op-ing. The thrown Error includes the response
- * body when the server provided one (most error handlers do
- * http.Error which is plain text), so a toast can show "delete
- * failed: foreign key constraint…" instead of an opaque "something
- * went wrong."
+ * Throwing variant of authFetch — used by admin handlers that want
+ * an Error with the server's response body for toast display, rather
+ * than checking res.ok manually at every call site. JWT injection and
+ * 401 → /login redirect are inherited from authFetch, so all three
+ * fetch paths in the codebase (this, fetchJSON, raw authFetch) now
+ * share the same auth layer.
  */
 async function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
-  const res = await fetch(url, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers,
-    },
-  });
+  const headers = new Headers(init.headers ?? {});
+  if (!headers.has('Content-Type') && init.body) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const res = await authFetch(url, { ...init, headers });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(body || `${init.method || 'GET'} ${url} failed (${res.status})`);
@@ -228,7 +226,7 @@ export default function AdminPage() {
       name: newCompanyName.trim(),
       contact_name: newCompanyContact.trim(),
       contact_email: newCompanyEmail.trim(),
-      plan: newCompanyPlan as any,
+      plan: newCompanyPlan as 'starter' | 'professional' | 'enterprise',
       logo_url: undefined,
     });
     setCreatingCompany(false);
@@ -281,8 +279,8 @@ export default function AdminPage() {
       setNewOpName(''); setNewOpCallsign(''); setNewOpEmail('');
       setNewOpUsername(''); setNewOpPassword('');
       setOpMsg({ ok: true, text: `Operator ${op.callsign} created.` });
-    } catch (e: any) {
-      setOpMsg({ ok: false, text: e.message ?? 'Failed to create operator.' });
+    } catch (e) {
+      setOpMsg({ ok: false, text: e instanceof Error ? e.message : 'Failed to create operator.' });
     }
     setCreatingOp(false);
   }, [newOpName, newOpCallsign, newOpEmail, newOpUsername, newOpPassword]);
@@ -330,6 +328,32 @@ export default function AdminPage() {
   const [pwdValue, setPwdValue] = useState('');
   const [pwdMsg, setPwdMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  // ── Company user filter (Users tab) ──
+  const [customerCompanyFilter, setCustomerCompanyFilter] = useState('');
+
+  // ── Device history lookup (Health tab) ──
+  const [devHistType, setDevHistType] = useState<'camera' | 'speaker'>('camera');
+  const [devHistId, setDevHistId] = useState('');
+  const [devHistRows, setDevHistRows] = useState<Array<{ id: number; device_type: string; device_id: string; site_id: string; location_label: string; assigned_at: string; removed_at: string | null }> | null>(null);
+  const [devHistLoading, setDevHistLoading] = useState(false);
+  const [devHistErr, setDevHistErr] = useState('');
+
+  const loadDeviceHistory = useCallback(async (type: string, id: string) => {
+    if (!id.trim()) return;
+    setDevHistLoading(true);
+    setDevHistErr('');
+    setDevHistRows(null);
+    try {
+      const res = await apiFetch(`/api/v1/device-history?type=${encodeURIComponent(type)}&id=${encodeURIComponent(id.trim())}`);
+      const data = await res.json();
+      setDevHistRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setDevHistErr(e instanceof Error ? e.message : 'Failed to load history.');
+    } finally {
+      setDevHistLoading(false);
+    }
+  }, []);
+
   const loadPlatformUsers = useCallback(async () => {
     setUsersLoading(true);
     try {
@@ -366,8 +390,8 @@ export default function AdminPage() {
       setShowCreateUser(false);
       setUserMsg({ ok: true, text: 'User created.' });
       await loadPlatformUsers();
-    } catch (e: any) {
-      setUserMsg({ ok: false, text: e.message ?? 'Failed to create user.' });
+    } catch (e) {
+      setUserMsg({ ok: false, text: e instanceof Error ? e.message : 'Failed to create user.' });
     }
     setCreatingUser(false);
   }, [newUsername, newPassword, newDisplayName, newEmail, newPhone, newUserRole, loadPlatformUsers]);
@@ -377,14 +401,14 @@ export default function AdminPage() {
     try {
       await deleteUser(id);
       setPlatformUsers(prev => prev.filter(u => u.id !== id));
-    } catch (e: any) { alert('Delete failed: ' + e.message); }
+    } catch (e) { alert('Delete failed: ' + (e instanceof Error ? e.message : String(e))); }
   }, []);
 
   const handleRoleChange = useCallback(async (id: string, role: string) => {
     try {
       await updateUserRole(id, role);
       setPlatformUsers(prev => prev.map(u => u.id === id ? { ...u, role } : u));
-    } catch (e: any) { alert('Role change failed: ' + e.message); }
+    } catch (e) { alert('Role change failed: ' + (e instanceof Error ? e.message : String(e))); }
   }, []);
 
   const handleChangePassword = useCallback(async () => {
@@ -395,8 +419,8 @@ export default function AdminPage() {
       setPwdTargetId(null);
       setPwdValue('');
       setPwdMsg({ ok: true, text: 'Password updated.' });
-    } catch (e: any) {
-      setPwdMsg({ ok: false, text: e.message ?? 'Failed.' });
+    } catch (e) {
+      setPwdMsg({ ok: false, text: e instanceof Error ? e.message : 'Failed.' });
     }
   }, [pwdTargetId, pwdValue]);
 
@@ -423,8 +447,8 @@ export default function AdminPage() {
       setPlatformUsers(prev => prev.map(u => u.id === editingUserId ? updated : u));
       setEditingUserId(null);
       setEditMsg({ ok: true, text: 'Profile updated.' });
-    } catch (e: any) {
-      setEditMsg({ ok: false, text: e.message ?? 'Failed to save.' });
+    } catch (e) {
+      setEditMsg({ ok: false, text: e instanceof Error ? e.message : 'Failed to save.' });
     }
     setSavingProfile(false);
   }, [editingUserId, editDisplayName, editEmail, editPhone, editOrgId]);
@@ -435,7 +459,7 @@ export default function AdminPage() {
     if ((tab === 'users' || tab === 'operators') && !usersLoaded) loadPlatformUsers();
   }, [ensureCameras, usersLoaded, loadPlatformUsers]);
 
-  const tabs: { key: Tab; label: string; count?: number }[] = [
+  const tabs: { key: Tab; label: string; count?: number; external?: string }[] = [
     { key: 'sites',        label: 'Sites & Customers', count: sites.length },
     { key: 'operators',    label: 'Operators',          count: operators.length },
     { key: 'users',        label: 'Users',              count: usersLoaded ? platformUsers.length : undefined },
@@ -443,6 +467,7 @@ export default function AdminPage() {
     { key: 'health',       label: 'Health' },
     { key: 'audit',        label: 'Audit Trail' },
     { key: 'integrations', label: 'Integrations' },
+    { key: 'labeling',     label: 'ML Labeling',        external: '/admin/labeling' },
   ];
 
   const statusColors: Record<string, string> = {
@@ -499,7 +524,22 @@ export default function AdminPage() {
         borderBottom: '1px solid var(--border, rgba(255,255,255,0.07))',
         background: 'var(--bg-secondary, #0E1117)', flexShrink: 0,
       }}>
-        {tabs.map(tab => (
+        {tabs.map(tab => tab.external ? (
+          <Link
+            key={tab.key}
+            href={tab.external}
+            style={{
+              padding: '10px 16px', fontSize: 12, fontWeight: 600,
+              color: 'var(--text-muted)', textDecoration: 'none',
+              borderBottom: '2px solid transparent',
+              display: 'flex', alignItems: 'center', gap: 6, marginBottom: -1,
+              letterSpacing: 0.5,
+            }}
+          >
+            {tab.label}
+            <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 4, background: 'rgba(34,197,94,0.1)', color: '#22c55e', fontWeight: 700, border: '1px solid rgba(34,197,94,0.2)' }}>NEW</span>
+          </Link>
+        ) : (
           <button
             key={tab.key}
             onClick={() => handleTabChange(tab.key)}
@@ -1036,6 +1076,22 @@ export default function AdminPage() {
                       {user?.role === 'admin' && u.id !== user?.id && (
                         <button
                           className="admin-action-btn"
+                          onClick={async () => {
+                            if (!confirm(`Reset MFA for ${u.username}? Their authenticator app will be unlinked and they can re-enroll on next login.`)) return;
+                            try {
+                              await apiFetch(`/api/v1/users/${u.id}/mfa/reset`, { method: 'POST' });
+                              setUserMsg({ ok: true, text: `MFA reset for ${u.username}.` });
+                            } catch (e) {
+                              setUserMsg({ ok: false, text: e instanceof Error ? e.message : 'MFA reset failed.' });
+                            }
+                          }}
+                          title="Reset MFA"
+                          style={{ color: '#f59e0b' }}
+                        >🔐</button>
+                      )}
+                      {user?.role === 'admin' && u.id !== user?.id && (
+                        <button
+                          className="admin-action-btn"
                           onClick={() => handleDeleteUser(u.id, u.username)}
                           title="Delete user"
                           style={{ color: 'var(--accent-red)' }}
@@ -1106,16 +1162,29 @@ export default function AdminPage() {
                     <div className="admin-card">
                       <div className="admin-card-header">
                         <div className="admin-card-title">Customer Accounts</div>
-                        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                          {customerUsers.length} account{customerUsers.length !== 1 ? 's' : ''} · portal access only
-                        </span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <select
+                            className="admin-input"
+                            value={customerCompanyFilter}
+                            onChange={e => setCustomerCompanyFilter(e.target.value)}
+                            style={{ fontSize: 10, padding: '3px 8px', minWidth: 130 }}
+                          >
+                            <option value="">All companies</option>
+                            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                          </select>
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)', flexShrink: 0 }}>
+                            {customerUsers.filter(u => !customerCompanyFilter || u.organization_id === customerCompanyFilter).length} account{customerUsers.filter(u => !customerCompanyFilter || u.organization_id === customerCompanyFilter).length !== 1 ? 's' : ''} · portal access only
+                          </span>
+                        </div>
                       </div>
                       {usersLoading ? (
                         <div style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>Loading...</div>
                       ) : customerUsers.length === 0 ? (
                         <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>No customer accounts</div>
                       ) : (
-                        customerUsers.map(u => <UserRow key={u.id} u={u} roleSet={CUSTOMER_ROLES} />)
+                        customerUsers
+                          .filter(u => !customerCompanyFilter || u.organization_id === customerCompanyFilter)
+                          .map(u => <UserRow key={u.id} u={u} roleSet={CUSTOMER_ROLES} />)
                       )}
                     </div>
                   </>
@@ -1145,9 +1214,82 @@ export default function AdminPage() {
               Camera connectivity, recording status, and server metrics
             </div>
             <div style={{ marginBottom: 24 }}>
+              <ServicesHealthCard />
+            </div>
+            <div style={{ marginBottom: 24 }}>
+              <AIMetricsChart />
+            </div>
+            <div style={{ marginBottom: 24 }}>
+              <AIUsageBySiteCard />
+            </div>
+            <div style={{ marginBottom: 24 }}>
               <RecordingHealthCard />
             </div>
             <HealthDashboard cameras={cameras} />
+
+            {/* ── Device Assignment History ── */}
+            <div className="admin-card" style={{ marginTop: 24 }}>
+              <div className="admin-card-header">
+                <div className="admin-card-title">Device Assignment History</div>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>Track which site a camera or speaker has been assigned to over time</span>
+              </div>
+              <div style={{ padding: '12px 18px', display: 'flex', gap: 8, alignItems: 'center' }}>
+                <select
+                  className="admin-input"
+                  value={devHistType}
+                  onChange={e => setDevHistType(e.target.value as 'camera' | 'speaker')}
+                  style={{ width: 110 }}
+                >
+                  <option value="camera">Camera</option>
+                  <option value="speaker">Speaker</option>
+                </select>
+                <input
+                  className="admin-input"
+                  placeholder="Device ID…"
+                  value={devHistId}
+                  onChange={e => setDevHistId(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && loadDeviceHistory(devHistType, devHistId)}
+                  style={{ flex: 1 }}
+                />
+                <button
+                  className="admin-btn admin-btn-primary"
+                  onClick={() => loadDeviceHistory(devHistType, devHistId)}
+                  disabled={!devHistId.trim() || devHistLoading}
+                >
+                  {devHistLoading ? 'Loading…' : 'Lookup'}
+                </button>
+              </div>
+              {devHistErr && (
+                <div style={{ padding: '0 18px 12px', fontSize: 11, color: 'var(--accent-red)' }}>{devHistErr}</div>
+              )}
+              {devHistRows !== null && (
+                devHistRows.length === 0 ? (
+                  <div style={{ padding: '0 18px 16px', fontSize: 12, color: 'var(--text-muted)' }}>No assignment history found for this device.</div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'var(--text-muted)' }}>
+                        {['Site ID', 'Location', 'Assigned At', 'Removed At'].map(h => (
+                          <th key={h} style={{ padding: '6px 18px', textAlign: 'left', fontWeight: 600, fontSize: 10, letterSpacing: 0.5, textTransform: 'uppercase' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {devHistRows.map(row => (
+                        <tr key={row.id} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                          <td style={{ padding: '8px 18px', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>{row.site_id}</td>
+                          <td style={{ padding: '8px 18px' }}>{row.location_label || '—'}</td>
+                          <td style={{ padding: '8px 18px', color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>{new Date(row.assigned_at).toLocaleString()}</td>
+                          <td style={{ padding: '8px 18px', color: row.removed_at ? 'var(--text-muted)' : 'var(--accent-green)', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>
+                            {row.removed_at ? new Date(row.removed_at).toLocaleString() : 'Current'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )
+              )}
+            </div>
           </div>
         )}
 

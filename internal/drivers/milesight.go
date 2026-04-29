@@ -3,6 +3,8 @@ package drivers
 import (
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"onvif-tool/internal/onvif"
@@ -110,10 +112,21 @@ func (d *MilesightDriver) NormalizeRTSPURI(uri string, username, password string
 		parsed.User = url.UserPassword(username, password)
 	}
 
-	// Milesight sometimes returns port 0 or no port — default to 554
+	// Some Milesight firmware (seen in the wild on MS-C8477 with a
+	// misconfigured "RTSP Port" UI field) returns an unusably small
+	// port number — port 0, port 1, or anything in the privileged
+	// range below 1024 that isn't a known RTSP port. The actual stream
+	// is always on the standard 554; the bogus port comes from the
+	// camera's GetStreamUri response. Override anything in that range
+	// to 554 so FFmpeg can dial.
 	host := parsed.Hostname()
 	port := parsed.Port()
-	if port == "" || port == "0" {
+	if port == "" {
+		parsed.Host = host + ":554"
+	} else if p, err := strconv.Atoi(port); err == nil && p < 1024 && p != 80 && p != 443 {
+		// 80/443 are the legitimate HTTP/HTTPS ports cameras
+		// occasionally use for RTSP-over-HTTP tunneling — leave those
+		// alone. Anything else under 1024 is the firmware bug.
 		parsed.Host = host + ":554"
 	}
 
@@ -241,13 +254,37 @@ func (d *MilesightDriver) EnrichEvent(topic string, rawXML string) map[string]in
 	return extra
 }
 
+// milesightZoomTokenRE matches Milesight motorized-zoom suffix codes
+// (X12, X20, X22, X23, X25, X33, X42, …). Every Milesight PTZ /
+// speed-dome model carries one of these; fixed bullets, fisheyes,
+// and fixed domes do not. Anchored to a hyphen on the left so we
+// don't trip on coincidental "X##" appearing inside other tokens.
+var milesightZoomTokenRE = regexp.MustCompile(`(?i)-X\d{2}\b|\bX\d{2}[A-Z]`)
+
+// RefineHasPTZ corrects the has_ptz flag the ONVIF profile reported.
+// Milesight fisheyes (FIGPE, FPC, FE family) and fixed cameras
+// advertise a PTZConfiguration token because they support digital
+// ePTZ over the dewarped image — but they have no mechanical PTZ.
+// Real PTZ models always carry a motorized-zoom suffix (X23, X12, …)
+// in the model string, which is the cleanest discriminator.
+func (d *MilesightDriver) RefineHasPTZ(info *onvif.DeviceInfo, profileSays bool) bool {
+	if info == nil || !profileSays {
+		return profileSays
+	}
+	model := strings.ToUpper(info.Model)
+	if milesightZoomTokenRE.MatchString(model) {
+		return true
+	}
+	return false
+}
+
 // DefaultSettings returns Milesight-recommended recording configuration.
 // Milesight AI cameras perform on-edge analytics, so event-mode recording
 // with human+vehicle triggers gives the best balance of storage efficiency
 // and detection coverage.
 func (d *MilesightDriver) DefaultSettings() RecordingDefaults {
 	return RecordingDefaults{
-		RetentionDays:     30,
+		RetentionDays:     3,
 		RecordingMode:     "continuous",
 		PreBufferSec:      10,
 		PostBufferSec:     30,

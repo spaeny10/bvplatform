@@ -622,10 +622,14 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	if f, ferr := os.Create(stderrPath); ferr == nil {
 		r.cmd.Stderr = f
 		r.stderrPath = stderrPath
-		// Close the file when FFmpeg exits.
-		go func() {
-			<-runCtx.Done()
-			_ = f.Close()
+		// Close the file when FFmpeg exits OR when we leave this function
+		// for any other reason (Wait returns, stall watchdog kills FFmpeg,
+		// panic). The previous fire-and-forget goroutine could leak the FD
+		// across many crash/restart cycles before runCtx finally cancelled.
+		// sync.Once-style: defer and Done channel — whichever fires first.
+		stderrFile := f
+		defer func() {
+			_ = stderrFile.Close()
 		}()
 	}
 
@@ -653,6 +657,14 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	// Cellular streams can drop silently without closing the TCP connection, causing
 	// cmd.Wait() to block indefinitely. This detects the stall and forces a restart.
 	go func() {
+		// Panic guard: a malformed directory listing or os.Stat hiccup
+		// must not crash the recording supervisor. Recover and return so
+		// the next restart cycle takes over.
+		defer func() {
+			if rec := recover(); rec != nil {
+				log.Printf("[REC] PANIC in stall watchdog for %s: %v", r.cameraName, rec)
+			}
+		}()
 		stallTimeout := time.Duration(r.segmentDur*2+60) * time.Second
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()

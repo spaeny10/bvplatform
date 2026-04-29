@@ -14,6 +14,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,6 +103,146 @@ type Client struct {
 	http   *http.Client
 	yoloOK bool
 	qwenOK bool
+
+	// Runtime counters. Process-local, atomic, lost on restart — they
+	// give the operator a live "AI funnel" view (frames → YOLO confirmed
+	// → Qwen confirmed → alert) without round-tripping to Postgres on
+	// every inference. Persisted aggregates land in a hypertable in
+	// Phase 3 of the runtime-metrics work.
+	yoloCalls     atomic.Int64
+	yoloConfirmed atomic.Int64 // YOLO returned >=1 detection
+	yoloMsTotal   atomic.Int64 // sum of inference ms (for averaging)
+
+	qwenCalls     atomic.Int64
+	qwenConfirmed atomic.Int64 // Qwen returned a threat (not "none" and FP < 50%)
+	qwenMsTotal   atomic.Int64
+
+	// Per-site breakdown for the "GPU rental bill" view. Keyed by site
+	// UUID (string). Populated only when a caller threads siteID into
+	// AnalyzeForSite — the indexer's DescribeVideo path leaves it nil.
+	siteStats sync.Map // map[string]*siteCounters
+}
+
+// siteCounters holds per-site cumulative AI counters. Atomic ints so
+// the sampler can read while a hot inference path writes.
+type siteCounters struct {
+	yoloCalls     atomic.Int64
+	yoloConfirmed atomic.Int64
+	yoloMsTotal   atomic.Int64
+	qwenCalls     atomic.Int64
+	qwenConfirmed atomic.Int64
+	qwenMsTotal   atomic.Int64
+}
+
+// SiteAIStats is the per-site row in a usage breakdown.
+type SiteAIStats struct {
+	SiteID         string `json:"site_id"`
+	YOLOCalls      int64  `json:"yolo_calls"`
+	YOLOConfirmed  int64  `json:"yolo_confirmed"`
+	YOLOFiltered   int64  `json:"yolo_filtered"`
+	YOLOAvgMs      int64  `json:"yolo_avg_ms"`
+	QwenCalls      int64  `json:"qwen_calls"`
+	QwenConfirmed  int64  `json:"qwen_confirmed"`
+	QwenFiltered   int64  `json:"qwen_filtered"`
+	QwenAvgMs      int64  `json:"qwen_avg_ms"`
+}
+
+// SiteStatsSnapshot returns one entry per site that has ever fired an
+// inference since process start. Sorted by total calls descending so
+// the heaviest consumers float to the top.
+func (c *Client) SiteStatsSnapshot() []SiteAIStats {
+	out := []SiteAIStats{}
+	c.siteStats.Range(func(k, v interface{}) bool {
+		sid, _ := k.(string)
+		sc, _ := v.(*siteCounters)
+		if sc == nil {
+			return true
+		}
+		yc := sc.yoloCalls.Load()
+		yo := sc.yoloConfirmed.Load()
+		ym := sc.yoloMsTotal.Load()
+		qc := sc.qwenCalls.Load()
+		qo := sc.qwenConfirmed.Load()
+		qm := sc.qwenMsTotal.Load()
+		avg := func(t, n int64) int64 {
+			if n == 0 {
+				return 0
+			}
+			return t / n
+		}
+		out = append(out, SiteAIStats{
+			SiteID:        sid,
+			YOLOCalls:     yc,
+			YOLOConfirmed: yo,
+			YOLOFiltered:  yc - yo,
+			YOLOAvgMs:     avg(ym, yc),
+			QwenCalls:     qc,
+			QwenConfirmed: qo,
+			QwenFiltered:  qc - qo,
+			QwenAvgMs:     avg(qm, qc),
+		})
+		return true
+	})
+	return out
+}
+
+// counterFor returns (and lazily creates) the per-site counter struct.
+// siteID is the UUID string; empty siteID returns nil so callers fall
+// through to the global counters only.
+func (c *Client) counterFor(siteID string) *siteCounters {
+	if siteID == "" {
+		return nil
+	}
+	if v, ok := c.siteStats.Load(siteID); ok {
+		return v.(*siteCounters)
+	}
+	sc := &siteCounters{}
+	actual, _ := c.siteStats.LoadOrStore(siteID, sc)
+	return actual.(*siteCounters)
+}
+
+// AIStats is the snapshot of the runtime counters returned to the UI.
+// All counts are cumulative since process start.
+type AIStats struct {
+	YOLOCalls       int64 `json:"yolo_calls"`
+	YOLOConfirmed   int64 `json:"yolo_confirmed"`
+	YOLOFiltered    int64 `json:"yolo_filtered"`
+	YOLOAvgMs       int64 `json:"yolo_avg_ms"`
+
+	QwenCalls       int64 `json:"qwen_calls"`
+	QwenConfirmed   int64 `json:"qwen_confirmed"`
+	QwenFiltered    int64 `json:"qwen_filtered"`
+	QwenAvgMs       int64 `json:"qwen_avg_ms"`
+}
+
+// Stats returns a snapshot of the runtime counters. Safe for concurrent
+// use; the four reads aren't atomically consistent with one another but
+// the drift between them is at most one in-flight inference, which is
+// not material for an operator dashboard.
+func (c *Client) Stats() AIStats {
+	yc := c.yoloCalls.Load()
+	yo := c.yoloConfirmed.Load()
+	ym := c.yoloMsTotal.Load()
+	qc := c.qwenCalls.Load()
+	qo := c.qwenConfirmed.Load()
+	qm := c.qwenMsTotal.Load()
+
+	avg := func(total, count int64) int64 {
+		if count == 0 {
+			return 0
+		}
+		return total / count
+	}
+	return AIStats{
+		YOLOCalls:     yc,
+		YOLOConfirmed: yo,
+		YOLOFiltered:  yc - yo,
+		YOLOAvgMs:     avg(ym, yc),
+		QwenCalls:     qc,
+		QwenConfirmed: qo,
+		QwenFiltered:  qc - qo,
+		QwenAvgMs:     avg(qm, qc),
+	}
 }
 
 // NewClient creates an AI pipeline client.
@@ -138,11 +280,15 @@ func (c *Client) CheckHealth(ctx context.Context) {
 }
 
 // Analyze runs the full YOLO → Qwen pipeline on a JPEG frame.
+// `siteID` is the UUID string of the originating site; pass "" if the
+// caller doesn't have one (e.g. ad-hoc snapshot tools). Site attribution
+// drives the per-site usage breakdown on the Services dashboard.
 // Returns nil if AI services are unavailable (graceful degradation).
-func (c *Client) Analyze(ctx context.Context, jpegFrame []byte, siteContext string) *AnalysisResult {
+func (c *Client) Analyze(ctx context.Context, jpegFrame []byte, siteID, siteContext string) *AnalysisResult {
 	if !c.cfg.Enabled || len(jpegFrame) == 0 {
 		return nil
 	}
+	site := c.counterFor(siteID)
 
 	start := time.Now()
 	result := &AnalysisResult{FrameSource: "snapshot_cgi"}
@@ -152,6 +298,18 @@ func (c *Client) Analyze(ctx context.Context, jpegFrame []byte, siteContext stri
 	if err != nil {
 		log.Printf("[AI] YOLO inference failed: %v", err)
 		return nil
+	}
+	c.yoloCalls.Add(1)
+	c.yoloMsTotal.Add(int64(yoloResult.InferenceMs))
+	if len(yoloResult.Detections) > 0 {
+		c.yoloConfirmed.Add(1)
+	}
+	if site != nil {
+		site.yoloCalls.Add(1)
+		site.yoloMsTotal.Add(int64(yoloResult.InferenceMs))
+		if len(yoloResult.Detections) > 0 {
+			site.yoloConfirmed.Add(1)
+		}
 	}
 	result.Detections = yoloResult.Detections
 	result.PPEDetections = yoloResult.PPEDetections
@@ -197,6 +355,21 @@ func (c *Client) Analyze(ctx context.Context, jpegFrame []byte, siteContext stri
 		result.Description = buildYOLOOnlyDescription(yoloResult.Detections)
 		result.ThreatLevel = inferThreatFromYOLO(yoloResult.Detections)
 		return result
+	}
+	c.qwenCalls.Add(1)
+	c.qwenMsTotal.Add(int64(qwenResult.InferenceMs))
+	// "Confirmed" = Qwen produced an actionable verdict. Anything classified
+	// "none" or with a >50% false-positive probability counts as filtered.
+	qwenConfirmed := qwenResult.ThreatLevel != "" && qwenResult.ThreatLevel != "none" && qwenResult.FalsePositivePct < 0.5
+	if qwenConfirmed {
+		c.qwenConfirmed.Add(1)
+	}
+	if site != nil {
+		site.qwenCalls.Add(1)
+		site.qwenMsTotal.Add(int64(qwenResult.InferenceMs))
+		if qwenConfirmed {
+			site.qwenConfirmed.Add(1)
+		}
 	}
 
 	result.ThreatLevel = qwenResult.ThreatLevel
@@ -291,10 +464,13 @@ func (c *Client) DetectYOLO(ctx context.Context, jpegFrame []byte) (*YOLOResult,
 // video tier runs after the single-frame tier — it gives Qwen motion context
 // (e.g., how an object is carried, movement direction) that a single snapshot
 // cannot convey. Returns nil on failure (caller keeps the snapshot-tier result).
-func (c *Client) AnalyzeVideo(ctx context.Context, mp4Clip []byte, detections []Detection, siteContext string) *QwenResult {
+// `siteID` is the originating site UUID for per-site usage attribution; pass
+// "" to skip site accounting.
+func (c *Client) AnalyzeVideo(ctx context.Context, mp4Clip []byte, detections []Detection, siteID, siteContext string) *QwenResult {
 	if !c.cfg.Enabled || !c.qwenOK || len(mp4Clip) < 1000 {
 		return nil
 	}
+	site := c.counterFor(siteID)
 
 	// Longer timeout — video inference is ~15-25s vs ~5-10s for a still.
 	httpClient := &http.Client{Timeout: 60 * time.Second}
@@ -332,6 +508,19 @@ func (c *Client) AnalyzeVideo(ctx context.Context, mp4Clip []byte, detections []
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		log.Printf("[AI] Qwen video decode: %v", err)
 		return nil
+	}
+	c.qwenCalls.Add(1)
+	c.qwenMsTotal.Add(int64(result.InferenceMs))
+	confirmed := result.ThreatLevel != "" && result.ThreatLevel != "none" && result.FalsePositivePct < 0.5
+	if confirmed {
+		c.qwenConfirmed.Add(1)
+	}
+	if site != nil {
+		site.qwenCalls.Add(1)
+		site.qwenMsTotal.Add(int64(result.InferenceMs))
+		if confirmed {
+			site.qwenConfirmed.Add(1)
+		}
 	}
 	log.Printf("[AI] Qwen video: threat=%s fp=%.0f%% in %.0fms — %s",
 		result.ThreatLevel, result.FalsePositivePct*100,

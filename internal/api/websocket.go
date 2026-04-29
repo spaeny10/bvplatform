@@ -116,13 +116,24 @@ func (h *Hub) AttachRedisBridge(ctx context.Context, redisURL, channel string) e
 }
 
 // Run starts the hub's event loop. If a bridge is attached it also starts
-// the subscriber goroutine so cross-replica messages flow inbound.
-func (h *Hub) Run() {
+// the subscriber goroutine so cross-replica messages flow inbound. The
+// context controls shutdown — when it cancels, the bridge subscriber
+// exits cleanly (releasing its Redis connection) and Run returns.
+func (h *Hub) Run(ctx context.Context) {
 	if h.bridge != nil {
-		go h.runBridgeSubscriber(context.Background())
+		go h.runBridgeSubscriber(ctx)
 	}
 	for {
 		select {
+		case <-ctx.Done():
+			log.Printf("[WS] Hub shutting down (%d clients)", len(h.clients))
+			h.mu.Lock()
+			for conn := range h.clients {
+				conn.Close()
+			}
+			h.clients = make(map[*websocket.Conn]bool)
+			h.mu.Unlock()
+			return
 		case conn := <-h.register:
 			h.mu.Lock()
 			h.clients[conn] = true

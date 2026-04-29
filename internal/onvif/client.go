@@ -26,6 +26,18 @@ type Client struct {
 	deviceInfo *DeviceInfo
 	httpClient *http.Client
 	timeOffset time.Duration
+
+	// Per-service URLs discovered via GetCapabilities. The advertised
+	// host is rewritten to match c.XAddr because NAT'd cameras report
+	// their internal LAN IP, which is unreachable from outside.
+	mediaURL     string
+	ptzURL       string
+	imagingURL   string
+	eventsURL    string
+	recordingURL string
+	searchURL    string
+	replayURL    string
+	deviceIOURL  string
 }
 
 // DeviceInfo holds basic device information
@@ -65,7 +77,9 @@ func NewClient(address, username, password string) *Client {
 		Password: password,
 		XAddr:    address,
 		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
+			// Timeouts sized for cellular-connected cameras — radio
+			// negotiation alone can run several seconds on first dial.
+			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConnsPerHost: 4,
 				MaxConnsPerHost:     4,
@@ -73,12 +87,21 @@ func NewClient(address, username, password string) *Client {
 				DisableKeepAlives:   false,
 				ForceAttemptHTTP2:   false,
 				DialContext: (&net.Dialer{
-					Timeout:   3 * time.Second,
+					Timeout:   12 * time.Second,
 					KeepAlive: 30 * time.Second,
 				}).DialContext,
-				TLSHandshakeTimeout:   3 * time.Second,
-				ResponseHeaderTimeout: 10 * time.Second,
-				TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+				TLSHandshakeTimeout:   8 * time.Second,
+				ResponseHeaderTimeout: 15 * time.Second,
+				// Camera firmware is all over the map on TLS — older
+				// Milesight Sense series (SC4xx) tops out at TLS 1.0/1.1,
+				// which Go 1.20+ refuses by default. Drop the floor here
+				// so we can still talk to those cameras over HTTPS. Self-
+				// signed certs on every IP camera mean we always skip
+				// verification anyway.
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: true,
+					MinVersion:         tls.VersionTLS10,
+				},
 			},
 		},
 	}
@@ -104,7 +127,217 @@ func (c *Client) Connect(ctx context.Context) (*DeviceInfo, error) {
 
 	c.deviceInfo = info
 	log.Printf("[ONVIF] Connected: %s %s (FW: %s)", info.Manufacturer, info.Model, info.FirmwareVersion)
+
+	// Discover per-service URLs. Best-effort — if GetCapabilities
+	// fails or the camera doesn't advertise some service, we fall
+	// back to the hard-coded path conventions in each method.
+	if err := c.discoverServices(ctx); err != nil {
+		log.Printf("[ONVIF] Service discovery failed (will use defaults): %v", err)
+	}
+
 	return info, nil
+}
+
+// discoverServices calls GetCapabilities and stores per-service URLs.
+// Hostnames in the returned XAddrs are rewritten to match c.XAddr —
+// the camera advertises its internal LAN address, but the platform
+// reaches it via a public/NAT'd address that the user typed.
+func (c *Client) discoverServices(ctx context.Context) error {
+	body := `<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+  <s:Header>` + c.BuildSecurityHeader() + `</s:Header>
+  <s:Body>
+    <tds:GetCapabilities>
+      <tds:Category>All</tds:Category>
+    </tds:GetCapabilities>
+  </s:Body>
+</s:Envelope>`
+
+	resp, err := c.DoRequest(ctx, c.XAddr, body)
+	if err != nil {
+		return err
+	}
+
+	type capsResp struct {
+		XMLName xml.Name `xml:"Envelope"`
+		Body    struct {
+			Response struct {
+				Capabilities struct {
+					Analytics struct{ XAddr string `xml:"XAddr"` } `xml:"Analytics"`
+					Device    struct{ XAddr string `xml:"XAddr"` } `xml:"Device"`
+					Events    struct{ XAddr string `xml:"XAddr"` } `xml:"Events"`
+					Imaging   struct{ XAddr string `xml:"XAddr"` } `xml:"Imaging"`
+					Media     struct{ XAddr string `xml:"XAddr"` } `xml:"Media"`
+					PTZ       struct{ XAddr string `xml:"XAddr"` } `xml:"PTZ"`
+					Extension struct {
+						DeviceIO  struct{ XAddr string `xml:"XAddr"` } `xml:"DeviceIO"`
+						Recording struct{ XAddr string `xml:"XAddr"` } `xml:"Recording"`
+						Search    struct{ XAddr string `xml:"XAddr"` } `xml:"Search"`
+						Replay    struct{ XAddr string `xml:"XAddr"` } `xml:"Replay"`
+					} `xml:"Extension"`
+				} `xml:"Capabilities"`
+			} `xml:"GetCapabilitiesResponse"`
+		} `xml:"Body"`
+	}
+	var parsed capsResp
+	if err := xml.Unmarshal(resp, &parsed); err != nil {
+		return fmt.Errorf("parse capabilities: %w", err)
+	}
+	caps := parsed.Body.Response.Capabilities
+
+	// rewriteHost swaps the host portion of `advertised` with the host
+	// from c.XAddr. NAT'd cameras advertise their LAN IP — unreachable
+	// from anywhere outside the camera's local subnet.
+	rewriteHost := func(advertised string) string {
+		if advertised == "" {
+			return ""
+		}
+		// Pull the path off the advertised URL and graft it onto our base.
+		idx := strings.Index(advertised, "/onvif/")
+		if idx < 0 {
+			return advertised
+		}
+		path := advertised[idx:]
+		// c.XAddr always contains "/onvif/device_service" — strip and use the host base.
+		base := strings.TrimSuffix(c.XAddr, "/onvif/device_service")
+		return base + path
+	}
+
+	c.mediaURL = rewriteHost(caps.Media.XAddr)
+	c.ptzURL = rewriteHost(caps.PTZ.XAddr)
+	c.imagingURL = rewriteHost(caps.Imaging.XAddr)
+	c.eventsURL = rewriteHost(caps.Events.XAddr)
+	c.recordingURL = rewriteHost(caps.Extension.Recording.XAddr)
+	c.searchURL = rewriteHost(caps.Extension.Search.XAddr)
+	c.replayURL = rewriteHost(caps.Extension.Replay.XAddr)
+	c.deviceIOURL = rewriteHost(caps.Extension.DeviceIO.XAddr)
+
+	log.Printf("[ONVIF] Discovered services: media=%s ptz=%s recording=%s",
+		c.mediaURL, c.ptzURL, c.recordingURL)
+	return nil
+}
+
+// serviceURL returns the discovered URL for `service` if we have one,
+// otherwise falls back to the hard-coded path convention. The fallback
+// covers cameras whose GetCapabilities didn't return that service —
+// behaviour matches what the code did before discovery was added.
+func (c *Client) serviceURL(service, fallbackPath string) string {
+	switch service {
+	case "media":
+		if c.mediaURL != "" {
+			return c.mediaURL
+		}
+	case "ptz":
+		if c.ptzURL != "" {
+			return c.ptzURL
+		}
+	case "imaging":
+		if c.imagingURL != "" {
+			return c.imagingURL
+		}
+	case "events":
+		if c.eventsURL != "" {
+			return c.eventsURL
+		}
+	case "recording":
+		if c.recordingURL != "" {
+			return c.recordingURL
+		}
+	case "search":
+		if c.searchURL != "" {
+			return c.searchURL
+		}
+	case "replay":
+		if c.replayURL != "" {
+			return c.replayURL
+		}
+	case "deviceio":
+		if c.deviceIOURL != "" {
+			return c.deviceIOURL
+		}
+	}
+	return c.fallbackServiceURL(service, fallbackPath)
+}
+
+// fallbackServiceURL builds a service URL when GetCapabilities didn't
+// return one. Vendors disagree on the path convention:
+//
+//   - "/onvif/device_service", "/onvif/media_service", "/onvif/event_service" — lower_snake
+//   - "/onvif/Media", "/onvif/Events", "/onvif/Recording"                    — CamelCase
+//
+// Hikvision and many off-brand cameras use the lower_snake form;
+// Milesight uses CamelCase. We pick the convention by inspecting any
+// service URL we DID discover (media is the most reliable). If we
+// discovered nothing, default to the legacy `device_service` →
+// `<fallbackPath>` substitution that matches Hikvision-style layouts.
+func (c *Client) fallbackServiceURL(service, fallbackPath string) string {
+	// Mirror the convention from a discovered URL when we have one.
+	if reference := c.firstDiscoveredURL(); reference != "" {
+		if i := strings.LastIndex(reference, "/onvif/"); i >= 0 {
+			base := reference[:i] + "/onvif/"
+			if usesCamelCase(reference[i+len("/onvif/"):]) {
+				return base + camelService(service)
+			}
+			return base + fallbackPath
+		}
+	}
+	return strings.Replace(c.XAddr, "device_service", fallbackPath, 1)
+}
+
+// firstDiscoveredURL returns any non-empty service URL we recorded
+// during GetCapabilities. Order matters only for picking a convention,
+// so we prefer media (the camera will almost always advertise it).
+func (c *Client) firstDiscoveredURL() string {
+	for _, u := range []string{c.mediaURL, c.recordingURL, c.ptzURL, c.imagingURL, c.eventsURL, c.searchURL, c.replayURL, c.deviceIOURL} {
+		if u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+// usesCamelCase reports whether the path tail looks like Milesight's
+// "/onvif/Media" style rather than Hikvision's "/onvif/media_service".
+func usesCamelCase(tail string) bool {
+	// Trim any query string.
+	if i := strings.IndexByte(tail, '?'); i >= 0 {
+		tail = tail[:i]
+	}
+	// CamelCase service names start with an uppercase letter and don't
+	// contain "_service" at all (e.g. "Media", "Events", "Recording").
+	if tail == "" {
+		return false
+	}
+	if strings.Contains(tail, "_service") {
+		return false
+	}
+	first := tail[0]
+	return first >= 'A' && first <= 'Z'
+}
+
+// camelService maps an internal service name to the CamelCase path tail
+// used by cameras that follow Milesight's convention.
+func camelService(service string) string {
+	switch service {
+	case "media":
+		return "Media"
+	case "ptz":
+		return "PTZ"
+	case "imaging":
+		return "Imaging"
+	case "events":
+		return "Events"
+	case "recording":
+		return "Recording"
+	case "search":
+		return "Search"
+	case "replay":
+		return "Replay"
+	case "deviceio":
+		return "DeviceIO"
+	}
+	return service
 }
 
 // GetDeviceInformation retrieves device manufacturer, model, firmware
@@ -147,6 +380,49 @@ func (c *Client) GetDeviceInformation(ctx context.Context) (*DeviceInfo, error) 
 		FirmwareVersion: parsed.Body.Response.FirmwareVersion,
 		SerialNumber:    parsed.Body.Response.SerialNumber,
 	}, nil
+}
+
+// SystemReboot asks the camera to reboot via ONVIF tds:SystemReboot.
+// Returns the human-readable confirmation message the camera echoes
+// back (typically "Rebooting in N seconds"). The HTTP request itself
+// usually completes before the camera actually drops its network —
+// callers should expect the camera to be unreachable for ~30–90 s
+// and re-discover its services on the next ONVIF Connect.
+func (c *Client) SystemReboot(ctx context.Context) (string, error) {
+	body := `<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:tds="http://www.onvif.org/ver10/device/wsdl">
+  <s:Header>` + c.BuildSecurityHeader() + `</s:Header>
+  <s:Body>
+    <tds:SystemReboot/>
+  </s:Body>
+</s:Envelope>`
+
+	resp, err := c.DoRequest(ctx, c.XAddr, body)
+	if err != nil {
+		return "", err
+	}
+
+	type rebootResp struct {
+		XMLName xml.Name `xml:"Envelope"`
+		Body    struct {
+			Response struct {
+				Message string `xml:"Message"`
+			} `xml:"SystemRebootResponse"`
+		} `xml:"Body"`
+	}
+	var parsed rebootResp
+	if err := xml.Unmarshal(resp, &parsed); err != nil {
+		// Some cameras return an empty SystemRebootResponse and drop
+		// the connection mid-reply. Treat a parse failure as success
+		// since the reboot command itself was accepted.
+		return "Reboot requested", nil
+	}
+	msg := parsed.Body.Response.Message
+	if msg == "" {
+		msg = "Reboot requested"
+	}
+	return msg, nil
 }
 
 // GetSystemDateAndTime retrieves the camera's UTC time for WS-Security syncing
@@ -254,7 +530,7 @@ func (c *Client) FetchSnapshot(ctx context.Context, uri string) ([]byte, error) 
 // GetStreamURI retrieves the RTSP stream URI for a given profile token
 func (c *Client) GetStreamURI(ctx context.Context, profileToken string) (string, error) {
 	// First get media service address
-	mediaAddr := strings.Replace(c.XAddr, "device_service", "media_service", 1)
+	mediaAddr := c.serviceURL("media", "media_service")
 
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
@@ -296,6 +572,16 @@ func (c *Client) GetStreamURI(ctx context.Context, profileToken string) (string,
 
 	uri := parsed.Body.Response.MediaUri.Uri
 
+	// NAT host swap: if the camera advertises a private LAN IP for its
+	// stream but we reached it on a public/routable host (typical for
+	// 5G / NAT'd deployments where ONVIF traffic is port-forwarded), the
+	// returned URI is unreachable from outside the camera's subnet.
+	// Rewrite the RTSP host to match whichever address we used to dial
+	// the device. Only kicks in when the swap actually fixes something
+	// (advertised host private, our XAddr host not private), so on-LAN
+	// deployments are unaffected.
+	uri = c.rewriteStreamHost(uri)
+
 	// Inject credentials into RTSP URI if needed
 	if c.Username != "" && !strings.Contains(uri, "@") {
 		uri = strings.Replace(uri, "rtsp://", fmt.Sprintf("rtsp://%s:%s@", c.Username, c.Password), 1)
@@ -305,9 +591,98 @@ func (c *Client) GetStreamURI(ctx context.Context, profileToken string) (string,
 	return uri, nil
 }
 
+// rewriteStreamHost swaps the host portion of an RTSP URI with the host
+// we connected to via XAddr, but only when the advertised host is a
+// private IP and ours is not. That's the NAT-traversal scenario; in any
+// other case (already-routable host, both private, parse failure) we
+// return the URI untouched.
+func (c *Client) rewriteStreamHost(uri string) string {
+	if uri == "" {
+		return uri
+	}
+	advertisedHost, advertisedPort, ok := splitHostPort(uri)
+	if !ok {
+		return uri
+	}
+	connectHost := hostFromAddr(c.XAddr)
+	if connectHost == "" || connectHost == advertisedHost {
+		return uri
+	}
+	if !isPrivateHost(advertisedHost) || isPrivateHost(connectHost) {
+		return uri
+	}
+
+	// Splice in the connect host. Preserve the advertised port — cameras
+	// often run RTSP on a non-554 port that isn't our HTTP port; we
+	// trust their port assertion since it survives NAT mapping.
+	rebuilt := strings.Replace(uri,
+		"rtsp://"+advertisedHost+":"+advertisedPort,
+		"rtsp://"+connectHost+":"+advertisedPort,
+		1,
+	)
+	if rebuilt == uri {
+		// No port present in original — try the bare host form.
+		rebuilt = strings.Replace(uri,
+			"rtsp://"+advertisedHost,
+			"rtsp://"+connectHost,
+			1,
+		)
+	}
+	log.Printf("[ONVIF] NAT rewrite: stream host %s -> %s", advertisedHost, connectHost)
+	return rebuilt
+}
+
+// splitHostPort extracts the host and port from an RTSP URI, defaulting
+// the port to 554 when omitted.
+func splitHostPort(rtspURI string) (host, port string, ok bool) {
+	s := strings.TrimPrefix(rtspURI, "rtsp://")
+	// Strip credentials.
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		s = s[at+1:]
+	}
+	// Strip path.
+	if slash := strings.Index(s, "/"); slash >= 0 {
+		s = s[:slash]
+	}
+	if s == "" {
+		return "", "", false
+	}
+	if h, p, err := net.SplitHostPort(s); err == nil {
+		return h, p, true
+	}
+	return s, "554", true
+}
+
+// hostFromAddr returns just the host portion of a URL like
+// "http://1.2.3.4/onvif/device_service".
+func hostFromAddr(addr string) string {
+	s := addr
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	if slash := strings.Index(s, "/"); slash >= 0 {
+		s = s[:slash]
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		return h
+	}
+	return s
+}
+
+// isPrivateHost reports whether a hostname or IP literal is in an
+// RFC 1918 / link-local / loopback range. Hostnames that don't parse
+// as IPs are treated as routable (we don't try to resolve them).
+func isPrivateHost(host string) bool {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast()
+}
+
 // GetProfiles retrieves available media profiles
 func (c *Client) GetProfiles(ctx context.Context) ([]StreamProfile, error) {
-	mediaAddr := strings.Replace(c.XAddr, "device_service", "media_service", 1)
+	mediaAddr := c.serviceURL("media", "media_service")
 
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
@@ -374,7 +749,7 @@ func (c *Client) GetProfiles(ctx context.Context) ([]StreamProfile, error) {
 
 // PTZMove starts continuous movement of the camera
 func (c *Client) PTZMove(ctx context.Context, profileToken string, pan, tilt, zoom float64) error {
-	ptzAddr := strings.Replace(c.XAddr, "device_service", "ptz", 1)
+	ptzAddr := c.serviceURL("ptz", "ptz")
 
 	// Format values properly (ONVIF requires between -1.0 and 1.0)
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -488,7 +863,7 @@ type RecordingSummary struct {
 // aggregated recording window. A NumberRecordings of zero means the
 // card is either empty, missing, or not yet enrolled in a recording job.
 func (c *Client) GetRecordingSummary(ctx context.Context) (RecordingSummary, error) {
-	searchAddr := strings.Replace(c.XAddr, "device_service", "Search", 1)
+	searchAddr := c.serviceURL("search", "Search")
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:tse="http://www.onvif.org/ver10/search/wsdl">
@@ -533,7 +908,7 @@ type CameraRecording struct {
 // Called sparingly — Profile G searches should use FindRecordings with a
 // time window, not walk this list.
 func (c *Client) GetRecordings(ctx context.Context) ([]CameraRecording, error) {
-	recAddr := strings.Replace(c.XAddr, "device_service", "Recording", 1)
+	recAddr := c.serviceURL("recording", "Recording")
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:trc="http://www.onvif.org/ver10/recording/wsdl">
@@ -595,7 +970,7 @@ func (c *Client) GetRecordings(ctx context.Context) ([]CameraRecording, error) {
 // when local server recording has a gap, we point the player at the
 // camera's own replay URL for the missing window.
 func (c *Client) GetReplayUri(ctx context.Context, recordingToken string) (string, error) {
-	replayAddr := strings.Replace(c.XAddr, "device_service", "Replay", 1)
+	replayAddr := c.serviceURL("replay", "Replay")
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:trp="http://www.onvif.org/ver10/replay/wsdl"
@@ -723,7 +1098,7 @@ func escapeXML(s string) string {
 
 // PTZStop stops all movement of the camera
 func (c *Client) PTZStop(ctx context.Context, profileToken string) error {
-	ptzAddr := strings.Replace(c.XAddr, "device_service", "ptz", 1)
+	ptzAddr := c.serviceURL("ptz", "ptz")
 
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
@@ -803,6 +1178,11 @@ func (c *Client) DoRequest(ctx context.Context, url, body string) ([]byte, error
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		// Server-side log gets the full body for debugging; the
+		// caller-visible error is truncated to 500 chars.
+		if resp.StatusCode >= 500 {
+			log.Printf("[ONVIF] HTTP %d from %s; full body: %s", resp.StatusCode, sanitizeURI(url), string(data))
+		}
 		return nil, fmt.Errorf("ONVIF error (HTTP %d): %s", resp.StatusCode, string(data[:min(len(data), 500)]))
 	}
 

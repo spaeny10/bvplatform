@@ -93,7 +93,7 @@ export class AlertStream {
     if (this.destroyed) return;
     this.setStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('onvif_token') : null;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
     const urlWithToken = token ? `${this.url}?token=${token}` : this.url;
 
     try {

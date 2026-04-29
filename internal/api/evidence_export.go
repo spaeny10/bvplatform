@@ -371,7 +371,7 @@ func writeEvidenceReadme(w io.Writer, m EvidenceManifest, clip, snap bool, produ
 			fmt.Fprintf(&b, "Recommended      : %s\n", m.AI.RecommendedAction)
 		}
 		if m.AI.FalsePositivePct > 0 {
-			fmt.Fprintf(&b, "False-positive % : %.0f%%\n", m.AI.FalsePositivePct*100)
+			fmt.Fprintf(&b, "False-positive %% : %.0f%%\n", m.AI.FalsePositivePct*100)
 		}
 		if m.AI.OperatorAgreed != nil {
 			fmt.Fprintf(&b, "Operator agreed  : %v\n", *m.AI.OperatorAgreed)

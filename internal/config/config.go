@@ -1,6 +1,9 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"log"
 	"os"
 	"runtime"
 	"strconv"
@@ -127,8 +130,8 @@ func Load() *Config {
 		FFmpegPath:          getEnv("FFMPEG_PATH", defaultFFmpegPath()),
 		DetectionServiceURL: getEnv("DETECTION_SERVICE_URL", ""),
 		DetectionIntervalMs: getEnvInt("DETECTION_INTERVAL_MS", 500),
-		JWTSecret:           getEnv("JWT_SECRET", "onvif-tool-change-me-in-production"),
-		DefaultAdminPass:    getEnv("ADMIN_PASSWORD", "admin"),
+		JWTSecret:           requireSecret("JWT_SECRET"),
+		DefaultAdminPass:    requireAdminPassword("ADMIN_PASSWORD"),
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
 		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
 		SMTPHost:            getEnv("SMTP_HOST", ""),
@@ -186,6 +189,53 @@ func getEnvInt(key string, fallback int) int {
 		}
 	}
 	return fallback
+}
+
+// requireSecret returns the env var's value, or in dev (when DEV_MODE
+// is set) generates an ephemeral random secret with a loud warning.
+// In production (DEV_MODE unset) the process refuses to start without
+// the env var — so a deploy that forgets JWT_SECRET fails loudly at
+// boot rather than silently using a known fallback that lets anyone
+// forge tokens.
+func requireSecret(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if os.Getenv("DEV_MODE") == "" {
+		log.Fatalf("[CONFIG] %s is required but not set. "+
+			"Generate one with `openssl rand -hex 32` and set it in the environment. "+
+			"Set DEV_MODE=1 to allow an ephemeral random secret for local dev only.", key)
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		log.Fatalf("[CONFIG] failed to generate ephemeral %s: %v", key, err)
+	}
+	ephemeral := hex.EncodeToString(buf)
+	log.Printf("[CONFIG] WARNING: %s not set, using ephemeral random secret. "+
+		"All sessions will be invalidated on every restart. Set %s in the environment for stable auth.",
+		key, key)
+	return ephemeral
+}
+
+// requireAdminPassword returns the seed admin password from the env.
+// Refuses to start in production without one — falling back to "admin"
+// would give every fresh deployment a known-credential admin account.
+func requireAdminPassword(key string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if os.Getenv("DEV_MODE") == "" {
+		log.Fatalf("[CONFIG] %s is required but not set. "+
+			"This is the seed password for the auto-created admin account. "+
+			"Set DEV_MODE=1 to fall back to a randomized password printed on first run.", key)
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		log.Fatalf("[CONFIG] failed to generate ephemeral %s: %v", key, err)
+	}
+	pw := hex.EncodeToString(buf)
+	log.Printf("[CONFIG] DEV: generated admin password: %s (set %s in env to override)", pw, key)
+	return pw
 }
 
 // getEnvBool treats the common "false, 0, no, off" family as false and

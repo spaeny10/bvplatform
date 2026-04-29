@@ -74,6 +74,21 @@ func EvictPTZClient(cameraID uuid.UUID) {
 	ptzClientCache.mu.Unlock()
 }
 
+// refineHasPTZ asks the active driver (if any) to correct the has_ptz
+// flag derived from the ONVIF profile. Many cameras advertise a
+// PTZConfiguration token for digital ePTZ even when no mechanical PTZ
+// exists; the driver knows its vendor's model conventions and can
+// override that false positive at camera-add time.
+func refineHasPTZ(drv drivers.CameraDriver, info *onvif.DeviceInfo, profileSays bool) bool {
+	if drv == nil || info == nil {
+		return profileSays
+	}
+	if r, ok := drv.(drivers.PTZRefiner); ok {
+		return r.RefineHasPTZ(info, profileSays)
+	}
+	return profileSays
+}
+
 // DiscoverPreviewRequest contains credentials for previewing a discovered camera
 type DiscoverPreviewRequest struct {
 	Address  string `json:"address"`
@@ -196,7 +211,30 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			input.Name = input.OnvifAddress
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		// Sense / push-only devices (Milesight SC4xx and similar
+		// PIR-triggered solar cameras) skip the entire RTSP +
+		// ONVIF-event setup — pulling on a battery-powered device
+		// drains it in days. We do a one-time identification probe
+		// to fetch manufacturer/model/firmware so the camera card
+		// shows the right metadata, then mint a per-camera webhook
+		// token and return early.
+		if input.DeviceClass == "sense_pushed" {
+			cam, err := createSenseCamera(r.Context(), db, &input)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			writeJSON(w, cam)
+			return
+		}
+
+		// 60s context: a cellular-connected camera's Connect→GetCapabilities→
+		// GetProfiles→GetStreamURI sequence can take 8-15s when the radio is
+		// negotiating; the prior 20s left no margin and routinely failed on
+		// the 5G test rig. The 60s budget tolerates one slow round-trip per
+		// stage and still bails before the user gives up.
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 		defer cancel()
 
 		client := onvif.NewClient(input.OnvifAddress, input.Username, input.Password)
@@ -208,7 +246,16 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 
 		profiles, err := client.GetProfiles(ctx)
 		if err != nil || len(profiles) == 0 {
-			http.Error(w, "Failed to get camera profiles", http.StatusBadRequest)
+			// Surface the underlying ONVIF error instead of a generic
+			// "Failed to get camera profiles" — operators need to see
+			// the actual fault ("Sender not authorized" vs HTTP timeout
+			// vs malformed response) to act on it. Format keeps the
+			// existing prefix so dashboards parsing the prefix still work.
+			detail := "no profiles returned"
+			if err != nil {
+				detail = err.Error()
+			}
+			http.Error(w, "Failed to get camera profiles: "+detail, http.StatusBadRequest)
 			return
 		}
 
@@ -290,7 +337,7 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			RTSPUri:           mainUri,
 			SubStreamUri:      subUri,
 			ProfileToken:      mainProfile.Token,
-			HasPTZ:            mainProfile.HasPTZ,
+			HasPTZ:            refineHasPTZ(drv, info, mainProfile.HasPTZ),
 			Manufacturer:      info.Manufacturer,
 			Model:             info.Model,
 			Firmware:          info.FirmwareVersion,
@@ -419,15 +466,14 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 				}()
 			}
 		})
-		// Attach driver-specific event hooks if available
-		if drv != nil {
-			subscriber.Classify = drv.ClassifyEvent
-			subscriber.Enrich = drv.EnrichEvent
-		}
-		subscriber.Start(context.Background())
-		if subReg != nil {
-			subReg.Register(cam.ID, subscriber)
-		}
+		// Pick the right event source for this camera's vendor and start
+		// it. Milesight cameras get the proprietary `/webstream/track`
+		// WebSocket; everyone else gets ONVIF PullPoint with the
+		// driver-specific event classifier/enricher hooks. The shared
+		// helper guarantees the runtime-add path matches what
+		// autoStartCameras does at boot — without it, Milesight cameras
+		// added through this endpoint never produced events.
+		StartCameraEventSource(context.Background(), cam, subscriber, subReg, "API")
 
 		log.Printf("[API] Camera created and started: %s (%s)", cam.Name, cam.ID)
 		w.WriteHeader(http.StatusCreated)
@@ -457,6 +503,64 @@ func HandleUpdateCamera(db *database.DB) http.HandlerFunc {
 
 		camera, _ := db.GetCamera(r.Context(), id)
 		writeJSON(w, camera)
+	}
+}
+
+// HandleRebootCamera issues an ONVIF SystemReboot to the camera. Useful
+// when the device gets into a bad state — a stuck event-subscription
+// pool (Milesight/Hikvision cap), a wedged RTSP server, or a stale
+// internal driver. Admin / supervisor only because it's destructive
+// (90-second downtime + recording gap).
+//
+// POST /api/cameras/{id}/reboot
+func HandleRebootCamera(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
+
+		id, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "invalid camera ID", http.StatusBadRequest)
+			return
+		}
+		cam, err := db.GetCamera(r.Context(), id)
+		if err != nil || cam == nil {
+			http.Error(w, "camera not found", http.StatusNotFound)
+			return
+		}
+
+		// Reboot is "send and forget" — the camera often drops the
+		// socket mid-reply. Use a short context so we don't hang the
+		// API on a half-closed TCP connection.
+		ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+		defer cancel()
+
+		client := onvif.NewClient(cam.OnvifAddress, cam.Username, cam.Password)
+		if _, err := client.Connect(ctx); err != nil {
+			http.Error(w, "failed to connect to camera: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		msg, err := client.SystemReboot(ctx)
+		if err != nil {
+			http.Error(w, "reboot request failed: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		// Mark offline immediately so the UI reflects the downtime.
+		// The autoStart loop will mark it back online on the next
+		// successful Connect after the camera comes up.
+		_ = db.UpdateCameraStatus(r.Context(), id, "offline")
+		writeJSON(w, map[string]interface{}{
+			"ok":      true,
+			"message": msg,
+		})
 	}
 }
 

@@ -53,6 +53,17 @@ type Camera struct {
 	// site with this ID; a camera without a site falls back to engine
 	// defaults and storage-location-level retention.
 	SiteID            string    `json:"site_id"`
+	// DeviceClass classifies how the platform interacts with the device.
+	//   "continuous"   — traditional always-on RTSP + ONVIF camera (default)
+	//   "sense_pushed" — battery/PIR Milesight Sense series; we only
+	//                    accept inbound webhook pushes from it, never
+	//                    pull RTSP or subscribe to events
+	DeviceClass       string    `json:"device_class"`
+	// SenseWebhookToken is the per-camera secret in the inbound webhook
+	// URL (sense_pushed only). Returned to the operator post-create so
+	// they can paste the URL into the camera's Alarm Server config.
+	// Treated like a credential — never logged.
+	SenseWebhookToken string    `json:"sense_webhook_token,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -63,6 +74,10 @@ type CameraCreate struct {
 	OnvifAddress string `json:"onvif_address"`
 	Username     string `json:"username"`
 	Password     string `json:"password"`
+	// DeviceClass selects the integration mode. Empty / "continuous" =
+	// traditional RTSP camera. "sense_pushed" = inbound webhook only;
+	// the platform skips RTSP / ONVIF event subscription / recording.
+	DeviceClass  string `json:"device_class,omitempty"`
 }
 
 // CameraUpdate is the input for updating camera settings

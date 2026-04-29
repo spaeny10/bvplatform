@@ -112,6 +112,14 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
 
   const actionLogRef = useRef<HTMLDivElement>(null);
   const keyPrefixTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks whether the component is still mounted so async handlers
+  // don't call setState after unmount. Operators can navigate away
+  // while a submit is in flight.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // ── Load site detail and cameras from real API ──
   const { data: siteData } = useSite(alarm.site_id);
@@ -246,6 +254,7 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
       acknowledgeIncident(incident.id);
     }
     resolveAlarm(disposition);
+    if (!mountedRef.current) return;
     setSubmitting(false);
     onResolved();
   };
@@ -1550,9 +1559,7 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
 
   // Load VCA zones for overlay
   useEffect(() => {
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('ironsight_token') || localStorage.getItem('onvif_token'))
-      : '';
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
     fetch(`/api/cameras/${cameraId}/vca/rules`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -1568,9 +1575,7 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
       return;
     }
     setSnapshotState('loading');
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('ironsight_token') || localStorage.getItem('onvif_token'))
-      : '';
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
     fetch(eventSnapshotUrl, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })
@@ -1593,9 +1598,7 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
     let cancelled = false;
     const fetchFrame = async () => {
       try {
-        const token = typeof window !== 'undefined'
-          ? (localStorage.getItem('ironsight_token') || localStorage.getItem('onvif_token'))
-          : '';
+        const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
         const res = await fetch(`/api/cameras/${cameraId}/vca/snapshot`, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });

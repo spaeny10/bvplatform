@@ -44,6 +44,35 @@ func (es *EventStream) Start(ctx context.Context) {
 	go es.runLoop(ctx)
 }
 
+// Probe attempts a single WebSocket handshake against /webstream/track
+// and returns nil on success (101 Switching Protocols). Use this to
+// verify the camera's firmware actually supports the proprietary
+// endpoint before committing to the WebSocket path — older Milesight
+// firmware (and some Pro Series models) returns 404/426 on the upgrade
+// request and silently breaks event delivery if the caller assumes
+// success. Connection is closed before return; the real Start() opens
+// its own.
+func (es *EventStream) Probe(ctx context.Context) error {
+	if err := es.cam.refreshChallenge(); err != nil {
+		return fmt.Errorf("auth challenge: %w", err)
+	}
+	wsURL := fmt.Sprintf("ws://%s/webstream/track", es.cam.Host)
+	authHeader := es.cam.digestHeader("GET", "/webstream/track")
+
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	headers := http.Header{}
+	headers.Set("Authorization", authHeader)
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	conn, _, err := dialer.DialContext(probeCtx, wsURL, headers)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
 // Stop terminates the event stream.
 func (es *EventStream) Stop() {
 	close(es.stopCh)

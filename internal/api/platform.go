@@ -16,6 +16,7 @@ import (
 	"onvif-tool/internal/avs"
 	"onvif-tool/internal/database"
 	"onvif-tool/internal/notify"
+	"onvif-tool/internal/recording"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -24,10 +25,25 @@ import (
 
 func HandleListOrganizations(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		orgs, err := db.ListOrganizations(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
+		}
+		// Customer-side roles can only see their own org. SOC roles see all.
+		if !globalViewRoles[claims.Role] {
+			filtered := make([]database.Organization, 0, 1)
+			for _, o := range orgs {
+				if o.ID == claims.OrganizationID {
+					filtered = append(filtered, o)
+				}
+			}
+			orgs = filtered
 		}
 		writeJSON(w, orgs)
 	}
@@ -35,6 +51,10 @@ func HandleListOrganizations(db *database.DB) http.HandlerFunc {
 
 func HandleCreateOrganization(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdmin(r) {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
 		var input database.OrganizationCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "Invalid JSON", 400)
@@ -51,6 +71,10 @@ func HandleCreateOrganization(db *database.DB) http.HandlerFunc {
 
 func HandleUpdateOrganization(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdmin(r) {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
 		id := chi.URLParam(r, "id")
 		var input database.OrganizationCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -67,6 +91,10 @@ func HandleUpdateOrganization(db *database.DB) http.HandlerFunc {
 
 func HandleDeleteOrganization(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdmin(r) {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
 		id := chi.URLParam(r, "id")
 		if err := db.DeleteOrganization(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), 500)
@@ -149,6 +177,10 @@ func HandleGetSite(db *database.DB) http.HandlerFunc {
 
 func HandleCreateSiteP(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdminOrSupervisor(r) {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
 		var input database.SiteCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "Invalid JSON", 400)
@@ -165,6 +197,10 @@ func HandleCreateSiteP(db *database.DB) http.HandlerFunc {
 
 func HandleDeleteSiteP(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdminOrSupervisor(r) {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
 		id := chi.URLParam(r, "id")
 		if err := db.DeleteSite(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), 500)
@@ -176,6 +212,10 @@ func HandleDeleteSiteP(db *database.DB) http.HandlerFunc {
 
 func HandleUpdateSite(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdminOrSupervisor(r) {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
 		id := chi.URLParam(r, "id")
 		var input database.SiteCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
@@ -227,10 +267,9 @@ func HandleUpdateSiteRecording(db *database.DB) http.HandlerFunc {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
 			return
 		}
-		// Soft-validate — the recording engine will reject silly values but
-		// clamp here to make the UI explain what happened.
-		if input.RetentionDays < 0 {
-			input.RetentionDays = 0
+		if !recording.ValidateRetentionTier(input.RetentionDays) {
+			http.Error(w, "retention_days must be one of the supported tiers (3, 7, 14, 30, 60, 90)", http.StatusBadRequest)
+			return
 		}
 		if input.PreBufferSec < 0 {
 			input.PreBufferSec = 0
@@ -391,7 +430,19 @@ func HandleListIncidents(db *database.DB) http.HandlerFunc {
 
 func HandleListCompanyUsers(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		orgID := chi.URLParam(r, "companyId")
+		// SOC roles see any org's users; customer-side users only see
+		// users from their own org. Returns 404 (not 403) for cross-org
+		// to avoid leaking whether the org exists.
+		if !canAccessOrganization(claims, orgID) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		users, err := db.ListCompanyUsers(r.Context(), orgID)
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -401,17 +452,45 @@ func HandleListCompanyUsers(db *database.DB) http.HandlerFunc {
 	}
 }
 
+// allowedCustomerRoles bounds what role a company-user create/update
+// may set. Privilege escalation guard: a request from an admin can
+// still only mint customer-tier accounts on this endpoint — internal
+// SOC roles must be created via /api/v1/users with the explicit
+// internal-staff path.
+var allowedCustomerRoles = map[string]bool{
+	"customer":     true,
+	"site_manager": true,
+	"viewer":       true,
+	"guard":        true,
+}
+
 func HandleCreateCompanyUser(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdmin(r) {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
 		companyID := chi.URLParam(r, "companyId")
 		var input database.CompanyUserCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "Invalid JSON", 400)
 			return
 		}
+		// Force the company ID from the URL — never trust the body.
 		input.CompanyID = companyID
+		// Reject any attempt to mint an internal-staff role through
+		// this endpoint. The body's `role` field would otherwise let an
+		// admin-by-customer accidentally create a soc_operator account.
+		if input.Role == "" {
+			input.Role = "customer"
+		}
+		if !allowedCustomerRoles[input.Role] {
+			http.Error(w, "role must be one of: customer, site_manager, viewer, guard", http.StatusBadRequest)
+			return
+		}
 		if input.Password == "" {
-			input.Password = "demo123"
+			http.Error(w, "password required", http.StatusBadRequest)
+			return
 		}
 		user, err := db.CreateCompanyUser(r.Context(), &input)
 		if err != nil {
@@ -424,6 +503,10 @@ func HandleCreateCompanyUser(db *database.DB) http.HandlerFunc {
 
 func HandleDeleteCompanyUser(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdmin(r) {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
 		id := chi.URLParam(r, "userId")
 		if err := db.DeleteCompanyUser(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), 500)
@@ -617,11 +700,39 @@ func HandleCreateSecurityEvent(db *database.DB, notifier *notify.Dispatcher) htt
 	}
 }
 
+// isInformationalDisposition returns true when the SOC dismissed an
+// alarm without escalation (false positives, no-action, tests, or
+// activity-logs). Customer notifications skip these.
+func isInformationalDisposition(code string) bool {
+	if code == "" {
+		return false
+	}
+	c := strings.ToLower(code)
+	switch {
+	case strings.HasPrefix(c, "false"):
+		return true
+	case strings.HasPrefix(c, "no-action"), strings.HasPrefix(c, "no_action"):
+		return true
+	case c == "activity-logs", c == "activity_logs":
+		return true
+	case strings.HasPrefix(c, "test"), c == "system-test", c == "system_test":
+		return true
+	}
+	return false
+}
+
 // dispatchAlarmNotifications resolves recipients and hands off to the
-// channel mailers. Runs on its own goroutine; ctx is fresh (with a
-// short timeout) because the request context is already cancelled
-// once the response went out.
+// channel mailers. Runs on its own goroutine with a fresh context — the
+// request context is already cancelled by the time we get here.
+// Informational dispositions are suppressed; they only appear in the
+// customer's history and digest, never in real-time pushes.
 func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev *database.SecurityEvent, input *database.SecurityEventCreate) {
+	if isInformationalDisposition(ev.DispositionCode) {
+		log.Printf("[NOTIFY] suppressed informational disposition %q for event %s (will appear in digest)",
+			ev.DispositionCode, ev.ID)
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -889,6 +1000,11 @@ func HandleUnassignSpeaker(db *database.DB) http.HandlerFunc {
 
 func HandleGetIncident(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		id := chi.URLParam(r, "id")
 
 		// SOC incident (INC- prefix) → return incident + child alarms
@@ -897,6 +1013,16 @@ func HandleGetIncident(db *database.DB) http.HandlerFunc {
 			if err != nil || inc == nil {
 				http.Error(w, "Incident not found", 404)
 				return
+			}
+			// Tenancy guard: customers/site-managers can only see
+			// incidents at their own org's sites. Returns 404 (not 403)
+			// so a probing caller can't enumerate which IDs exist.
+			if !globalViewRoles[claims.Role] {
+				ok, _ := canAccessSiteByID(r.Context(), db, claims, inc.SiteID)
+				if !ok {
+					http.Error(w, "Incident not found", 404)
+					return
+				}
 			}
 			writeJSON(w, map[string]interface{}{
 				"incident": inc,
@@ -910,6 +1036,14 @@ func HandleGetIncident(db *database.DB) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, "Incident not found", 404)
 			return
+		}
+		// Same tenancy guard for security events.
+		if !globalViewRoles[claims.Role] && detail != nil && detail.SiteID != "" {
+			ok, _ := canAccessSiteByID(r.Context(), db, claims, detail.SiteID)
+			if !ok {
+				http.Error(w, "Incident not found", 404)
+				return
+			}
 		}
 		writeJSON(w, detail)
 	}

@@ -189,6 +189,83 @@ Postgres (5432), MediaMTX (8554, 8889), and the API (8080) should **not** be exp
 
 ---
 
+## 3.99 Windows + WSL + Podman (developer path)
+
+Production targets Ubuntu+Docker (§3). Day-to-day developers on Windows
+machines run the same `docker-compose.yml` against **Podman inside a WSL2
+distro** — Podman speaks Compose v2, so the only differences are runtime
+glue. This section covers the gotchas you don't hit on a clean Ubuntu
+host.
+
+### 3.99.1 Distro choice
+
+Two viable distros:
+
+- **Ubuntu** (`wsl --install -d Ubuntu`) — stock Microsoft distro. Recommended for new developer setups.
+- **NVIDIA-Workbench** — comes with NVIDIA AI Workbench. The Workbench Windows app **actively tears down the WSL distro when its UI idles**, taking the whole stack with it. If you use this distro, also kill `NVIDIA AI Workbench.exe` (Task Manager → Startup → Disable) or move to a stock Ubuntu distro.
+
+`podman-machine-default` (the Fedora distro Windows-native podman.exe creates) is *also* a candidate but ships without the NVIDIA Container Toolkit; you'd have to install nvidia-container-toolkit and regenerate the CDI spec there. Not worth it unless you need it.
+
+### 3.99.2 Required `.wslconfig`
+
+WSL2's default behavior shuts down a distro **after 60 s of no active sessions**, killing every container inside. Mandatory mitigation in `C:\Users\<you>\.wslconfig`:
+
+```ini
+[wsl2]
+# Disable WSL idle-shutdown so containers stay up between developer sessions.
+vmIdleTimeout=-1
+```
+
+Apply by running `wsl --shutdown` once. The setting persists across reboots.
+
+### 3.99.3 NVIDIA CDI spec — the recurring conflict
+
+NVIDIA's WSL bootup hook runs (configured in `/etc/wsl.conf` `[boot]`):
+
+```
+nvidia-ctk cdi generate --output /etc/cdi/nvidia.json --device-name-strategy=index
+```
+
+…on every WSL VM start. If a `nvidia.yaml` also lives at `/etc/cdi/`, the CDI registry sees two specs defining the same device (`nvidia.com/gpu=all`) and registers **zero** devices, yielding `unresolvable CDI devices nvidia.com/gpu=all` on yolo/qwen.
+
+The clean fix: delete the `.json` before bringing the stack up, and make sure rootless podman's user-scope CDI dir (`~/.config/cdi/`) holds the `.yaml`. The shipped `bin/Start Ironsight.bat` does exactly this:
+
+```bat
+wsl -d <distro> -u root -- bash -c "rm -f /etc/cdi/nvidia.json"
+wsl -d <distro> -u workbench -- bash -c "mkdir -p ~/.config/cdi && rm -f ~/.config/cdi/nvidia.json && cp -u /etc/cdi/nvidia.yaml ~/.config/cdi/nvidia.yaml"
+```
+
+Verify with:
+```bash
+nvidia-ctk cdi list
+# expect: Found 1 CDI devices  /  nvidia.com/gpu=all   (no warnings)
+```
+
+### 3.99.4 Bringing up the stack
+
+```bash
+# from inside WSL, working dir = the repo
+podman compose up -d --build
+```
+
+Or from Windows: `bin/Start Ironsight.bat`. Same outcome.
+
+### 3.99.5 Disk space — VHDX bloat
+
+WSL stores its filesystem in a `ext4.vhdx` file at `C:\Users\<you>\AppData\Local\<distro>\ext4.vhdx`. **The VHDX grows but never auto-shrinks.** A camera that wrote 100 GB then was cleaned up will leave the VHDX at 100 GB on Windows even though WSL reports the filesystem half-empty.
+
+The retention manager's 85% safety valve measures the WSL filesystem, **not** Windows free space. If C: starts running low, compact the VHDX manually:
+
+```powershell
+# elevated PowerShell — kills running containers
+wsl --shutdown
+Optimize-VHD -Path "C:\Users\<you>\AppData\Local\<distro>\ext4.vhdx" -Mode Full
+```
+
+This reclaims the difference between actual usage and VHDX size — typically tens of GB after a few days of recording. Run during a maintenance window; the SOC is offline for 1–3 minutes.
+
+---
+
 ## 4. First deploy (single-host)
 
 ```bash

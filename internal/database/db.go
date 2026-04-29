@@ -74,16 +74,27 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 		c.RecordingTriggers = "motion,object"
 	}
 
+	deviceClass := c.DeviceClass
+	if deviceClass == "" {
+		deviceClass = "continuous"
+	}
+	var senseToken interface{}
+	if c.SenseWebhookToken != "" {
+		senseToken = c.SenseWebhookToken
+	}
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO cameras (id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
 			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
-			status, profile_token, has_ptz, manufacturer, model, firmware, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`,
+			status, profile_token, has_ptz, manufacturer, model, firmware,
+			device_class, sense_webhook_token,
+			created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
 		c.ID, c.Name, c.OnvifAddress, c.Username, c.Password, c.RTSPUri, c.SubStreamUri,
 		c.RetentionDays, c.Recording, c.RecordingMode, c.PreBufferSec, c.PostBufferSec, c.RecordingTriggers,
 		c.EventsEnabled, c.AudioEnabled, c.CameraGroup, c.Schedule, c.PrivacyMask,
 		c.Status, c.ProfileToken, c.HasPTZ, c.Manufacturer, c.Model, c.Firmware,
+		deviceClass, senseToken,
 		c.CreatedAt, c.UpdatedAt,
 	)
 	return err
@@ -92,19 +103,25 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 // GetCamera retrieves a single camera by ID
 func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	c := &Camera{}
+	var senseToken *string
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
 			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
 			status, profile_token, has_ptz, manufacturer, model, firmware,
 			COALESCE(site_id, ''),
+			COALESCE(device_class, 'continuous'),
+			sense_webhook_token,
 			created_at, updated_at
 		FROM cameras WHERE id = $1`, id,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model,
-		&c.Firmware, &c.SiteID, &c.CreatedAt, &c.UpdatedAt)
+		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt)
+	if senseToken != nil {
+		c.SenseWebhookToken = *senseToken
+	}
 
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -120,6 +137,8 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
 			status, profile_token, has_ptz, manufacturer, model, firmware,
 			COALESCE(site_id, ''),
+			COALESCE(device_class, 'continuous'),
+			sense_webhook_token,
 			created_at, updated_at
 		FROM cameras ORDER BY name`)
 	if err != nil {
@@ -130,17 +149,56 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 	var cameras []Camera
 	for rows.Next() {
 		var c Camera
+		var senseToken *string
 		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri,
 			&c.SubStreamUri, &c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec,
 			&c.PostBufferSec, &c.RecordingTriggers,
 			&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 			&c.Status, &c.ProfileToken, &c.HasPTZ,
-			&c.Manufacturer, &c.Model, &c.Firmware, &c.SiteID, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.Manufacturer, &c.Model, &c.Firmware, &c.SiteID,
+			&c.DeviceClass, &senseToken,
+			&c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if senseToken != nil {
+			c.SenseWebhookToken = *senseToken
 		}
 		cameras = append(cameras, c)
 	}
 	return cameras, nil
+}
+
+// GetCameraBySenseToken looks up a camera by its inbound webhook token.
+// Returns nil (no error) if no camera matches — callers should treat
+// that as auth failure on the webhook endpoint.
+func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera, error) {
+	if token == "" {
+		return nil, nil
+	}
+	c := &Camera{}
+	var senseToken *string
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
+			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
+			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
+			status, profile_token, has_ptz, manufacturer, model, firmware,
+			COALESCE(site_id, ''),
+			COALESCE(device_class, 'continuous'),
+			sense_webhook_token,
+			created_at, updated_at
+		FROM cameras WHERE sense_webhook_token = $1`, token,
+	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
+		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
+		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
+		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model, &c.Firmware,
+		&c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if senseToken != nil {
+		c.SenseWebhookToken = *senseToken
+	}
+	return c, err
 }
 
 // UpdateCamera updates a camera's fields
@@ -1277,7 +1335,7 @@ func (db *DB) GetSettings(ctx context.Context) (*SystemSettings, error) {
 			SnapshotsPath:          "./storage/thumbnails",
 			ExportsPath:            "./storage/exports",
 			HLSPath:                "./storage/hls",
-			DefaultRetentionDays:   30,
+			DefaultRetentionDays:   3,
 			DefaultRecordingMode:   "continuous",
 			DefaultSegmentDuration: 60,
 			FFmpegPath:             `C:\ffmpeg\bin\ffmpeg.exe`,

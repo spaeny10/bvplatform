@@ -75,6 +75,69 @@ func AuthorizedCameraIDs(ctx context.Context, db *database.DB, claims *auth.Clai
 	return ids, true, nil
 }
 
+// requireAdmin returns true if the request's caller has the admin role.
+// Use for endpoints that mutate billing-relevant or platform-wide state.
+func requireAdmin(r *http.Request) bool {
+	c := claimsFromRequest(r)
+	return c != nil && c.Role == "admin"
+}
+
+// requireAdminOrSupervisor returns true if the caller is admin or
+// soc_supervisor. Most write endpoints on shared platform state allow
+// both, since supervisors are full SOC staff.
+func requireAdminOrSupervisor(r *http.Request) bool {
+	c := claimsFromRequest(r)
+	return c != nil && (c.Role == "admin" || c.Role == "soc_supervisor")
+}
+
+// canAccessOrganization returns true if the caller may read/write the
+// given organization. SOC roles see everything; customer-side roles
+// only see their own org.
+func canAccessOrganization(claims *auth.Claims, orgID string) bool {
+	if claims == nil {
+		return false
+	}
+	if globalViewRoles[claims.Role] {
+		return true
+	}
+	return claims.OrganizationID != "" && claims.OrganizationID == orgID
+}
+
+// canAccessSiteByID returns true if the caller may read the given site.
+// SOC roles bypass; customers/site-managers must own the org or have
+// the site in their assignment list. (The other `canAccessSite` in
+// site_contacts.go takes a CallerScope; this overload takes raw claims
+// for callers that already have them in hand.)
+func canAccessSiteByID(ctx context.Context, db *database.DB, claims *auth.Claims, siteID string) (bool, error) {
+	if claims == nil {
+		return false, nil
+	}
+	if globalViewRoles[claims.Role] {
+		return true, nil
+	}
+	site, err := db.GetSite(ctx, siteID)
+	if err != nil || site == nil {
+		return false, err
+	}
+	if claims.OrganizationID != "" && site.OrganizationID == claims.OrganizationID {
+		return true, nil
+	}
+	uid, perr := uuid.Parse(claims.UserID)
+	if perr != nil {
+		return false, nil
+	}
+	user, uerr := db.GetUserByID(ctx, uid)
+	if uerr != nil || user == nil {
+		return false, uerr
+	}
+	for _, sid := range user.AssignedSiteIDs {
+		if sid == siteID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // CanAccessCamera is the single-camera form of AuthorizedCameraIDs. Returns
 // true when the caller is permitted to view the given camera (by role or by
 // site assignment). Used by handlers that take a :cameraID URL param.

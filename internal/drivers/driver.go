@@ -54,6 +54,22 @@ type VCACapable interface {
 	SupportedRuleTypes() []string
 }
 
+// PTZRefiner is an optional interface for drivers that can correct the
+// has_ptz flag derived from ONVIF profiles. Many cameras advertise a
+// PTZConfiguration in their profiles for digital ePTZ (fisheye dewarp,
+// crop-and-zoom) even though they have no mechanical pan/tilt/zoom.
+// Drivers that know their vendor's model conventions implement this
+// to override the false positive at camera-add time.
+type PTZRefiner interface {
+	// RefineHasPTZ returns the corrected has_ptz value for a device.
+	// `profileSays` is what the ONVIF profile advertised (the existing
+	// PTZConfiguration-token check). Drivers can return `false` when
+	// they recognise the model as fixed or fisheye, return `true` when
+	// they recognise it as mechanical PTZ, or just return `profileSays`
+	// when they're not sure.
+	RefineHasPTZ(info *onvif.DeviceInfo, profileSays bool) bool
+}
+
 // VCARuleCompact is a minimal rule representation for the driver push interface.
 // It avoids importing the database package (no circular dependency).
 type VCARuleCompact struct {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Camera, createCamera, updateCamera, deleteCamera, discoverCameras, getDevicePreview, DiscoveredDevice } from '@/lib/api';
+import { Camera, createCamera, updateCamera, deleteCamera, rebootCamera, discoverCameras, getDevicePreview, DiscoveredDevice } from '@/lib/api';
 import VCAZoneEditor from '@/components/VCAZoneEditor';
 import MilesightAdvanced from '@/components/MilesightAdvanced';
 
@@ -22,6 +22,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
     const [loadingPreviews, setLoadingPreviews] = useState<Set<string>>(new Set());
     const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
     const [settingsTab, setSettingsTab] = useState<'general' | 'recording' | 'vca' | 'milesight'>('general');
+    const [rebooting, setRebooting] = useState(false);
 
     // Add camera form state
     const [addForm, setAddForm] = useState({
@@ -29,18 +30,34 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
         onvif_address: '',
         username: 'admin',
         password: '',
+        device_class: 'continuous' as 'continuous' | 'sense_pushed',
     });
 
     const [addError, setAddError] = useState<string | null>(null);
     const [adding, setAdding] = useState(false);
+    // Post-create webhook details for sense cameras. Shown in a follow-up
+    // panel so the operator can copy the URL into the camera's Alarm
+    // Server config — there's no other way to retrieve the token after
+    // dismissing this view (it's stored, but not echoed in list views).
+    const [senseSetup, setSenseSetup] = useState<{ url: string; cameraName: string } | null>(null);
 
     const handleAdd = async () => {
         setAddError(null);
         setAdding(true);
         try {
-            await createCamera(addForm);
+            const created = await createCamera(addForm);
             setShowAddModal(false);
-            setAddForm({ name: '', onvif_address: '', username: 'admin', password: '' });
+            setAddForm({ name: '', onvif_address: '', username: 'admin', password: '', device_class: 'continuous' });
+            // For sense_pushed cameras the create response carries the
+            // freshly-minted webhook token. Build the absolute URL once
+            // and present it; for continuous cameras nothing extra to show.
+            if (created?.device_class === 'sense_pushed' && created?.sense_webhook_token) {
+                const origin = typeof window !== 'undefined' ? window.location.origin : '';
+                setSenseSetup({
+                    url: `${origin}/api/integrations/milesight/sense/${created.sense_webhook_token}`,
+                    cameraName: created.name,
+                });
+            }
             onRefresh();
         } catch (err: any) {
             setAddError(err?.message || 'Failed to add camera — check the address, credentials, and that ONVIF is enabled.');
@@ -183,6 +200,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
             onvif_address: device.address,
             username: 'admin',
             password: '',
+            device_class: 'continuous',
         });
         setShowDiscovery(false);
         setShowAddModal(true);
@@ -413,6 +431,23 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                         <div className="modal-title">Add Camera</div>
 
                         <div className="form-group">
+                            <label className="form-label">Camera Type</label>
+                            <select
+                                className="form-input"
+                                value={addForm.device_class}
+                                onChange={(e) => setAddForm({ ...addForm, device_class: e.target.value as 'continuous' | 'sense_pushed' })}
+                            >
+                                <option value="continuous">Continuous (RTSP + ONVIF events)</option>
+                                <option value="sense_pushed">Sense / push-only (Milesight SC4xx, PIR/solar)</option>
+                            </select>
+                            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
+                                {addForm.device_class === 'sense_pushed'
+                                    ? 'Skips RTSP and ONVIF event subscription. Camera will POST to a webhook URL we issue after creation — paste it into the camera’s Alarm Server config.'
+                                    : 'Default for normal IP cameras. Pulls RTSP + subscribes to ONVIF events.'}
+                            </div>
+                        </div>
+
+                        <div className="form-group">
                             <label className="form-label">Camera Name</label>
                             <input
                                 className="form-input"
@@ -464,6 +499,30 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                             <button className="btn btn-primary" onClick={handleAdd} disabled={adding || !addForm.onvif_address.trim()}>
                                 {adding ? 'Connecting...' : 'Add Camera'}
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Sense webhook setup — shown once after creating a sense_pushed camera. */}
+            {senseSetup && (
+                <div className="modal-overlay" onClick={() => setSenseSetup(null)}>
+                    <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 720 }}>
+                        <div className="modal-title">Sense camera webhook</div>
+                        <div style={{ padding: 12, fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                            <p style={{ marginTop: 0 }}>
+                                <strong>{senseSetup.cameraName}</strong> is set up as a push-only device.
+                                In the camera UI go to <em>Event → Alarm Settings → Alarm Server → Add</em>
+                                and copy each value into its matching field:
+                            </p>
+                            <SenseWebhookFields url={senseSetup.url} />
+                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 12, lineHeight: 1.5 }}>
+                                Leave User Name / Password blank — the long path token is the auth.
+                                You can review these values later from the camera's Settings → General tab.
+                            </div>
+                        </div>
+                        <div className="modal-actions">
+                            <button className="btn btn-primary" onClick={() => setSenseSetup(null)}>Done</button>
                         </div>
                     </div>
                 </div>
@@ -675,6 +734,32 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                             {/* ════════════ GENERAL TAB ════════════ */}
                             {settingsTab === 'general' && (
                                 <>
+                                    {/* Sense / push-only camera webhook info — shown for the
+                                        lifetime of the camera so the operator can re-paste the
+                                        URL fields if the camera firmware loses them. The token
+                                        is a credential; it's only rendered inside this admin
+                                        modal. */}
+                                    {editingCamera.device_class === 'sense_pushed' && editingCamera.sense_webhook_token && (
+                                        <div style={{
+                                            padding: 12,
+                                            marginBottom: 12,
+                                            border: '1px solid rgba(34,197,94,0.25)',
+                                            background: 'rgba(34,197,94,0.04)',
+                                            borderRadius: 6,
+                                        }}>
+                                            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-green)', letterSpacing: 0.5, marginBottom: 4 }}>
+                                                ALARM-SERVER WEBHOOK
+                                            </div>
+                                            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 10, lineHeight: 1.5 }}>
+                                                Paste these into the camera's Event → Alarm Settings → Alarm Server form.
+                                                User Name and Password stay blank.
+                                            </div>
+                                            <SenseWebhookFields
+                                                url={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/integrations/milesight/sense/${editingCamera.sense_webhook_token}`}
+                                            />
+                                        </div>
+                                    )}
+
                                     <div className="form-group">
                                         <label className="form-label">Camera Name</label>
                                         <input
@@ -930,7 +1015,27 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
 
                         </div>
 
-                        <div className="modal-actions" style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12, marginTop: 12 }}>
+                        <div className="modal-actions" style={{ flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 12, marginTop: 12, display: 'flex', justifyContent: 'space-between' }}>
+                            <button
+                                className="btn"
+                                style={{ borderColor: 'rgba(239,68,68,0.4)', color: '#ef4444' }}
+                                disabled={rebooting}
+                                onClick={async () => {
+                                    if (!confirm(`Reboot ${editingCamera.name}? The camera will be unreachable for 30–90 seconds and recording will pause.`)) return;
+                                    setRebooting(true);
+                                    try {
+                                        const r = await rebootCamera(editingCamera.id);
+                                        alert(`Reboot requested: ${r.message}`);
+                                        onRefresh();
+                                    } catch (e: any) {
+                                        alert(`Reboot failed: ${e?.message ?? String(e)}`);
+                                    } finally {
+                                        setRebooting(false);
+                                    }
+                                }}
+                            >
+                                {rebooting ? 'Rebooting…' : 'Reboot device'}
+                            </button>
                             <button className="btn" onClick={() => setEditingCamera(null)}>Close</button>
                         </div>
                     </div>
@@ -938,5 +1043,64 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                 );
             })()}
         </div>
+    );
+}
+
+// SenseWebhookFields decomposes a webhook URL into the four fields the
+// camera's Alarm Server dialog expects (Protocol / Host / Port / Path)
+// and renders each with its own copy button. The camera's UI splits the
+// URL across separate inputs, so showing the full URL alone forces the
+// operator to parse it by hand. Reused by the post-create overlay and
+// the camera-settings General tab.
+function SenseWebhookFields({ url }: { url: string }) {
+    const parts = (() => {
+        try {
+            const u = new URL(url);
+            return {
+                protocol: u.protocol === 'https:' ? 'HTTPS' : 'HTTP',
+                host: u.hostname,
+                port: u.port || (u.protocol === 'https:' ? '443' : '80'),
+                path: u.pathname + (u.search || ''),
+            };
+        } catch {
+            return { protocol: '', host: '', port: '', path: url };
+        }
+    })();
+    const rows: { label: string; value: string }[] = [
+        { label: 'Protocol Type', value: parts.protocol },
+        { label: 'Destination IP/Host Name', value: parts.host },
+        { label: 'Port', value: parts.port },
+        { label: 'Path', value: parts.path },
+    ];
+    return (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 8 }}>
+            <tbody>
+                {rows.map(row => (
+                    <tr key={row.label} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                        <td style={{ padding: '8px 4px', color: 'var(--text-muted)', width: '38%' }}>
+                            {row.label}
+                        </td>
+                        <td style={{
+                            padding: '8px 4px',
+                            fontFamily: "'JetBrains Mono', monospace",
+                            color: '#22c55e',
+                            wordBreak: 'break-all',
+                        }}>
+                            {row.value || <span style={{ color: 'var(--text-muted)' }}>—</span>}
+                        </td>
+                        <td style={{ padding: '8px 4px', width: 70, textAlign: 'right' }}>
+                            <button
+                                className="btn"
+                                style={{ padding: '3px 10px', fontSize: 10 }}
+                                onClick={() => navigator.clipboard?.writeText(row.value).catch(() => {})}
+                                disabled={!row.value}
+                            >
+                                Copy
+                            </button>
+                        </td>
+                    </tr>
+                ))}
+            </tbody>
+        </table>
     );
 }

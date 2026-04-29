@@ -21,6 +21,59 @@ phase**, and put the most recent phase at the top.
 
 ---
 
+## Phase G — Sense cameras, AI runtime metrics, retention tiers, dev-loop ops · 2026-04-29
+
+A multi-week working session collapsed into a single integration commit
+(early-dev mode, no production traffic yet). Themes:
+
+### G.1 Camera integration
+
+- **Sense / push-only camera class** (Milesight SC4xx series). Battery-powered PIR cameras can't sustain RTSP pulls or ONVIF subscriptions, so the platform now accepts inbound webhooks instead. New `device_class` column on cameras, per-camera 256-bit token, `POST /api/integrations/milesight/sense/{token}` receiver, multipart + base64 payload parsers, alarm-pipeline injection. UI Add-Camera dropdown + post-create field-split panel + persistent "view webhook URL" section in Camera Settings. Full doc: `frontend/Documents/SenseCamera.md`.
+- **WS-Addressing on PullPoint** (`internal/onvif/events.go`). Older Milesight firmware (MS-C5xxx Pro Series) routes PullMessages by the `wsa:To` header, not the URL path, and returns `wsrfr:ResourceUnknownFault` on bare requests. Added `wsa:Action` + `wsa:To` + per-Pull `wsa:MessageID` so SW Entrance / SC411-class devices stop loop-failing.
+- **NAT-aware RTSP stream-host rewrite** in `GetStreamURI`. Cameras advertise their LAN IP in `<MediaUri>`; we now swap to whatever public host we connected to when (and only when) the advertised host is RFC1918 and ours isn't. Recovers the 5G cellular camera at 162.191.x without manual DB patching.
+- **Convention-aware ONVIF service-URL fallback**. When `GetCapabilities` doesn't advertise an events URL, we mirror the path style of whatever WAS discovered (`/onvif/Media` → `/onvif/Events`, `/onvif/media_service` → `/onvif/event_service`). Closes the gap on Pro Series cameras that omit Events from their capabilities response.
+- **Milesight WebSocket probe-then-fallback** in `event_source.go`. `/webstream/track` only exists on AI-series firmware; older Pro Series 404s. We probe once with a 5 s budget and fall through to ONVIF PullPoint if the upgrade fails — no more silent zero-events on cameras whose firmware can't speak the WS protocol.
+- **Subscription-cap backoff** in events.go. Milesight caps concurrent subs at 4–5; once exhausted, retrying every 60 s deepens the leak. Detect the "Maximum number of Subscribe reached" fault and back off 5 minutes so the camera's PT3600S TTL has time to reap stale subs.
+- **TLS 1.0+ floor** on the ONVIF client. Go 1.20+ defaults `MinVersion=TLSv1.2`, which the SC411's older firmware doesn't support — handshake failures looked like the camera was offline. Drop the floor + skip cert verification (already behind `InsecureSkipVerify`).
+- **PTZ refiner driver hook** + Milesight implementation. `PTZConfiguration` token alone doesn't mean mechanical PTZ — fisheye and fixed cameras advertise it for digital ePTZ. New `PTZRefiner` interface; Milesight driver matches `-X##` motorized-zoom suffix to flag real PTZ.
+- **Camera reboot button** + `tds:SystemReboot` ONVIF method + admin-gated `POST /api/cameras/{id}/reboot` route. One-click recovery for cameras stuck in subscription-cap or other firmware-state limbo.
+
+### G.2 AI runtime metrics & per-site usage
+
+Four-phase dashboard build on Admin → Health:
+
+- **Phase 1**: in-process atomic counters in `ai.Client` (YOLO/Qwen calls / confirmed / filtered / avg ms). Surfaced in the existing Services card as a funnel block with pass-through bar.
+- **Phase 2**: `pynvml` integration in `services/yolo/server.py` and `services/qwen/server.py`. `/health` now reports gpu_util_pct, gpu_memory_used_mb, gpu_memory_total_mb, gpu_temperature_c. Services card gained a GPU column with util/VRAM bars and temp readout.
+- **Phase 3**: `ai_runtime_metrics` TimescaleDB hypertable + `StartAIMetricsSampler` background goroutine + `GET /api/system/services/timeseries?minutes=N`. New `AIMetricsChart` component renders 1h / 4h / 24h GPU saturation area chart + stacked-bar inference funnel (no chart library — inline SVG, ~120 sample points per panel).
+- **Phase 4**: `site_id` dimension on the hypertable + per-site counters in `ai.Client.SiteStatsSnapshot()` + `GET /api/system/services/usage?days=N&cost_per_1k_yolo=X&cost_per_1k_qwen=Y`. New `AIUsageBySiteCard` renders a "GPU rental bill" view — per-site call counts, confirmed/filtered breakdown, editable cost-per-1k inputs, total estimated cost. Backend deferred for customer-portal exposure (memory-noted, see project-mem `project_ai_usage_customer_portal.md`).
+
+### G.3 Retention tiers + capacity safety valve
+
+- **Tiered retention** (3/7/14/30/60/90 days). Default dropped from 30 → 3 days for both cameras and sites. `recording.RetentionTiers` is the source of truth; site-update API rejects non-tier values with HTTP 400. UI dropdown replaces the prior freeform integer.
+- **85 % capacity safety valve** in the retention manager. Reads disk usage on every enabled storage location each hour; when usage > 0.85, force-prunes the oldest segments until usage drops to 0.80. Cross-platform via `internal/recording/disk_unix.go` (`syscall.Statfs`) and `disk_windows.go` (`GetDiskFreeSpaceExW`).
+- **Limitation noted**: the safety valve measures the WSL/Linux filesystem, not the Windows VHDX file size. C: pressure from VHDX bloat is a separate problem (see MasterDeployment §3.99.5).
+
+### G.4 Recording engine + storage hygiene
+
+- Per-camera AI in-flight gate in `cmd/server/main.go`. While Qwen is processing one alarm for camera X, additional alarms for X skip the AI step entirely (snapshot + alarm still record). Prevents queue pile-up + GPU saturation when a noisy camera fires bursts.
+- Motion-bucket cooldown coalescence. `linecross / object / intrusion / loitering / human / vehicle / motion` now share one `camera:motion` cooldown key (60 s); `lpr` and `face` keep per-type cooldowns since they identify specific things. Eliminates the 3-alarms-in-50ms problem that pegged the GPU on the Apex Riverside cameras.
+- VCA snapshot timeout 8 s → 25 s + ffmpeg stderr surfacing. 5G/cellular cameras need >8 s to negotiate RTSP and produce a first I-frame; was timing out as `signal: killed`.
+- Full-body ONVIF SOAP fault logging on 5xx (server-side only). Caller-facing error stays 500-char-truncated; the api log gets the full Fault element so `Maximum number of Subscribe reached`, `wsrfr:ResourceUnknownFault`, etc. are visible without reproducing.
+
+### G.5 Developer-loop operations
+
+- **`bin/Start Ironsight.bat`**: bumped to handle CDI conflict cleanup (rm `/etc/cdi/nvidia.json`, sync `~/.config/cdi/nvidia.yaml`) and bring up *all* services including yolo/qwen — no more manual two-step on cold boot.
+- **`.wslconfig`** documented and required (`vmIdleTimeout=-1`). Without it, WSL kills the distro 60 s after a developer's terminal idles, taking the whole stack with it.
+- **`QUICKSTART.md`** at repo root — single canonical "5-minute new-machine bring-up" guide for both Linux+Docker and Windows+WSL+Podman.
+- **`MasterDeployment.md` §3.99 (new)** — Windows / WSL / Podman developer path: distro selection, `.wslconfig` requirement, CDI conflict explanation + fix, VHDX compaction recipe.
+- `.gitignore` extended to keep `bin/*.sh`, `bin/*.log.err`, `bin/fix-*.sql`, and `.claude-tmp-*` out of history (session debugging detritus that accumulated during this work).
+
+### G.6 Files
+
+Roughly 35 source files across go (api/onvif/recording/database/ai), python (yolo/qwen `/health`), tsx (admin/operator/portal), plus 4 new Markdown docs (`QUICKSTART.md`, `SenseCamera.md`, `MasterDeployment §3.99`, this entry).
+
+---
+
 ## Phase F — Operational hardening: backup, DR, security overview · 2026-04-25
 
 The shift from "the product works" to "the product survives a bad

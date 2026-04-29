@@ -149,16 +149,42 @@ func HandleDeleteAudioMessage(cfg *config.Config, db *database.DB) http.HandlerF
 	}
 }
 
-// HandleServeAudioFile serves an audio file for browser preview playback
+// HandleServeAudioFile serves an audio file for browser preview playback.
+// Path traversal is prevented in two layers: the basename check rejects
+// any input that resolves to anything outside `audioDir`, and the final
+// path is rebuilt from the cleaned basename so URL encoding tricks
+// (`%2e%2e/`, embedded slashes) cannot escape the directory.
 func HandleServeAudioFile(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fileName := chi.URLParam(r, "fileName")
-		if fileName == "" || strings.Contains(fileName, "..") {
+		if fileName == "" {
 			http.Error(w, "Invalid filename", http.StatusBadRequest)
 			return
 		}
-		audioDir := filepath.Join(cfg.StoragePath, "..", "audio_messages")
-		filePath := filepath.Join(audioDir, fileName)
+		// filepath.Base strips any directory component, including `../`,
+		// even when the input contains backslashes or repeated separators.
+		clean := filepath.Base(fileName)
+		if clean == "." || clean == ".." || clean == string(filepath.Separator) ||
+			strings.ContainsAny(clean, "/\\") {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
+		audioDir, err := filepath.Abs(filepath.Join(cfg.StoragePath, "..", "audio_messages"))
+		if err != nil {
+			http.Error(w, "Invalid storage configuration", http.StatusInternalServerError)
+			return
+		}
+		filePath, err := filepath.Abs(filepath.Join(audioDir, clean))
+		if err != nil {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
+		// Final containment check: even after Base+Abs, refuse to serve
+		// anything that doesn't sit directly under audioDir.
+		if !strings.HasPrefix(filePath, audioDir+string(filepath.Separator)) {
+			http.Error(w, "Invalid filename", http.StatusBadRequest)
+			return
+		}
 		http.ServeFile(w, r, filePath)
 	}
 }

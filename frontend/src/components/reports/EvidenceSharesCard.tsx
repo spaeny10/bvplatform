@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import {
   listIncidentShares,
   revokeEvidenceShareLink,
+  createEvidenceShareLink,
   type EvidenceShareWithStats,
+  type EvidenceShareRequest,
 } from '@/lib/ironsight-api';
 
 // Per-incident evidence-share manager. The supervisor pastes (or
@@ -50,6 +52,9 @@ export default function EvidenceSharesCard() {
   const [shares, setShares] = useState<EvidenceShareWithStats[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
+  const [createExpiry, setCreateExpiry] = useState<EvidenceShareRequest['expires_in']>('1w');
+  const [creating, setCreating] = useState(false);
+  const [newShare, setNewShare] = useState<{ url: string; expires_at: string | null } | null>(null);
 
   const refresh = async (id: string) => {
     if (!id) return;
@@ -72,6 +77,22 @@ export default function EvidenceSharesCard() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setSubmittedId(incidentId.trim());
+  };
+
+  const handleCreate = async () => {
+    if (!submittedId) return;
+    setCreating(true);
+    setErr('');
+    setNewShare(null);
+    try {
+      const result = await createEvidenceShareLink({ incident_id: submittedId, expires_in: createExpiry });
+      setNewShare({ url: result.url, expires_at: result.expires_at });
+      await refresh(submittedId);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
   };
 
   const handleRevoke = async (token: string) => {
@@ -108,6 +129,57 @@ export default function EvidenceSharesCard() {
           Lookup
         </button>
       </form>
+
+      {submittedId && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
+          <span style={{ fontSize: 11, color: 'var(--report-text-dim, #9CA3AF)', flexShrink: 0 }}>New share for {submittedId}:</span>
+          <select
+            value={createExpiry}
+            onChange={(e) => setCreateExpiry(e.target.value as EvidenceShareRequest['expires_in'])}
+            className="report-input"
+            style={{ flex: 1, maxWidth: 140 }}
+          >
+            <option value="1h">1 hour</option>
+            <option value="1d">1 day</option>
+            <option value="1w">1 week</option>
+            <option value="1m">1 month</option>
+            <option value="never">90 days (max)</option>
+          </select>
+          <button
+            className="report-csv-btn"
+            onClick={handleCreate}
+            disabled={creating}
+            style={{ background: 'rgba(132,204,22,0.15)', color: '#84CC16', border: '1px solid rgba(132,204,22,0.3)', flexShrink: 0 }}
+          >
+            {creating ? 'Creating…' : '+ Create Link'}
+          </button>
+        </div>
+      )}
+
+      {newShare && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+          background: 'rgba(132,204,22,0.06)', border: '1px solid rgba(132,204,22,0.2)',
+          borderRadius: 4, marginBottom: 8,
+        }}>
+          <span style={{ fontSize: 10, color: '#84CC16', fontWeight: 700, flexShrink: 0 }}>CREATED</span>
+          <code style={{ fontSize: 10, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--report-text-primary, #E4E8F0)', fontFamily: 'monospace' }}>
+            {typeof window !== 'undefined' ? window.location.origin : ''}{newShare.url}
+          </code>
+          <button
+            className="report-csv-btn"
+            onClick={() => navigator.clipboard.writeText(`${typeof window !== 'undefined' ? window.location.origin : ''}${newShare.url}`)}
+            style={{ fontSize: 10, padding: '2px 8px', flexShrink: 0 }}
+          >
+            Copy
+          </button>
+          {newShare.expires_at && (
+            <span style={{ fontSize: 9, color: 'var(--report-text-dim, #9CA3AF)', flexShrink: 0 }}>
+              expires {fmtAbsolute(newShare.expires_at)}
+            </span>
+          )}
+        </div>
+      )}
 
       {err && <div className="report-error">⚠ {err}</div>}
 

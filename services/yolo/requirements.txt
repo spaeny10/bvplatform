@@ -4,3 +4,7 @@ uvicorn>=0.32.0
 python-multipart>=0.0.12
 Pillow>=10.0.0
 numpy>=1.26.0
+# NVIDIA Management Library binding — used by /health to report live
+# GPU utilization, VRAM, and temperature. Soft-imported in server.py
+# so the service still boots if the wheel is unavailable.
+nvidia-ml-py>=12.535

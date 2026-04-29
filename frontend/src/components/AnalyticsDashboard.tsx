@@ -41,7 +41,7 @@ export default function AnalyticsDashboard({ cameraId }: Props) {
             if (cameraId) qs.set('camera_id', cameraId);
 
             // Use the existing events API to fetch events and compute stats client-side
-            const token = localStorage.getItem('auth_token');
+            const token = localStorage.getItem('ironsight_token');
             const res = await fetch(`/api/events?${qs.toString()}&limit=1000`, {
                 headers: token ? { Authorization: `Bearer ${token}` } : {},
             });

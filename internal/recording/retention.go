@@ -80,25 +80,37 @@ func (rm *RetentionManager) Stop() {
 	close(rm.stopCh)
 }
 
-// cleanup runs the full 3-tier retention strategy
+// cleanup runs the full retention strategy.
+//
+// Pass order matters: explicit operator policy (storage caps) wins
+// over age-based windows, and the capacity safety valve runs LAST so
+// it only fires when the normal policies couldn't keep up — typically
+// after a sudden volume spike or when an admin set retention longer
+// than the disk can sustain. The valve never overrides audit/evidence
+// retention; it only deletes recording segments.
 func (rm *RetentionManager) cleanup(ctx context.Context) {
 	log.Println("[RETENTION] Running cleanup...")
 
 	totalDeleted := 0
 	totalBytes := int64(0)
 
-	// ── Pass 1: Enforce disk space caps (max_gb) ──────────────────────
-	// This is the safety valve — it prevents disk-full regardless of retention settings
+	// Pass 1: per-location max_gb caps (operator-configured hard limits).
 	d, b := rm.enforceStorageCaps(ctx)
 	totalDeleted += d
 	totalBytes += b
 
-	// ── Pass 2 & 3: Enforce retention days (per-camera with storage fallback) ──
+	// Pass 2: per-camera / per-site retention windows.
 	d, b = rm.enforceRetentionDays(ctx)
 	totalDeleted += d
 	totalBytes += b
 
-	// ── Pass 4: Operational tables (closed support tickets) ──
+	// Pass 3: capacity safety valve — fires only if disk usage exceeds
+	// the threshold even after normal pruning.
+	d, b = rm.enforceCapacitySafetyValve(ctx)
+	totalDeleted += d
+	totalBytes += b
+
+	// Pass 4: closed support tickets older than the support retention window.
 	rm.pruneSupportTickets(ctx)
 
 	if totalDeleted > 0 {
@@ -107,6 +119,93 @@ func (rm *RetentionManager) cleanup(ctx context.Context) {
 	} else {
 		log.Println("[RETENTION] Cleanup complete: no expired segments")
 	}
+}
+
+// enforceCapacitySafetyValve protects the host from filling up. For
+// each enabled recordings storage location it samples the actual
+// filesystem utilization (statfs / GetDiskFreeSpaceEx). If usage is
+// above CapacitySafetyThreshold (default 0.85), it deletes the oldest
+// segments at that location until usage drops to
+// CapacitySafetyTargetAfterPrune (0.80) — the gap exists so a single
+// hour of new recording doesn't immediately re-trigger the valve.
+//
+// Why a fixed fraction instead of a per-location max_gb: customers
+// share underlying disks (especially on the AI Workbench / WSL test
+// rigs), so a per-volume cap doesn't reflect what the OS actually has
+// available. A live filesystem reading is the only honest answer.
+func (rm *RetentionManager) enforceCapacitySafetyValve(ctx context.Context) (int, int64) {
+	locations, err := rm.db.ListStorageLocations(ctx)
+	if err != nil {
+		log.Printf("[RETENTION] Safety valve: failed to list storage locations: %v", err)
+		return 0, 0
+	}
+
+	totalDeleted := 0
+	totalBytes := int64(0)
+	// Avoid double-pruning when several locations share a filesystem
+	// (common on dev where everything is /home). Track FS by total
+	// bytes — locations with the same total are almost certainly the
+	// same filesystem; we only prune one.
+	seenFS := make(map[uint64]bool)
+
+	for _, loc := range locations {
+		if !loc.Enabled {
+			continue
+		}
+		if loc.Purpose != "recordings" && loc.Purpose != "all" {
+			continue
+		}
+
+		total, used, ok := diskUsageForPath(loc.Path)
+		if !ok || total == 0 {
+			continue
+		}
+		if seenFS[total] {
+			continue
+		}
+		seenFS[total] = true
+
+		usedFraction := float64(used) / float64(total)
+		if usedFraction <= CapacitySafetyThreshold {
+			continue
+		}
+
+		targetUsed := uint64(float64(total) * CapacitySafetyTargetAfterPrune)
+		mustFree := used - targetUsed
+		log.Printf("[RETENTION] Safety valve TRIPPED on '%s': %.1f%% used (%.1f GB / %.1f GB) — pruning to %.0f%% (free %.1f GB)",
+			loc.Label,
+			usedFraction*100, float64(used)/1024/1024/1024, float64(total)/1024/1024/1024,
+			CapacitySafetyTargetAfterPrune*100, float64(mustFree)/1024/1024/1024)
+
+		// Normalize the path for matching segments.path in DB.
+		pathPrefix := strings.ReplaceAll(loc.Path, "\\", "/")
+
+		freedHere := int64(0)
+		deletedHere := 0
+		for freedHere < int64(mustFree) {
+			paths, freed, err := rm.db.DeleteOldestSegmentsByPath(ctx, pathPrefix, 100)
+			if err != nil {
+				log.Printf("[RETENTION] Safety valve: delete failed on '%s': %v", loc.Label, err)
+				break
+			}
+			if len(paths) == 0 {
+				break
+			}
+			for _, p := range paths {
+				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+					log.Printf("[RETENTION] Safety valve: file rm %s: %v", p, err)
+				}
+			}
+			freedHere += freed
+			deletedHere += len(paths)
+		}
+		totalDeleted += deletedHere
+		totalBytes += freedHere
+		log.Printf("[RETENTION] Safety valve done on '%s': %d segment(s), %.2f GB freed",
+			loc.Label, deletedHere, float64(freedHere)/1024/1024/1024)
+	}
+
+	return totalDeleted, totalBytes
 }
 
 // enforceStorageCaps checks each storage location's usage against its max_gb limit.

@@ -38,6 +38,12 @@ export interface Camera {
     manufacturer: string;
     model: string;
     firmware: string;
+    // 'continuous' = traditional RTSP+ONVIF (default).
+    // 'sense_pushed' = inbound-webhook only (Milesight SC4xx Sense series).
+    device_class?: 'continuous' | 'sense_pushed';
+    // Per-camera webhook token. Only present in the response from
+    // createCamera for sense_pushed cameras — list endpoints omit it.
+    sense_webhook_token?: string;
     created_at: string;
     updated_at: string;
 }
@@ -265,6 +271,131 @@ export async function getRecordingHealth(): Promise<RecordingHealth[]> {
     } catch { return []; }
 }
 
+// Liveness of the four services that don't show up in camera health:
+// the two GPU AI services, mediamtx, and the worker process.
+export interface ServiceStatus {
+    name: string;
+    status: 'up' | 'down' | 'degraded' | 'unknown';
+    detail: string;
+    endpoint?: string;
+    response_ms: number;
+    last_checked: string;
+    // Populated only for AI services and only when the Python /health
+    // returned them (pynvml available + CUDA reachable).
+    gpu_util_pct?: number;
+    gpu_memory_used_mb?: number;
+    gpu_memory_total_mb?: number;
+    gpu_temperature_c?: number;
+}
+
+// AIStats is the cumulative-since-process-start runtime counter from the
+// AI pipeline. The funnel is YOLO calls → YOLO confirmed (had detections)
+// → Qwen calls → Qwen confirmed (actionable threat). "Filtered" is the
+// drop at each stage and is what justifies the AI spend in the customer
+// transparency UI.
+export interface AIStats {
+    yolo_calls: number;
+    yolo_confirmed: number;
+    yolo_filtered: number;
+    yolo_avg_ms: number;
+    qwen_calls: number;
+    qwen_confirmed: number;
+    qwen_filtered: number;
+    qwen_avg_ms: number;
+}
+
+export interface ServicesHealthPayload {
+    services: ServiceStatus[];
+    ai_stats?: AIStats;
+}
+
+export async function getServicesHealth(): Promise<ServicesHealthPayload> {
+    try {
+        const res = await authFetch(`${API_BASE}/system/services`);
+        if (!res.ok) return { services: [] };
+        const data = await res.json();
+        return {
+            services: Array.isArray(data?.services) ? data.services : [],
+            ai_stats: data?.ai_stats,
+        };
+    } catch { return { services: [] }; }
+}
+
+// One row from the ai_runtime_metrics hypertable. Deltas are per-window
+// (sample-to-sample); GPU fields are point-in-time absolutes.
+export interface AIMetricSample {
+    ts: string;
+    gpu_util_pct?: number;
+    gpu_memory_used_mb?: number;
+    gpu_memory_total_mb?: number;
+    gpu_temperature_c?: number;
+    calls_delta: number;
+    confirmed_delta: number;
+    filtered_delta: number;
+    avg_inference_ms?: number;
+}
+
+export interface AIMetricsTimeseries {
+    window_minutes: number;
+    series: { yolo: AIMetricSample[]; qwen: AIMetricSample[] };
+}
+
+// Per-site usage row for the "GPU rental bill" view. yolo_/qwen_ counts
+// are summed over the window; estimated_cost is computed server-side
+// from the cost-per-1k params the client passed in.
+export interface SiteUsageRow {
+    site_id: string;
+    site_name: string;
+    yolo_calls: number;
+    yolo_confirmed: number;
+    yolo_filtered: number;
+    qwen_calls: number;
+    qwen_confirmed: number;
+    qwen_filtered: number;
+    estimated_cost: number;
+}
+
+export interface AIUsageBySite {
+    window_days: number;
+    cost_per_1k_yolo: number;
+    cost_per_1k_qwen: number;
+    total_cost: number;
+    sites: SiteUsageRow[];
+}
+
+export async function getAIUsageBySite(days = 7, costPer1kYolo = 0.05, costPer1kQwen = 0.50): Promise<AIUsageBySite> {
+    try {
+        const url = `${API_BASE}/system/services/usage?days=${days}&cost_per_1k_yolo=${costPer1kYolo}&cost_per_1k_qwen=${costPer1kQwen}`;
+        const res = await authFetch(url);
+        if (!res.ok) return { window_days: days, cost_per_1k_yolo: costPer1kYolo, cost_per_1k_qwen: costPer1kQwen, total_cost: 0, sites: [] };
+        const data = await res.json();
+        return {
+            window_days: data?.window_days ?? days,
+            cost_per_1k_yolo: data?.cost_per_1k_yolo ?? costPer1kYolo,
+            cost_per_1k_qwen: data?.cost_per_1k_qwen ?? costPer1kQwen,
+            total_cost: data?.total_cost ?? 0,
+            sites: Array.isArray(data?.sites) ? data.sites : [],
+        };
+    } catch {
+        return { window_days: days, cost_per_1k_yolo: costPer1kYolo, cost_per_1k_qwen: costPer1kQwen, total_cost: 0, sites: [] };
+    }
+}
+
+export async function getAIMetricsTimeseries(minutes = 60): Promise<AIMetricsTimeseries> {
+    try {
+        const res = await authFetch(`${API_BASE}/system/services/timeseries?minutes=${minutes}`);
+        if (!res.ok) return { window_minutes: minutes, series: { yolo: [], qwen: [] } };
+        const data = await res.json();
+        return {
+            window_minutes: data?.window_minutes ?? minutes,
+            series: {
+                yolo: Array.isArray(data?.series?.yolo) ? data.series.yolo : [],
+                qwen: Array.isArray(data?.series?.qwen) ? data.series.qwen : [],
+            },
+        };
+    } catch { return { window_minutes: minutes, series: { yolo: [], qwen: [] } }; }
+}
+
 export interface SDStatus {
     camera_id: string;
     camera_name: string;
@@ -304,7 +435,7 @@ export async function getCamera(id: string): Promise<Camera> {
     return res.json();
 }
 
-export async function createCamera(data: { name: string; onvif_address: string; username: string; password: string }): Promise<Camera> {
+export async function createCamera(data: { name: string; onvif_address: string; username: string; password: string; device_class?: 'continuous' | 'sense_pushed' }): Promise<Camera> {
     const res = await authFetch(`${API_BASE}/cameras`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -333,6 +464,17 @@ export async function updateCamera(id: string, data: Partial<Pick<Camera,
 
 export async function deleteCamera(id: string): Promise<void> {
     await authFetch(`${API_BASE}/cameras/${id}`, { method: 'DELETE' });
+}
+
+// rebootCamera issues an ONVIF SystemReboot. Camera will be unreachable
+// for ~30–90s while it restarts. Admin / supervisor only on the server.
+export async function rebootCamera(id: string): Promise<{ ok: boolean; message: string }> {
+    const res = await authFetch(`${API_BASE}/cameras/${id}/reboot`, { method: 'POST' });
+    if (!res.ok) {
+        const text = await res.text().catch(() => res.statusText);
+        throw new Error(text || `HTTP ${res.status}`);
+    }
+    return res.json();
 }
 
 // ── VCA (Video Content Analytics) Rules ──

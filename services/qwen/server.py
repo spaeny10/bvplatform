@@ -164,6 +164,51 @@ load_model()
 app = FastAPI(title="Ironsight Qwen vLM Reasoning Service")
 
 
+# pynvml is the canonical NVIDIA Management Library binding. Soft
+# import so the service still boots if the wheel is unavailable; the
+# GPU section of /health falls back to torch.cuda.mem_get_info in
+# that case (memory only, no utilization or temperature).
+try:
+    import pynvml  # type: ignore
+    pynvml.nvmlInit()
+    _NVML_OK = True
+except Exception:
+    _NVML_OK = False
+
+
+def gpu_stats() -> dict:
+    """Live GPU stats for the device this service is using. Returns a
+    dict with stable keys; missing fields come back as None so the Go
+    consumer doesn't have to special-case schema drift."""
+    out = {
+        "gpu_util_pct": None,
+        "gpu_memory_used_mb": None,
+        "gpu_memory_total_mb": None,
+        "gpu_temperature_c": None,
+    }
+    if not torch.cuda.is_available():
+        return out
+    idx = int(DEVICE.split(":")[1]) if DEVICE.startswith("cuda:") else 0
+    try:
+        free, total = torch.cuda.mem_get_info(idx)
+        out["gpu_memory_used_mb"] = round((total - free) / (1024 * 1024))
+        out["gpu_memory_total_mb"] = round(total / (1024 * 1024))
+    except Exception:
+        pass
+    if _NVML_OK:
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(idx)
+            util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+            out["gpu_util_pct"] = int(util.gpu)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            out["gpu_memory_used_mb"] = round(mem.used / (1024 * 1024))
+            out["gpu_memory_total_mb"] = round(mem.total / (1024 * 1024))
+            out["gpu_temperature_c"] = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        except Exception:
+            pass
+    return out
+
+
 @app.get("/health")
 async def health():
     return {
@@ -173,6 +218,7 @@ async def health():
         "cuda_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "degraded": degraded_mode,
+        **gpu_stats(),
     }
 
 

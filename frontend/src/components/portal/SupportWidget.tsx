@@ -146,6 +146,24 @@ export default function SupportWidget() {
     }
   };
 
+  const handleUpdateStatus = async (ticketId: number, status: 'open' | 'closed') => {
+    setBusy(true);
+    setErr('');
+    try {
+      await fetchJSON(`/api/support/tickets/${ticketId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      const data = await fetchJSON<ThreadResponse>(`/api/support/tickets/${ticketId}`);
+      setThread(data);
+      await reload();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleReply = async () => {
     if (typeof view !== 'object' || !draft.trim()) return;
     setBusy(true);
@@ -262,6 +280,7 @@ export default function SupportWidget() {
                 draft={draft} setDraft={setDraft}
                 busy={busy} onSend={handleReply}
                 meId={user?.id}
+                onUpdateStatus={(status) => handleUpdateStatus(thread.ticket.id, status)}
               />
             )}
           </div>
@@ -428,19 +447,39 @@ function ComposeForm({
 }
 
 function Thread({
-  thread, draft, setDraft, busy, onSend, meId,
+  thread, draft, setDraft, busy, onSend, meId, onUpdateStatus,
 }: {
   thread: ThreadResponse; draft: string; setDraft: (v: string) => void;
   busy: boolean; onSend: () => void;
   meId?: string;
+  onUpdateStatus: (status: 'open' | 'closed') => void;
 }) {
   const endRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [thread.messages.length]);
 
+  const isClosed = thread.ticket.status === 'closed';
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 2 }}>
+        <button
+          onClick={() => onUpdateStatus(isClosed ? 'open' : 'closed')}
+          disabled={busy}
+          style={{
+            fontSize: 10, fontWeight: 600,
+            padding: '3px 10px', borderRadius: 4,
+            border: `1px solid ${isClosed ? 'rgba(132,204,22,0.30)' : 'rgba(156,163,175,0.30)'}`,
+            background: isClosed ? 'rgba(132,204,22,0.08)' : 'rgba(75,85,99,0.12)',
+            color: isClosed ? '#84CC16' : '#9CA3AF',
+            cursor: busy ? 'wait' : 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          {isClosed ? 'Reopen' : 'Close ticket'}
+        </button>
+      </div>
       {thread.messages.map((m) => {
         const mine = m.author_id === meId;
         const soc = m.author_role === 'admin' || m.author_role === 'soc_supervisor';

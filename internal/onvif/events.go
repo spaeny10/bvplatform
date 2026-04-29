@@ -91,29 +91,40 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 	const renewAfterEmpty = 20                 // also renew after 20 consecutive empty polls (~60s)
 	const maxErrors = 10
 
-	newSubscription := func() (string, time.Time) {
+	newSubscription := func() (string, time.Time, error) {
 		addr, err := es.createPullPointSubscription(ctx)
 		if err != nil {
 			log.Printf("[EVENTS] Failed to create subscription for camera %s: %v", es.cameraID, err)
-			return "", time.Time{}
+			return "", time.Time{}, err
 		}
 		log.Printf("[EVENTS] PullPoint subscription created for camera %s", es.cameraID)
-		return addr, time.Now().Add(subscriptionTTL)
+		return addr, time.Now().Add(subscriptionTTL), nil
 	}
 
-	// Initial subscription — retry every 60s until success or context cancelled
+	// Initial subscription — retry until success or context cancelled.
+	// When the camera reports its subscription cap is exhausted (typical
+	// on Milesight/Hikvision after stale subs leak across restarts) we
+	// back off much harder: retrying every 60s would just keep leaking
+	// and hammering the device. The camera reaps stale subs on its
+	// PT3600S TTL, so 5-minute waits give the pool a chance to drain.
 	var subscriptionAddr string
 	var expiresAt time.Time
 	for subscriptionAddr == "" {
-		addr, exp := newSubscription()
+		addr, exp, err := newSubscription()
 		if addr != "" {
 			subscriptionAddr = addr
 			expiresAt = exp
 			break
 		}
-		log.Printf("[EVENTS] Retrying PullPoint subscription for camera %s in 60s", es.cameraID)
+		wait := 60 * time.Second
+		if isSubscriptionCapError(err) {
+			wait = 5 * time.Minute
+			log.Printf("[EVENTS] Camera %s subscription cap exhausted — waiting %s for stale subs to expire", es.cameraID, wait)
+		} else {
+			log.Printf("[EVENTS] Retrying PullPoint subscription for camera %s in %s", es.cameraID, wait)
+		}
 		select {
-		case <-time.After(60 * time.Second):
+		case <-time.After(wait):
 		case <-es.stopCh:
 			return
 		case <-ctx.Done():
@@ -136,7 +147,7 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		// Proactive renewal: refresh subscription before it expires
 		if time.Until(expiresAt) < renewBeforeSec {
 			log.Printf("[EVENTS] Proactively renewing subscription for camera %s (expires in %s)", es.cameraID, time.Until(expiresAt).Round(time.Second))
-			if addr, exp := newSubscription(); addr != "" {
+			if addr, exp, _ := newSubscription(); addr != "" {
 				subscriptionAddr = addr
 				expiresAt = exp
 				consecutiveErrors = 0
@@ -152,14 +163,21 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 			if consecutiveErrors >= maxErrors {
 				// Subscription probably died — force a fresh one immediately
 				log.Printf("[EVENTS] Subscription lost for camera %s — re-subscribing", es.cameraID)
-				if addr, exp := newSubscription(); addr != "" {
+				addr, exp, subErr := newSubscription()
+				if addr != "" {
 					subscriptionAddr = addr
 					expiresAt = exp
 					consecutiveErrors = 0
 				} else {
-					// Camera unreachable — back off and retry
+					// Camera unreachable — back off and retry. Stretch
+					// the wait if it's the subscription-cap error so we
+					// don't keep adding to the leak.
+					wait := 30 * time.Second
+					if isSubscriptionCapError(subErr) {
+						wait = 5 * time.Minute
+					}
 					select {
-					case <-time.After(30 * time.Second):
+					case <-time.After(wait):
 					case <-es.stopCh:
 						return
 					case <-ctx.Done():
@@ -177,7 +195,7 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 			consecutiveEmpty++
 			if consecutiveEmpty >= renewAfterEmpty {
 				log.Printf("[EVENTS] No events for %ds — renewing subscription for camera %s", consecutiveEmpty*3, es.cameraID)
-				if addr, exp := newSubscription(); addr != "" {
+				if addr, exp, _ := newSubscription(); addr != "" {
 					subscriptionAddr = addr
 					expiresAt = exp
 					consecutiveEmpty = 0
@@ -200,7 +218,12 @@ type parsedEvent struct {
 
 // createPullPointSubscription creates an ONVIF PullPoint subscription
 func (es *EventSubscriber) createPullPointSubscription(ctx context.Context) (string, error) {
-	eventsAddr := strings.Replace(es.client.XAddr, "device_service", "event_service", 1)
+	// Use the events service URL discovered via GetCapabilities. Vendors
+	// disagree on the path — e.g. Milesight serves at /onvif/Events
+	// while Hikvision uses /onvif/Events too but older firmware is on
+	// /onvif/event_service. The naive string-replace fallback here only
+	// triggers if discovery never populated eventsURL.
+	eventsAddr := es.client.serviceURL("events", "event_service")
 
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
@@ -261,19 +284,33 @@ func (es *EventSubscriber) createPullPointSubscription(ctx context.Context) (str
 	return addr, nil
 }
 
-// pullMessages pulls messages from a PullPoint subscription
+// pullMessages pulls messages from a PullPoint subscription.
+//
+// The SOAP envelope carries WS-Addressing headers (wsa:Action, wsa:To,
+// wsa:MessageID) in addition to WS-Security. Newer Milesight firmware
+// (MS-Cx2xx, AI series) ignores these and works either way; older
+// firmware (MS-C5xxx Pro Series) returns ResourceUnknownFault on the
+// first Pull when they're missing because their event handler routes
+// requests by the wsa:To header rather than the URL path.
 func (es *EventSubscriber) pullMessages(ctx context.Context, subscriptionAddr string) ([]parsedEvent, error) {
+	const action = "http://www.onvif.org/ver10/events/wsdl/PullPointSubscription/PullMessagesRequest"
 	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
-            xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
-  <s:Header>%s</s:Header>
+            xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+            xmlns:wsa="http://www.w3.org/2005/08/addressing">
+  <s:Header>
+    <wsa:Action s:mustUnderstand="1">%s</wsa:Action>
+    <wsa:To s:mustUnderstand="1">%s</wsa:To>
+    <wsa:MessageID>urn:uuid:%s</wsa:MessageID>
+    %s
+  </s:Header>
   <s:Body>
     <tev:PullMessages>
       <tev:Timeout>PT3S</tev:Timeout>
       <tev:MessageLimit>100</tev:MessageLimit>
     </tev:PullMessages>
   </s:Body>
-</s:Envelope>`, es.client.BuildSecurityHeader())
+</s:Envelope>`, action, subscriptionAddr, newMessageID(), es.client.BuildSecurityHeader())
 
 	resp, err := es.client.DoRequest(ctx, subscriptionAddr, body)
 	if err != nil {
@@ -282,6 +319,11 @@ func (es *EventSubscriber) pullMessages(ctx context.Context, subscriptionAddr st
 
 	return es.parseNotificationMessages(resp)
 }
+
+// newMessageID returns a fresh UUID for the wsa:MessageID header. Some
+// ONVIF cameras dedupe requests by MessageID; reusing one across Pulls
+// can cause silent drops.
+func newMessageID() string { return uuid.NewString() }
 
 // parseNotificationMessages extracts events from PullMessages response
 func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent, error) {
@@ -559,6 +601,23 @@ func clamp01(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// isSubscriptionCapError reports whether a CreatePullPointSubscription
+// error is the camera saying "I'm full". Milesight and Hikvision both
+// return SOAP fault Reason text along the lines of "Maximum number of
+// Subscribe reached" when their subscription pool is exhausted (usually
+// 4–5 concurrent subs). When this is the cause, retrying every minute
+// just keeps the leak alive — the right answer is to wait for the
+// camera's PT3600S TTL to reap stale subs.
+func isSubscriptionCapError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "maximum number of subscribe") ||
+		strings.Contains(s, "too many subscriptions") ||
+		strings.Contains(s, "subscription limit")
 }
 
 // UnusedImportPreventer prevents unused import errors

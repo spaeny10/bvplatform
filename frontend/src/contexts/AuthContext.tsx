@@ -70,6 +70,33 @@ export const ROLE_INFO: Record<UserRole, { label: string; color: string; descrip
     viewer:         { label: 'Viewer',          color: '#6B7A99', description: 'Camera feeds — read only' },
 };
 
+// Demo session — used when NEXT_PUBLIC_DEMO_MODE=1 OR when the user
+// hits any route with `?demo=1`. Bypasses /auth/me so the portal
+// renders without a working backend, and pins the role to `customer`
+// so the customer-facing surfaces (the ones we actually want to
+// preview) are what gets shown.
+const DEMO_USER: AuthUser = {
+    id: 'demo-user',
+    username: 'spierce',
+    role: 'customer',
+    display_name: 'Sandra Pierce',
+    email: 'spierce@apexcg.com',
+    phone: '312-555-0198',
+    organization_id: 'co-alpha001',
+    assigned_site_ids: ['ACG-301', 'ACG-302'],
+};
+
+function demoModeActive(): boolean {
+    if (typeof window === 'undefined') return false;
+    if (process.env.NEXT_PUBLIC_DEMO_MODE === '1') return true;
+    if (window.location.search.includes('demo=1')) {
+        // Sticky for the session — once you opt in, internal nav keeps it.
+        try { window.sessionStorage.setItem('ironsight_demo', '1'); } catch { /* ignore */ }
+        return true;
+    }
+    try { return window.sessionStorage.getItem('ironsight_demo') === '1'; } catch { return false; }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
     const [token, setToken] = useState<string | null>(null);
     const [user, setUser] = useState<AuthUser | null>(null);
@@ -77,6 +104,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // Rehydrate session on mount by validating the stored token with /auth/me
     useEffect(() => {
+        // Demo bypass: skip the API round-trip and inject the demo
+        // customer. This is the path used by `npm run dev` previews
+        // when no backend is running.
+        if (demoModeActive()) {
+            setToken('demo-token');
+            setUser(DEMO_USER);
+            setReady(true);
+            return;
+        }
+
         const storedToken = localStorage.getItem(TOKEN_KEY);
         if (!storedToken) {
             setReady(true);

@@ -59,9 +59,7 @@ export default function SiteDrilldownPage({ params }: { params: { id: string } }
     if (!url) { setSnapshotUrl(null); return; }
 
     let cancelled = false;
-    const token = typeof window !== 'undefined'
-      ? (localStorage.getItem('ironsight_token') || localStorage.getItem('onvif_token'))
-      : '';
+    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
     fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     })

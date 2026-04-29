@@ -23,25 +23,29 @@ import {
   MOCK_SLA_CONFIGS, MOCK_OPERATOR_METRICS, MOCK_SCHEDULED_REPORTS,
   MOCK_NOTIFICATION_RULES, MOCK_PTZ_CAPABILITIES, MOCK_EXCLUSION_ZONES,
   MOCK_SAVED_SEARCHES, MOCK_INTEGRATIONS,
+  MOCK_PORTAL_SUMMARY, type PortalSummary,
 } from './ironsight-mock';
+export type { PortalSummary } from './ironsight-mock';
+
+import { authFetch } from './api';
 
 const BASE = '/api/v1';
 
-function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
-  return {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-}
-
-// fetchJSON is the authenticated request helper used by every
-// function in this file. Exported (in addition to its in-package use)
-// so portal pages that need to hit a one-off endpoint without
-// duplicating auth-header plumbing can pull it directly.
+// fetchJSON is the authenticated JSON helper used by every function
+// in this file. Sits on top of `authFetch` (the single auth-header
+// layer in /lib/api.ts) so JWT injection and 401 → /login redirect
+// happen in one place. Exported so portal pages that need a one-off
+// endpoint can use it directly without duplicating header plumbing.
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, headers: { ...authHeaders(), ...init?.headers } });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  const headers = new Headers(init?.headers ?? {});
+  if (!headers.has('Content-Type') && init?.body) {
+    headers.set('Content-Type', 'application/json');
+  }
+  const res = await authFetch(url, { ...init, headers });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(body || `API ${res.status}: ${res.statusText}`);
+  }
   // 204 No Content (PUT/DELETE) — the body is empty, return undefined cast.
   if (res.status === 204) return undefined as unknown as T;
   return res.json();
@@ -113,6 +117,13 @@ export async function addIncidentComment(id: string, text: string) {
     method: 'POST',
     body: JSON.stringify({ text }),
   });
+}
+
+// ── Portal proof-of-work rollup ──
+
+export async function getPortalSummary(days: number): Promise<PortalSummary> {
+  try { return await fetchJSON<PortalSummary>(`${BASE}/portal/summary?days=${days}`); }
+  catch { return MOCK_PORTAL_SUMMARY(days); }
 }
 
 // ── Alerts ──
@@ -335,9 +346,7 @@ export async function unassignUserFromSite(siteId: string, userId: string): Prom
 export async function getIRONSightCameras(): Promise<IRONSightCamera[]> {
   try {
     // Pull from the existing IRONSight API (not /api/v1)
-    const res = await fetch('/api/cameras', {
-      headers: authHeaders(),
-    });
+    const res = await authFetch('/api/cameras');
     if (!res.ok) throw new Error('Failed to fetch IRONSight cameras');
     const cameras = await res.json();
     return cameras.map((c: Record<string, unknown>) => ({
@@ -885,10 +894,7 @@ export function slaReportCsvUrl(params: {
  * one shot. Works for all our CSV-export endpoints.
  */
 export async function downloadAuthenticated(url: string, filename: string): Promise<void> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
-  const res = await fetch(url, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+  const res = await authFetch(url);
   if (!res.ok) throw new Error(`download failed: ${res.status}`);
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);

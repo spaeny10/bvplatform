@@ -156,7 +156,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* ── Ambient Animated Background ─────────────────── */
+/* ── Ambient Background ─────────────────────────────
+   Static — was animated via `ambientDrift` interpolating `background`
+   between three multi-stop radial gradients at 60fps. That cost ~17%
+   of main-thread paint time and visibly flashed the modal overlay.
+   The decoration is barely perceptible at 0.02–0.04 opacity, so the
+   static look is identical for the user without the per-frame paint. */
 body::before {
   content: '';
   position: fixed;
@@ -166,29 +171,7 @@ body::before {
     radial-gradient(ellipse 800px 600px at 15% 80%, rgba(232, 115, 42, 0.04) 0%, transparent 70%),
     radial-gradient(ellipse 600px 500px at 85% 20%, rgba(178, 34, 52, 0.03) 0%, transparent 70%),
     radial-gradient(ellipse 500px 400px at 50% 50%, rgba(59, 130, 246, 0.02) 0%, transparent 70%);
-  animation: ambientDrift 25s ease-in-out infinite alternate;
   pointer-events: none;
-}
-
-@keyframes ambientDrift {
-  0% {
-    background:
-      radial-gradient(ellipse 800px 600px at 15% 80%, rgba(232, 115, 42, 0.04) 0%, transparent 70%),
-      radial-gradient(ellipse 600px 500px at 85% 20%, rgba(178, 34, 52, 0.03) 0%, transparent 70%),
-      radial-gradient(ellipse 500px 400px at 50% 50%, rgba(59, 130, 246, 0.02) 0%, transparent 70%);
-  }
-  50% {
-    background:
-      radial-gradient(ellipse 700px 500px at 70% 70%, rgba(232, 155, 42, 0.035) 0%, transparent 70%),
-      radial-gradient(ellipse 500px 600px at 20% 30%, rgba(178, 34, 52, 0.025) 0%, transparent 70%),
-      radial-gradient(ellipse 600px 500px at 60% 40%, rgba(56, 189, 248, 0.025) 0%, transparent 70%);
-  }
-  100% {
-    background:
-      radial-gradient(ellipse 600px 700px at 40% 60%, rgba(232, 115, 42, 0.03) 0%, transparent 70%),
-      radial-gradient(ellipse 700px 500px at 80% 80%, rgba(168, 85, 247, 0.025) 0%, transparent 70%),
-      radial-gradient(ellipse 500px 400px at 30% 20%, rgba(59, 130, 246, 0.03) 0%, transparent 70%);
-  }
 }
 
 /* Scrollbar */
@@ -2587,13 +2570,17 @@ body::before {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
+  /* Near-opaque so the page's many infinite animations
+     (statusPing, blink, pulse on online indicators) don't bleed
+     visibly through and look like flashing. Was rgba(_, 0.6) with
+     backdrop-filter blur — both removed for paint cost. */
+  background: rgba(0, 0, 0, 0.96);
   z-index: 200;
   display: flex;
   align-items: center;
   justify-content: center;
   animation: fadeIn 0.2s ease;
+  isolation: isolate;
 }
 
 @keyframes fadeIn {

@@ -26,13 +26,24 @@ interface RecordingPolicy {
 }
 
 const DEFAULT_POLICY: RecordingPolicy = {
-    retention_days: 30,
+    retention_days: 3,
     recording_mode: 'continuous',
     pre_buffer_sec: 10,
     post_buffer_sec: 30,
     recording_triggers: 'motion,object',
     recording_schedule: '',
 };
+
+// Mirrors recording.RetentionTiers in the Go backend — keep in sync.
+// 3 days is the included default; the rest are paid upgrade tiers.
+const RETENTION_TIERS: { days: number; label: string }[] = [
+    { days: 3, label: '3 days (included)' },
+    { days: 7, label: '7 days (upgrade)' },
+    { days: 14, label: '14 days (upgrade)' },
+    { days: 30, label: '30 days (upgrade)' },
+    { days: 60, label: '60 days (upgrade)' },
+    { days: 90, label: '90 days (upgrade)' },
+];
 
 // Recording-specific presets. Different goals than monitoring windows —
 // here we care about when cameras write to disk, not when the SOC watches.
@@ -121,7 +132,7 @@ export default function SiteRecordingPanel({ siteId, siteName }: Props) {
                 if (cancelled) return;
                 const scheduleRaw = site.recording_schedule ?? '';
                 setPolicy({
-                    retention_days: site.retention_days ?? 30,
+                    retention_days: site.retention_days ?? 3,
                     recording_mode: site.recording_mode ?? 'continuous',
                     pre_buffer_sec: site.pre_buffer_sec ?? 10,
                     post_buffer_sec: site.post_buffer_sec ?? 30,
@@ -151,7 +162,7 @@ export default function SiteRecordingPanel({ siteId, siteName }: Props) {
                 recording_schedule: scheduleWindows.length === 0 ? '' : JSON.stringify(scheduleWindows),
             };
             const res = await apiFetch(`/api/v1/sites/${siteId}/recording`, {
-                method: 'PUT',
+                method: 'PATCH',
                 body: JSON.stringify(body),
             });
             if (!res.ok) {
@@ -189,16 +200,20 @@ export default function SiteRecordingPanel({ siteId, siteName }: Props) {
 
             {/* Retention */}
             <Section title="Retention">
-                <Row label="Keep recordings for (days)">
-                    <input
-                        type="number"
-                        min={0}
-                        max={3650}
+                <Row label="Keep recordings for">
+                    <select
                         value={policy.retention_days}
                         onChange={e => setPolicy({ ...policy, retention_days: Number(e.target.value) })}
                         style={inputStyle}
-                    />
-                    <div style={hintStyle}>0 = use storage-location default. Values over 365 require disk-provisioning review.</div>
+                    >
+                        {RETENTION_TIERS.map(t => (
+                            <option key={t.days} value={t.days}>{t.label}</option>
+                        ))}
+                    </select>
+                    <div style={hintStyle}>
+                        3 days is included with every site. Longer retention is a paid upgrade — capacity planning is reviewed when you commit.
+                        A platform-wide 85% disk safety valve will force-prune the oldest segments first if storage runs hot.
+                    </div>
                 </Row>
             </Section>
 

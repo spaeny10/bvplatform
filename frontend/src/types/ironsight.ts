@@ -210,7 +210,7 @@ export interface IncidentDetail {
   camera_id: string;
   camera_name: string;
   ts: number;
-  duration_ms: number;
+  duration_ms: number;     // ts → resolved_at; the SOC's response window
   workers_identified: number;
   ai_confidence: number;   // 0-1
   ai_caption: string;
@@ -224,6 +224,14 @@ export interface IncidentDetail {
   keyframes: Keyframe[];
   osha_classification: string;
   related_incidents: string[];
+  // SOC actions surfaced to customer for transparency. The portal's
+  // "what we did" panel renders these so the customer sees the
+  // operator who handled it, what they decided, and any context they
+  // recorded — not just an opaque "resolved" status.
+  operator_callsign?: string;
+  operator_notes?: string;
+  disposition_code?: string;   // see operator's DISPOSITION_OPTIONS
+  disposition_label?: string;
 }
 
 export interface Finding {

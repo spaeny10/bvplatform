@@ -117,6 +117,15 @@ export function MOCK_INCIDENT_DETAIL(id: string): IncidentDetail {
     })),
     osha_classification: '1926.502(d) — Fall Protection Systems',
     related_incidents: ['INC-2026-0832', 'INC-2026-0819'],
+    // SOC actions surfaced to the customer for proof-of-work. The mock
+    // values cover the common shape: an operator picked it up quickly,
+    // dispositioned it cleanly, and recorded what they saw. The portal
+    // renders the "How the SOC handled this" panel only when at least
+    // one of these fields is present.
+    operator_callsign: 'CTORRES',
+    operator_notes: 'Subject was a maintenance worker authorized for the area but missing fall protection. Notified site supervisor (J. Vance) via SMS at 02:14; supervisor confirmed worker pulled and re-trained. No injury, no escalation needed.',
+    disposition_code: 'verified-threat-trespasser',
+    disposition_label: 'Verified — Safety Violation, Site Notified',
   };
 }
 
@@ -507,6 +516,43 @@ export const MOCK_INTEGRATIONS: Integration[] = [
   { id: 'int-003', type: 'api_key', name: 'Turner API Access', config: { key_prefix: 'sg_live_abc123', permissions: ['read'], expires_at: '2027-01-01T00:00:00Z' }, site_ids: [], active: true, created_at: '2026-01-15T00:00:00Z' },
   { id: 'int-004', type: 'teams', name: 'MS Teams Safety Channel', config: { workspace: 'Turner Construction', channel: 'Safety Alerts' }, site_ids: ['TX-203'], active: false, created_at: '2026-03-15T00:00:00Z' },
 ];
+
+// ── Portal Summary ──
+
+// Frontend-only fallback for the customer "what we handled" panel
+// when the backend isn't reachable. Numbers are weighted to tell
+// the value story: heavy false-positive filter, fast response,
+// thin slice of verified threats.
+export interface PortalSummary {
+  period_days: number;
+  period_start: string;
+  period_end: string;
+  events_handled: number;
+  verified_threats: number;
+  false_positives: number;
+  alarms_total: number;
+  avg_response_sec: number;
+  p95_response_sec: number;
+  within_sla: number;
+  over_sla: number;
+}
+
+export function MOCK_PORTAL_SUMMARY(days: number): PortalSummary {
+  const events = Math.round(4.2 * days);
+  return {
+    period_days: days,
+    period_start: new Date(Date.now() - days * 86_400_000).toISOString(),
+    period_end:   new Date().toISOString(),
+    events_handled:   events,
+    verified_threats: Math.round(events * 0.06),
+    false_positives:  Math.round(events * 0.68),
+    alarms_total:     events,
+    avg_response_sec: 38,
+    p95_response_sec: 142,
+    within_sla:       Math.round(events * 0.94),
+    over_sla:         Math.round(events * 0.06),
+  };
+}
 
 // ── Shift Handoffs ──
 

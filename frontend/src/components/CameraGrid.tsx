@@ -355,7 +355,7 @@ export default function CameraGrid({
             saveSavedLayouts(updated);
             return updated;
         });
-    }, [staticAssignments, staticPreset, currentLayout, cols]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [activeLayoutName, staticAssignments, staticPreset, currentLayout, cols]);
 
     // --- Load Layout ---
     const handleLoadLayout = (layout: SavedLayout) => {

@@ -9,6 +9,7 @@ import { usePortalStore } from '@/stores/portal-store';
 import { ThemeProvider, ThemeToggle } from '@/hooks/useTheme';
 import ErrorBoundary from '@/components/shared/ErrorBoundary';
 import PendingReviewQueue from '@/components/portal/PendingReviewQueue';
+import HandledForYouPanel from '@/components/portal/HandledForYouPanel';
 import Logo from '@/components/shared/Logo';
 import UserChip from '@/components/shared/UserChip';
 // Side-effect import: registering the Skeleton component injects its
@@ -230,6 +231,10 @@ function PortalInner() {
         </div>
 
         <div className="portal-content">
+
+          <ErrorBoundary>
+            <HandledForYouPanel />
+          </ErrorBoundary>
 
           {/* ── MORNING BRIEFING BANNER ── */}
           {criticalUnread.length > 0 && (

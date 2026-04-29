@@ -273,6 +273,67 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
             ))}
           </div>
 
+          {(() => {
+            const dc = incident.disposition_code;
+            const isInformational = !!dc && (dc.startsWith('false') || dc.startsWith('no-action'));
+            const dispBg     = isInformational ? 'rgba(122,138,153,0.15)' : 'rgba(192,49,26,0.15)';
+            const dispColor  = isInformational ? '#9ca3af' : '#e87060';
+            const dispBorder = isInformational ? 'rgba(122,138,153,0.30)' : 'rgba(192,49,26,0.30)';
+            const labelStyle = { fontSize: 9, color: T.text3, textTransform: 'uppercase' as const, letterSpacing: 0.6, marginBottom: 2 };
+            const monoValStyle = { color: T.text, fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" };
+            const showPanel = incident.operator_callsign || incident.disposition_label || (incident.duration_ms && incident.duration_ms > 0);
+            if (!showPanel) return null;
+            return (
+            <div style={{ padding: '16px 18px', borderBottom: `1px solid ${T.border}`, background: 'rgba(34,197,94,0.04)' }}>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 700, marginBottom: 12, color: T.green, display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🛡</span> How the SOC handled this
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, fontSize: 11 }}>
+                {incident.operator_callsign && (
+                  <div>
+                    <div style={labelStyle}>Operator</div>
+                    <div style={monoValStyle}>{incident.operator_callsign}</div>
+                  </div>
+                )}
+                {incident.duration_ms !== undefined && incident.duration_ms > 0 && (
+                  <div>
+                    <div style={labelStyle}>Time to resolve</div>
+                    <div style={monoValStyle}>{formatDuration(incident.duration_ms)}</div>
+                  </div>
+                )}
+                {incident.disposition_label && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={labelStyle}>Outcome</div>
+                    <div style={{
+                      display: 'inline-block',
+                      padding: '3px 10px', borderRadius: 4,
+                      fontSize: 11, fontWeight: 600,
+                      background: dispBg,
+                      color: dispColor,
+                      border: `1px solid ${dispBorder}`,
+                    }}>
+                      {incident.disposition_label}
+                    </div>
+                  </div>
+                )}
+                {incident.operator_notes && (
+                  <div style={{ gridColumn: '1 / -1' }}>
+                    <div style={{ fontSize: 9, color: T.text3, textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 2 }}>Operator notes</div>
+                    <div style={{
+                      fontSize: 11, color: T.text2, lineHeight: 1.5,
+                      padding: '8px 10px', borderRadius: 4,
+                      background: T.bgPanel, border: `1px solid ${T.border}`,
+                      whiteSpace: 'pre-wrap',
+                    }}>
+                      {incident.operator_notes}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            );
+          })()}
+
           {/* Event Timeline */}
           <div style={{ padding: '16px 18px', borderBottom: `1px solid ${T.border}` }}>
             <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 700, marginBottom: 12 }}>Event Timeline</div>

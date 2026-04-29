@@ -69,6 +69,14 @@ var panelActions = map[string]panelAction{
 // maintenance burden of keeping N Go structs in lockstep with firmware.
 func HandleMilesightGet(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// GET still gates to admin/supervisor: the vendor CGI returns
+		// network and credential fields that customer-side users at
+		// the camera's site shouldn't see, even if they have read
+		// access to the camera itself.
+		if !requireAdminOrSupervisor(r) {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
 		cam, code, err := resolveMilesightCamera(r, db)
 		if err != nil {
 			http.Error(w, err.Error(), code)

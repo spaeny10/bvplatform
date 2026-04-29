@@ -13,7 +13,7 @@ export default function PopoutPage() {
 
     useEffect(() => {
         if (!cameraId) return;
-        const token = localStorage.getItem('auth_token');
+        const token = localStorage.getItem('ironsight_token');
         fetch(`/api/cameras/${cameraId}`, {
             headers: token ? { Authorization: `Bearer ${token}` } : {},
         })

@@ -182,7 +182,10 @@ func (db *DB) ListSupportTicketsForOrg(ctx context.Context, orgID, statusFilter 
 		q += " AND t.status = $2"
 		args = append(args, statusFilter)
 	}
-	q += " ORDER BY t.last_message_at DESC"
+	// Cap the result set. A long-lived org could accumulate thousands
+	// of tickets; the customer portal lists the most recent and only
+	// needs a single page at a time.
+	q += " ORDER BY t.last_message_at DESC LIMIT 200"
 
 	rows, err := db.Pool.Query(ctx, q, args...)
 	if err != nil {

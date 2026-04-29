@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
@@ -195,6 +196,36 @@ func HandleMFADisable(db *database.DB) http.HandlerFunc {
 
 		if err := db.DisableMFA(r.Context(), userID); err != nil {
 			http.Error(w, "disable failed", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// HandleAdminMFAReset lets an admin or soc_supervisor wipe MFA for
+// any user without needing the user's TOTP code. The caller only needs
+// an admin-level JWT. Used when a user loses their authenticator and
+// has no recovery codes.
+//
+// POST /api/v1/users/{id}/mfa/reset
+func HandleAdminMFAReset(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		targetID, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "invalid user id", http.StatusBadRequest)
+			return
+		}
+		if err := db.DisableMFA(r.Context(), targetID); err != nil {
+			http.Error(w, "reset failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
