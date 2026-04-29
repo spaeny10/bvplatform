@@ -22,7 +22,7 @@ Everything worth knowing lives under [`frontend/Documents/`](frontend/Documents)
 |---|---|
 | [`Roadmap.md`](frontend/Documents/Roadmap.md) | **Start here.** What's shipped, what's next, priority order. |
 | [`Ironsight_Architecture.md`](frontend/Documents/Ironsight_Architecture.md) | Runtime architecture, RBAC, workflows, recording policy, Milesight integration. |
-| [`MasterDeployment.md`](frontend/Documents/MasterDeployment.md) | Ubuntu + Docker deployment, GPU setup, operational runbook. |
+| [`MasterDeployment.md`](frontend/Documents/MasterDeployment.md) | Production deployment guide (Linux + Docker or Podman), GPU setup, operational runbook. |
 | [`Rebrand.md`](frontend/Documents/Rebrand.md) | How to rename the product / swap colors / replace assets. |
 | [`HOUSEKEEPING.md`](frontend/Documents/HOUSEKEEPING.md) | Design token system, light/dark theming. |
 | [`MobileAppPlan.md`](frontend/Documents/MobileAppPlan.md) | Mobile apps (customer + operator) — paused, planning captured. |

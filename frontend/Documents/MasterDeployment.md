@@ -1,10 +1,12 @@
-# Ironsight — Master Deployment Guide (Ubuntu + Docker)
+# Ironsight — Master Deployment Guide
 
-This document is the canonical reference for deploying Ironsight on Ubuntu hosts using Docker. It assumes Docker Engine 24+ and Compose v2. Every code path the document mentions is file:line-referenced so you can audit the claim.
+This document is the canonical reference for deploying Ironsight on Linux hosts. Every code path the document mentions is file:line-referenced so you can audit the claim.
+
+> **Runtime: Docker or Podman.** `docker-compose.yml` is Compose v2 syntax — both `docker compose up -d` and `podman compose up -d` parse it identically. Anywhere this guide says `docker compose ...` you can substitute `podman compose ...` with the same result. The Dockerfiles build under `docker build` or `podman build` interchangeably. **§3 covers Docker on Ubuntu (the recommended production target); §3.99 covers Podman on Windows + WSL2 (the developer-mode path).** Pick the runtime your ops team is fastest with — switching later is a config change, not a code change. See the Roadmap doc for the runtime-choice rationale.
 
 The target deployments this guide covers, in order of complexity:
 
-1. **Single-host dev / staging** — one Ubuntu VM, `docker compose up -d`.
+1. **Single-host dev / staging** — one Linux VM, `docker compose up -d` (or `podman compose up -d`).
 2. **Single-host production** — the same, plus reverse proxy, TLS, host-level hardening.
 3. **Multi-host production** — multiple recorder hosts close to cameras, a central API host, a managed Postgres, shared object storage. Requires the Phase 2 / Phase 3 work tracked separately.
 
