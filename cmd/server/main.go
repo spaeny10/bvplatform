@@ -977,10 +977,19 @@ func main() {
 	// events) BEFORE seedDemoUsers so users can be linked to existing
 	// orgs. Idempotent: skips entirely if any of the demo orgs already
 	// exists, so restarts don't pile on duplicate events.
-	seedDemoPortfolio(context.Background(), db)
+	//
+	// LOCAL PATCH (sso-patches branch — see external/IRONSIGHT_LOCAL_PATCHES.md):
+	// Demo seeding gated behind IRONSIGHT_SEED_DEMO=true so production
+	// deployments stay clean. Matches the intent of phase plan P1-B-09
+	// (which moves seeding into a separate cmd/seed/main.go binary).
+	if os.Getenv("IRONSIGHT_SEED_DEMO") == "true" {
+		seedDemoPortfolio(context.Background(), db)
 
-	// Seed demo platform users (SOC operators and portal users) if they don't exist
-	seedDemoUsers(context.Background(), db)
+		// Seed demo platform users (SOC operators and portal users) if they don't exist
+		seedDemoUsers(context.Background(), db)
+	} else {
+		log.Println("[SEED] IRONSIGHT_SEED_DEMO != true; skipping seedDemoPortfolio + seedDemoUsers")
+	}
 
 	// Root context for all background goroutines. Cancelled on SIGINT /
 	// SIGTERM so the WS hub, recording engine, retention manager, and
