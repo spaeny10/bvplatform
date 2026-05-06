@@ -38,6 +38,18 @@ type Config struct {
 	JWTSecret        string // sign/verify JWTs; set JWT_SECRET in env
 	DefaultAdminPass string // auto-created admin password on first run
 
+	// SSO via reverse-proxy header trust. When SSOTrustHeader == "email", the
+	// API trusts an "X-Forwarded-Email" header injected by an upstream proxy
+	// (oauth2-proxy + NPM in the BigView deployment) and skips JWT entirely.
+	// Empty (default) keeps the original JWT-only flow. SSOAdminEmails is a
+	// comma-separated allowlist; addresses on it become admin on first sight,
+	// so a freshly-deployed system can be administered without a DB seed step.
+	// SSODefaultRole is what every other SSO-provisioned user gets ("viewer"
+	// is the least-privilege role, recommended).
+	SSOTrustHeader  string
+	SSOAdminEmails  []string
+	SSODefaultRole  string
+
 	// CORS allowlist for the API. Comma-separated origins in the env;
 	// the helper splits on commas and trims whitespace. UL 827B
 	// reviewers will look for this to be locked down to the
@@ -161,6 +173,17 @@ func Load() *Config {
 		// jobs in-process). Docker-compose prod sets RUN_WORKERS=false on
 		// the api service and spins a separate `worker` container.
 		RunWorkers: getEnvBool("RUN_WORKERS", true),
+
+		// SSO header-trust. Empty == JWT-only (default). Set
+		// SSO_TRUST_HEADER=email to opt in, then SSO_ADMIN_EMAILS to
+		// auto-promote initial admins, and SSO_DEFAULT_ROLE for the
+		// rest. Only enable behind a trusted reverse proxy (oauth2-proxy
+		// + NPM in the BigView deployment) that strips inbound copies
+		// of X-Forwarded-Email; otherwise any client could impersonate
+		// any user.
+		SSOTrustHeader:  getEnv("SSO_TRUST_HEADER", ""),
+		SSOAdminEmails:  parseAllowedOrigins(getEnv("SSO_ADMIN_EMAILS", "")),
+		SSODefaultRole:  getEnv("SSO_DEFAULT_ROLE", "viewer"),
 	}
 	return cfg
 }

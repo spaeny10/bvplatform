@@ -38,7 +38,17 @@ export class AlertStream {
   private reconnectAttempts = 0;
 
   constructor(wsUrl?: string) {
-    this.url = wsUrl || `ws://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:8080/ws/alerts`;
+    // Default to same-origin WebSocket. Proto follows page scheme so HTTPS
+    // pages correctly upgrade to wss, host follows window.location so
+    // reverse-proxy deployments don't need a hardcoded port.
+    if (wsUrl) {
+      this.url = wsUrl;
+    } else if (typeof window !== 'undefined') {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      this.url = `${proto}//${window.location.host}/ws/alerts`;
+    } else {
+      this.url = 'ws://localhost:8080/ws/alerts';
+    }
   }
 
   /** Current connection status */

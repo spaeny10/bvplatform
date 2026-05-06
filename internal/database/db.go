@@ -925,6 +925,48 @@ func (db *DB) CreateUser(ctx context.Context, c *UserCreate, passwordHash string
 	return u, nil
 }
 
+// GetOrCreateUserByEmail looks up a user by case-insensitive email; if not
+// found, creates a new user with the given role. Used by the reverse-proxy
+// header-trust SSO middleware: oauth2-proxy authenticates the user against
+// Google, NPM forwards X-Forwarded-Email, and on first sight we materialize
+// a row so downstream RBAC has something to attach permissions to.
+//
+// Username is derived from the email's local-part with the at-sign and
+// anything after stripped (caleb@example.com → caleb). DisplayName mirrors
+// it. Password hash is set to "!sso!" — a sentinel that can never validate
+// against bcrypt, so the row exists for ID/role purposes but cannot be used
+// for password login.
+func (db *DB) GetOrCreateUserByEmail(ctx context.Context, email, role string) (*User, error) {
+	if email == "" {
+		return nil, nil
+	}
+	// Try lookup first.
+	if u, _ := db.GetUserByUsernameOrEmail(ctx, email); u != nil {
+		return u, nil
+	}
+	// Derive a stable username from the local-part. Collisions are
+	// possible across domains (caleb@a.com vs caleb@b.com) — append the
+	// domain on conflict.
+	localPart := email
+	if i := strings.Index(email, "@"); i > 0 {
+		localPart = email[:i]
+	}
+	username := localPart
+	for tries := 0; tries < 5; tries++ {
+		if existing, _ := db.GetUserByUsernameOrEmail(ctx, username); existing == nil {
+			break
+		}
+		username = fmt.Sprintf("%s.%d", localPart, tries+1)
+	}
+	c := &UserCreate{
+		Username:    username,
+		Role:        role,
+		DisplayName: localPart,
+		Email:       email,
+	}
+	return db.CreateUser(ctx, c, "!sso!")
+}
+
 // GetUserByUsernameOrEmail retrieves a user by username or email (case-insensitive email match)
 func (db *DB) GetUserByUsernameOrEmail(ctx context.Context, identifier string) (*User, error) {
 	var u User
