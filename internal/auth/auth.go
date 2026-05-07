@@ -9,7 +9,14 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const defaultSecret = "onvif-tool-change-me-in-production"
+// ErrEmptySecret is returned when SignToken/ParseToken is called with an
+// empty signing secret. Production callers must plumb a non-empty secret
+// from internal/config.Config.JWTSecret, which itself fails fast at boot
+// if JWT_SECRET is unset (see internal/config/config.go:requireSecret).
+// We refuse the empty-secret path explicitly so a future caller that
+// forgets to plumb the secret fails loudly instead of silently signing
+// with a known constant.
+var ErrEmptySecret = errors.New("auth: empty signing secret")
 
 // Claims is the JWT payload. jwt.RegisteredClaims provides the
 // standard `jti` (JWT ID), `exp`, and `iat` fields — UL 827B's
@@ -43,7 +50,7 @@ func CheckPassword(hash, plain string) bool {
 // it alongside the user-facing audit row if needed.
 func SignToken(userID, username, role, displayName, organizationID, secret string) (token string, jti string, err error) {
 	if secret == "" {
-		secret = defaultSecret
+		return "", "", ErrEmptySecret
 	}
 	jti = uuid.NewString()
 	claims := Claims{
@@ -66,7 +73,7 @@ func SignToken(userID, username, role, displayName, organizationID, secret strin
 // ParseToken validates a JWT string and returns its claims
 func ParseToken(tokenStr, secret string) (*Claims, error) {
 	if secret == "" {
-		secret = defaultSecret
+		return nil, ErrEmptySecret
 	}
 	tok, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
