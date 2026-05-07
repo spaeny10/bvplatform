@@ -127,6 +127,14 @@ type Config struct {
 	MediaMTXRTSPAddr   string // host[:port] the local RTSP relay listens on (recording engine pulls from this)
 	MediaMTXAPIAddr    string // host[:port] of MediaMTX's HTTP control API — runtime path adds/removes go here
 	                          // so we stop round-tripping YAML config through a shared volume.
+
+	// WebRTCAdditionalHosts is a list of hostnames or IPs MediaMTX advertises
+	// in WebRTC ICE candidates in addition to its own bound interface(s). In
+	// docker-compose deployments MediaMTX otherwise only sees its bridge IP
+	// (e.g. 172.19.0.5), which the browser cannot reach — every WHEP session
+	// then times out with "deadline exceeded while waiting connection". Set
+	// WEBRTC_ADDITIONAL_HOSTS to fred's LAN IP and/or public hostname.
+	WebRTCAdditionalHosts []string
 }
 
 // Load reads configuration from environment variables with defaults
@@ -165,6 +173,11 @@ func Load() *Config {
 		MediaMTXWebRTCAddr: getEnv("MEDIAMTX_WEBRTC_ADDR", "127.0.0.1:8889"),
 		MediaMTXRTSPAddr:   getEnv("MEDIAMTX_RTSP_ADDR", "127.0.0.1:18554"),
 		MediaMTXAPIAddr:    getEnv("MEDIAMTX_API_ADDR", "127.0.0.1:9997"),
+
+		// Empty = only advertise interfaces MediaMTX picks up itself
+		// (the docker bridge IP, in compose). For LAN browsers, set
+		// WEBRTC_ADDITIONAL_HOSTS to the host's LAN IP (or public hostname).
+		WebRTCAdditionalHosts: parseAllowedOrigins(getEnv("WEBRTC_ADDITIONAL_HOSTS", "")),
 
 		RedisURL:       getEnv("REDIS_URL", ""),
 		RedisWSChannel: getEnv("REDIS_WS_CHANNEL", "ironsight:ws:broadcast"),
