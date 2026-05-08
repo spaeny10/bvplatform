@@ -22,17 +22,19 @@ ENV CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64
 
-# Three binaries: api (the HTTP server), worker (batch jobs), and seed
-# (one-shot demo-data loader for staging only — see cmd/seed/main.go and
-# phase-plan task P1-B-09). They live in a single image so the ops
-# story stays simple — `docker compose` picks which entrypoint each
-# service runs, and operators run the seed binary on demand via
-# `docker compose run --rm api /app/seed --all` (staging only — never
-# against production). Sharing the base layer keeps the registry
-# footprint low; the binaries themselves are ~22 MB + ~15 MB + ~12 MB.
-RUN go build -trimpath -ldflags "-s -w" -o /out/server ./cmd/server && \
-    go build -trimpath -ldflags "-s -w" -o /out/worker ./cmd/worker && \
-    go build -trimpath -ldflags "-s -w" -o /out/seed ./cmd/seed
+# Four binaries: api (the HTTP server), worker (batch jobs), seed (one-shot
+# demo-data loader for staging only — see cmd/seed/main.go and phase-plan
+# task P1-B-09), and migrate (operator CLI for goose-tracked migrations,
+# P1-B-01). They live in a single image so the ops story stays simple:
+# `docker compose` picks which entrypoint each service runs, operators run
+# `docker compose run --rm api /app/seed --all` for demo data (staging only),
+# and `docker compose run --rm api /app/migrate <subcommand>` for migration
+# inspection / rollback. Sharing the base layer keeps the registry footprint
+# low; the binaries are each ~10–25 MB compressed.
+RUN go build -trimpath -ldflags "-s -w" -o /out/server  ./cmd/server  && \
+    go build -trimpath -ldflags "-s -w" -o /out/worker  ./cmd/worker  && \
+    go build -trimpath -ldflags "-s -w" -o /out/seed    ./cmd/seed    && \
+    go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate
 
 # ── Stage 2: runtime ───────────────────────────────────────────
 # We pick bookworm-slim over distroless because the server shells out to
@@ -57,9 +59,10 @@ RUN groupadd --system --gid ${APP_GID} ironsight && \
     useradd  --system --uid ${APP_UID} --gid ironsight --home /app ironsight
 
 WORKDIR /app
-COPY --from=build --chown=ironsight:ironsight /out/server /app/server
-COPY --from=build --chown=ironsight:ironsight /out/worker /app/worker
-COPY --from=build --chown=ironsight:ironsight /out/seed   /app/seed
+COPY --from=build --chown=ironsight:ironsight /out/server  /app/server
+COPY --from=build --chown=ironsight:ironsight /out/worker  /app/worker
+COPY --from=build --chown=ironsight:ironsight /out/seed    /app/seed
+COPY --from=build --chown=ironsight:ironsight /out/migrate /app/migrate
 
 # Storage paths live under /data by convention. docker-compose mounts a
 # named volume (or a host path) at /data; the Go server gets pointed at

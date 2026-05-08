@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
 	"ironsight/internal/ai"
 	"ironsight/internal/indexer"
@@ -28,6 +30,7 @@ import (
 	"ironsight/internal/onvif"
 	"ironsight/internal/recording"
 	"ironsight/internal/streaming"
+	"ironsight/migrations"
 	"strings"
 )
 
@@ -54,7 +57,36 @@ func main() {
 	}
 	defer db.Close()
 
+	// Apply goose-tracked migrations before any other DB-touching startup
+	// runs. The 0001_baseline.sql migration is idempotent against fred's
+	// already-populated schema (every CREATE / ADD CONSTRAINT / TRIGGER
+	// is guarded), so on fred this just records "version 1 applied" in
+	// goose_db_version and changes nothing else. On a fresh DB it builds
+	// the full schema from scratch. Subsequent migrations (P1-B-02 onward)
+	// will land in migrations/000N_*.sql and be picked up automatically
+	// via the //go:embed directive in the migrations package.
+	//
+	// We bridge the existing pgxpool to database/sql via pgx's stdlib
+	// helper so goose (which is database/sql-only) shares the same pool
+	// rather than opening a second connection. The bridge *sql.DB is
+	// closed before we exit so we don't leak the wrapping handles.
+	gooseDB := stdlib.OpenDBFromPool(db.Pool)
+	if err := goose.SetDialect("postgres"); err != nil {
+		log.Fatalf("[FATAL] goose.SetDialect: %v", err)
+	}
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.UpContext(context.Background(), gooseDB, "."); err != nil {
+		gooseDB.Close()
+		log.Fatalf("[FATAL] goose.Up: %v", err)
+	}
+	gooseDB.Close()
+	log.Println("[MIGRATIONS] goose up applied; see goose_db_version for current version")
+
 	// Auto-migrate: add new columns if they don't exist
+	// NOTE: this inline block is the legacy path scheduled for extraction
+	// in P1-B-02. It runs AFTER goose so any column/index it adds is also
+	// present on a fresh-from-baseline DB. Once P1-B-02 lands, every ALTER
+	// here becomes a numbered migration file and this block is deleted.
 	_, err = db.Pool.Exec(context.Background(), `
 		-- Camera device class: 'continuous' = traditional always-on IP
 		-- camera (RTSP stream + ONVIF subscription, current behavior),
