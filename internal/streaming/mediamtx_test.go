@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"onvif-tool/internal/config"
+	"ironsight/internal/config"
 )
 
 // writeConfigForTest builds an MediaMTXServer with the given config, redirects

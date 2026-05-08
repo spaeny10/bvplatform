@@ -29,10 +29,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/recording"
 )
 
 const (

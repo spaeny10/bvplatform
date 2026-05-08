@@ -14,8 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HandleSenseWebhook is the inbound endpoint for Milesight Sense / SC4xx

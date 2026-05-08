@@ -10,14 +10,14 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/detection"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/onvif"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/detection"
+	"ironsight/internal/notify"
+	"ironsight/internal/onvif"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
 )
 
 // NewRouter creates the HTTP router with all API routes

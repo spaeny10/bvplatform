@@ -32,13 +32,13 @@ import (
 	"syscall"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/export"
-	"onvif-tool/internal/indexer"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/export"
+	"ironsight/internal/indexer"
+	"ironsight/internal/notify"
+	"ironsight/internal/recording"
 )
 
 func main() {

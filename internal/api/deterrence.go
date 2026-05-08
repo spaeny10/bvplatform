@@ -12,9 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // DeterrenceRequest is the body for POST /api/cameras/{id}/deterrence. All

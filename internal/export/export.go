@@ -31,8 +31,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // pollInterval is how often the worker checks the DB for pending jobs.

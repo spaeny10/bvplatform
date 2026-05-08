@@ -1,4 +1,4 @@
-module onvif-tool
+module ironsight
 
 go 1.25.0
 

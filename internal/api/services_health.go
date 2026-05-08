@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // ─────────────────────────────────────────────────────────────────────

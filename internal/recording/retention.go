@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // RetentionManager periodically cleans up old recording segments based on:

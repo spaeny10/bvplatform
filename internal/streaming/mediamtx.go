@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
-	"onvif-tool/internal/config"
+	"ironsight/internal/config"
 )
 
 // MediaMTXServer manages a MediaMTX process for WebRTC streaming

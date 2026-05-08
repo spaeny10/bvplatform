@@ -15,8 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // Engine manages FFmpeg recording processes for all cameras

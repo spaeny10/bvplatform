@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // ── Login ─────────────────────────────────────────────────────────────────

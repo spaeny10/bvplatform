@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
 )
 
 // HandleListMyNotificationSubs returns the authenticated user's

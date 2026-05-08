@@ -45,7 +45,7 @@ That one edit flows through to:
 |---|---|---|
 | Demo user emails (`@ironsight.io`) | [cmd/server/main.go](../../cmd/server/main.go) — seed block, 6 occurrences | Seed data only matters on first boot of a fresh DB. Fix once; existing installs are unaffected. |
 | Documentation prose | `frontend/Documents/*.md` | Docs say "Ironsight does X". Find-replace at rename time. |
-| Go module name (`onvif-tool`) | [go.mod](../../go.mod) | Internal identifier, zero user impact. Renaming would churn every `import` statement. Don't. |
+| ~~Go module name (`onvif-tool`)~~ | — | **Renamed to `ironsight` 2026-05-08 (P1-B-07).** Module declaration in `go.mod` and all `ironsight/internal/...` imports now match the brand. |
 | DB name (`onvif_tool`) | [.env.example](../../.env.example), [docker-compose.yml](../../docker-compose.yml) | Renaming requires a DB migration for existing deployments. Pick one at release and stick with it. |
 | Container names (`ironsight-*`) | [docker-compose.yml](../../docker-compose.yml) | Parameterize via `COMPOSE_PROJECT_NAME=newname` in `.env` — containers become `newname-api`, etc. No code change. |
 | `localStorage` keys (`ironsight_token`) | scattered across the frontend | Renaming these logs every user out. Leave alone. |

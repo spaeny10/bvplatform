@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // RecordingHealth is one row of the /api/recording/health response. Values are

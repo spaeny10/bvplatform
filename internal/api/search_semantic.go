@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // SemanticMatch is one row of /api/search/semantic output — a segment whose

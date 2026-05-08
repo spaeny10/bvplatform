@@ -14,11 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/drivers"
-	"onvif-tool/internal/onvif"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/database"
+	"ironsight/internal/drivers"
+	"ironsight/internal/onvif"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
 )
 
 // SubscriberRegistry tracks ONVIF event subscribers per camera so they can be
