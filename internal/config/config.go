@@ -135,6 +135,42 @@ type Config struct {
 	// then times out with "deadline exceeded while waiting connection". Set
 	// WEBRTC_ADDITIONAL_HOSTS to fred's LAN IP and/or public hostname.
 	WebRTCAdditionalHosts []string
+
+	// AI pipeline endpoints — the YOLO (detection) and Qwen (reasoning) HTTP
+	// sidecars that the api and the worker call for event analysis and
+	// background VLM indexing. Defaults point at the in-host loopback ports
+	// our docker-compose layout publishes; production overrides set the
+	// sibling-container hostnames. AIEnabled is the kill-switch — set
+	// AI_ENABLED=false to short-circuit every AI call back to a stub.
+	AIYOLOURL string
+	AIQwenURL string
+	AIEnabled bool
+
+	// GortCameras opts a subset of cameras out of the FFmpeg recorder and into
+	// the pure-Go (gortsplib) recorder. Comma-separated list of full UUIDs or
+	// 8-char prefixes; entries are parsed once at startup. Empty (default)
+	// keeps every camera on FFmpeg. The recorder engine consults this at
+	// camera-start time, and /api/recording/health reports per-camera engine
+	// choice using the same set.
+	GortCameras []string
+
+	// Indexer — VLM segment-description background worker. IndexerConcurrency
+	// is the number of goroutines (clamped 1-16 at load time; values outside
+	// the range fall back to default 1). IndexerEnabled gates the whole
+	// subsystem. IndexerMinAgeSec is the minimum age in seconds before a
+	// closed segment becomes eligible for indexing — guards against racing a
+	// still-writing file.
+	IndexerConcurrency int
+	IndexerEnabled     bool
+	IndexerMinAgeSec   int
+
+	// WorkerLeaderDisabled skips the Postgres advisory-lock leader election
+	// in the worker binary. Single-binary dev (api runs the worker loops
+	// in-process via RUN_WORKERS=true) sets this to true so a sibling worker
+	// process — if one ever launches by accident — doesn't deadlock on the
+	// lock. Default false: multi-container deploys want exactly-one-leader
+	// semantics.
+	WorkerLeaderDisabled bool
 }
 
 // Load reads configuration from environment variables with defaults
@@ -197,8 +233,63 @@ func Load() *Config {
 		SSOTrustHeader:  getEnv("SSO_TRUST_HEADER", ""),
 		SSOAdminEmails:  parseAllowedOrigins(getEnv("SSO_ADMIN_EMAILS", "")),
 		SSODefaultRole:  getEnv("SSO_DEFAULT_ROLE", "viewer"),
+
+		// AI pipeline endpoints. Defaults match the in-host loopback ports
+		// the docker-compose layout publishes; sibling-container deployments
+		// override with the service DNS names. AI_ENABLED semantics: any
+		// value other than the literal string "false" enables the pipeline
+		// (matches the historical inline check `os.Getenv("AI_ENABLED") != "false"`).
+		AIYOLOURL: getEnv("AI_YOLO_URL", "http://127.0.0.1:8501"),
+		AIQwenURL: getEnv("AI_QWEN_URL", "http://127.0.0.1:8502"),
+		AIEnabled: getEnv("AI_ENABLED", "true") != "false",
+
+		// GORT_CAMERAS — comma-separated UUIDs / 8-char prefixes routed to the
+		// pure-Go recorder. Default empty (everyone on FFmpeg).
+		GortCameras: parseAllowedOrigins(getEnv("GORT_CAMERAS", "")),
+
+		// Indexer settings — see internal/indexer/indexer.go for the worker
+		// loop. Concurrency outside 1..16 falls back to default 1 (matches
+		// the historical clamping behaviour). INDEXER_ENABLED uses the
+		// narrower "0 or case-insensitive false disables" rule that the
+		// indexer's original inline parser used — wider getEnvBool ("no" /
+		// "off" / etc) would silently flip behaviour on existing
+		// deployments using those strings.
+		IndexerConcurrency: clampIndexerConcurrency(getEnvInt("INDEXER_CONCURRENCY", 1)),
+		IndexerEnabled:     indexerEnabledFromEnv(),
+		IndexerMinAgeSec:   getEnvInt("INDEXER_MIN_AGE_SEC", 90),
+
+		// WORKER_LEADER_DISABLED — historical contract is "set to literal 1
+		// to skip leader election". Preserved as an exact-string check so a
+		// value like "true" doesn't silently start triggering the skip path.
+		WorkerLeaderDisabled: os.Getenv("WORKER_LEADER_DISABLED") == "1",
 	}
 	return cfg
+}
+
+// clampIndexerConcurrency mirrors the historical inline check in
+// internal/indexer/indexer.go: only positive values in [1,16] are honoured;
+// everything else falls back to the default 1.
+func clampIndexerConcurrency(n int) int {
+	if n < 1 || n > 16 {
+		return 1
+	}
+	return n
+}
+
+// indexerEnabledFromEnv preserves the indexer's original on/off semantics:
+// default true; INDEXER_ENABLED=0 or INDEXER_ENABLED=false (case-insensitive)
+// disables. Other values keep it on. This is intentionally narrower than the
+// shared getEnvBool helper so a value of "no" / "off" doesn't silently flip
+// behaviour on a deployment that previously left those untreated.
+func indexerEnabledFromEnv() bool {
+	v := os.Getenv("INDEXER_ENABLED")
+	if v == "" {
+		return true
+	}
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
 }
 
 // defaultFFmpegPath picks a sensible default for each platform. Linux ships

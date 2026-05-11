@@ -1050,26 +1050,20 @@ func main() {
 	det := detection.New(hub)
 	log.Println("[DET] ONVIF analytics detection enabled (Profile M cameras)")
 
-	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis
-	aiYOLO := os.Getenv("AI_YOLO_URL")
-	if aiYOLO == "" {
-		aiYOLO = "http://127.0.0.1:8501"
-	}
-	aiQwen := os.Getenv("AI_QWEN_URL")
-	if aiQwen == "" {
-		aiQwen = "http://127.0.0.1:8502"
-	}
+	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis.
+	// Endpoints and the on/off switch come from cfg (env vars AI_YOLO_URL /
+	// AI_QWEN_URL / AI_ENABLED parsed at startup).
 	aiClient := ai.NewClient(ai.Config{
-		YOLOEndpoint: aiYOLO,
-		QwenEndpoint: aiQwen,
-		Enabled:      os.Getenv("AI_ENABLED") != "false",
+		YOLOEndpoint: cfg.AIYOLOURL,
+		QwenEndpoint: cfg.AIQwenURL,
+		Enabled:      cfg.AIEnabled,
 	})
 	aiClient.CheckHealth(context.Background())
 
 	// Persisted runtime metrics for the Services dashboard. Samples
 	// every 30s; rows go to the ai_runtime_metrics hypertable created
 	// during the migration block above.
-	api.StartAIMetricsSampler(context.Background(), db, aiClient, aiYOLO, aiQwen, 30*time.Second)
+	api.StartAIMetricsSampler(context.Background(), db, aiClient, cfg.AIYOLOURL, cfg.AIQwenURL, 30*time.Second)
 
 	// Background VLM indexer: enriches every recording segment with a
 	// searchable description during idle hours. Scales with INDEXER_CONCURRENCY

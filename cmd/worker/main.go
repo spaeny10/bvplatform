@@ -60,8 +60,8 @@ func main() {
 	// worker dependent on AI service availability only at indexing time.
 	aiClient := ai.NewClient(ai.Config{
 		YOLOEndpoint: cfg.DetectionServiceURL, // repurposed; kept non-critical
-		QwenEndpoint: envOr("AI_QWEN_URL", "http://127.0.0.1:8502"),
-		Enabled:      envOr("AI_ENABLED", "true") != "false",
+		QwenEndpoint: cfg.AIQwenURL,
+		Enabled:      cfg.AIEnabled,
 	})
 	// Non-fatal — indexer handles a missing AI gracefully (jobs fail but
 	// retention + exports keep working).
@@ -81,7 +81,7 @@ func main() {
 	// failover happens within ~30s of the leader dying. Set
 	// WORKER_LEADER_DISABLED=1 to skip the lock entirely (single-binary
 	// dev where the api process runs the workers in-process).
-	if os.Getenv("WORKER_LEADER_DISABLED") != "1" {
+	if !cfg.WorkerLeaderDisabled {
 		leader, err := database.AcquireLeader(ctx, cfg.DatabaseURL, "ironsight-worker-loops", 30*time.Second)
 		if err != nil {
 			log.Fatalf("[FATAL] leader election: %v", err)
@@ -158,17 +158,6 @@ func main() {
 	exportWorker.Wait()
 
 	log.Println("[WORKER] Clean shutdown complete")
-}
-
-// envOr is a tiny helper so the worker binary doesn't pull in config.Load()
-// for every one-off env var. Redundant for values cfg already carries; useful
-// for AI endpoints that the worker wants to override independently of the
-// api's config.
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // runMonthlySummary is the auto-emailed monthly report scheduler.

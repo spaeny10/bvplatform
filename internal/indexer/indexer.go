@@ -22,7 +22,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -65,10 +64,12 @@ var yoloInterestingClasses = map[string]bool{
 	"backpack": true, "handbag": true, "suitcase": true,
 }
 
-// Config controls indexer behavior at startup. Read from env in Start().
+// Config controls indexer behavior at startup. Sourced from the central
+// *config.Config (env vars INDEXER_CONCURRENCY / INDEXER_ENABLED /
+// INDEXER_MIN_AGE_SEC) by configFromAppConfig().
 type Config struct {
 	// Concurrency is the number of worker goroutines. 1 on an 8 GB 3070,
-	// 4-8 on A40. Env: INDEXER_CONCURRENCY
+	// 4-8 on A40. Env: INDEXER_CONCURRENCY (clamped 1..16 at load time)
 	Concurrency int
 
 	// Enabled toggles the whole subsystem. Env: INDEXER_ENABLED (default true)
@@ -93,36 +94,32 @@ type Indexer struct {
 	mu       sync.Mutex
 }
 
-// New constructs an Indexer using env-derived config. Does not start any
-// goroutines until Start() is called.
+// New constructs an Indexer using values from the application-wide
+// *config.Config (env-read once at startup). Does not start any goroutines
+// until Start() is called.
 func New(cfg *config.Config, db *database.DB, aic *ai.Client) *Indexer {
 	return &Indexer{
 		db:   db,
 		ai:   aic,
 		cfg:  cfg,
-		icfg: configFromEnv(),
+		icfg: configFromAppConfig(cfg),
 	}
 }
 
-func configFromEnv() Config {
-	c := Config{Concurrency: 1, Enabled: true, MinSegmentAge: 90 * time.Second}
-	if v := os.Getenv("INDEXER_CONCURRENCY"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 16 {
-			c.Concurrency = n
-		}
+// configFromAppConfig translates the slice of *config.Config fields the
+// indexer cares about into its local Config struct. Kept separate from the
+// Indexer constructor so unit tests can build a Config directly without
+// going through env vars.
+func configFromAppConfig(cfg *config.Config) Config {
+	minAge := time.Duration(cfg.IndexerMinAgeSec) * time.Second
+	if minAge <= 0 {
+		minAge = 90 * time.Second
 	}
-	if v := os.Getenv("INDEXER_ENABLED"); v != "" {
-		// "0" / "false" disables; anything else keeps default on.
-		if v == "0" || strings.EqualFold(v, "false") {
-			c.Enabled = false
-		}
+	return Config{
+		Concurrency:   cfg.IndexerConcurrency,
+		Enabled:       cfg.IndexerEnabled,
+		MinSegmentAge: minAge,
 	}
-	if v := os.Getenv("INDEXER_MIN_AGE_SEC"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			c.MinSegmentAge = time.Duration(n) * time.Second
-		}
-	}
-	return c
 }
 
 // Start launches the configured number of worker goroutines. Safe to call

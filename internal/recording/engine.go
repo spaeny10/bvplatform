@@ -65,18 +65,17 @@ func NewEngine(cfg *config.Config, db *database.DB) *Engine {
 }
 
 // useGortRecorder returns true if the given camera should use the pure-Go
-// recorder instead of FFmpeg. Set via env var GORT_CAMERAS as a comma-separated
-// list of full UUIDs or 8-char prefixes. Example:
+// recorder instead of FFmpeg. The set comes from cfg.GortCameras (env var
+// GORT_CAMERAS, parsed at config-load time into a slice of full UUIDs or
+// 8-char prefixes). Example env value:
 //
 //	GORT_CAMERAS=9ca4bcfd,6884a556
-func useGortRecorder(cameraID uuid.UUID) bool {
-	env := os.Getenv("GORT_CAMERAS")
-	if env == "" {
+func useGortRecorder(gortCameras []string, cameraID uuid.UUID) bool {
+	if len(gortCameras) == 0 {
 		return false
 	}
 	id := cameraID.String()
-	for _, raw := range strings.Split(env, ",") {
-		tok := strings.TrimSpace(raw)
+	for _, tok := range gortCameras {
 		if tok == "" {
 			continue
 		}
@@ -113,7 +112,7 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 
 	// Opt-in: use the pure-Go gortsplib recorder for cameras listed in GORT_CAMERAS.
 	// Skips FFmpeg entirely for that camera (no HLS from this engine either).
-	if useGortRecorder(cameraID) {
+	if useGortRecorder(e.cfg.GortCameras, cameraID) {
 		gr := NewGortRecorder(cameraID, cameraName, rtspURI, outputDir, e.db, time.Duration(e.cfg.SegmentDuration)*time.Second)
 		if err := gr.Start(); err != nil {
 			return err

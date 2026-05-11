@@ -184,7 +184,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Recording-health snapshot for operators + customers. Per-camera
 		// stats over the last 24h + traffic-light status so silent recording
 		// failures surface in the UI instead of in server logs.
-		r.Get("/recording/health", HandleRecordingHealth(db))
+		r.Get("/recording/health", HandleRecordingHealth(cfg, db))
 
 		// Evidence export: bundles an event into a .zip with clip.mp4,
 		// snapshot.jpg, event.json, README.txt for police / insurance reports.
