@@ -10,13 +10,36 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ironsight/internal/config"
 	"ironsight/internal/database"
 )
+
+// decorateEventPlaybackURLs walks an event slice and writes a signed
+// /media/v1/<token>#t=... URL into the PlaybackURL field of every event
+// that joined to a segment row. Done in the handler (not the DB layer)
+// because URL-signing needs the caller's user_id + the JWT secret.
+//
+// Mutates in place — the slice is the actual response payload, no
+// allocations beyond the per-row token strings.
+func decorateEventPlaybackURLs(cfg *config.Config, userID string, events []database.Event) {
+	if cfg == nil || userID == "" {
+		return
+	}
+	for i := range events {
+		if events[i].SegmentFilePath == "" {
+			continue
+		}
+		events[i].PlaybackURL = MintSegmentPlaybackURL(
+			cfg, userID, events[i].CameraID.String(),
+			events[i].SegmentFilePath, events[i].SegmentStart, events[i].EventTime,
+		)
+	}
+}
 
 // HandleQueryEvents returns filtered events for a time range. Enforces
 // per-user site-based visibility: admins / SOC roles see all cameras,
 // customer-side roles only see events from their assigned cameras.
-func HandleQueryEvents(db *database.DB) http.HandlerFunc {
+func HandleQueryEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -53,6 +76,7 @@ func HandleQueryEvents(db *database.DB) http.HandlerFunc {
 		if events == nil {
 			events = []database.Event{}
 		}
+		decorateEventPlaybackURLs(cfg, claims.UserID, events)
 		writeJSON(w, events)
 	}
 }
@@ -169,8 +193,9 @@ func HandleGetRecordings(db *database.DB) http.HandlerFunc {
 
 // SearchEventsResponse wraps HandleSearchEvents's output with meta useful for
 // the SOC / customer history UI. Each event already has PlaybackURL populated
-// by QueryEvents's JOIN; the meta fields let the caller paginate and know
-// how many total events match without a second query.
+// by decorateEventPlaybackURLs (signed /media/v1/<token> bound to the caller);
+// the meta fields let the caller paginate and know how many total events match
+// without a second query.
 type SearchEventsResponse struct {
 	Events     []database.Event `json:"events"`
 	NextOffset int              `json:"next_offset"`
@@ -187,7 +212,7 @@ type SearchEventsResponse struct {
 // yields playable rows: each event record carries the segment path + seek
 // offset. RBAC matches /api/events — customer-side roles only see events on
 // their assigned cameras.
-func HandleSearchEvents(db *database.DB) http.HandlerFunc {
+func HandleSearchEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -237,6 +262,7 @@ func HandleSearchEvents(db *database.DB) http.HandlerFunc {
 		if events == nil {
 			events = []database.Event{}
 		}
+		decorateEventPlaybackURLs(cfg, claims.UserID, events)
 
 		resp := SearchEventsResponse{
 			Events:     events,

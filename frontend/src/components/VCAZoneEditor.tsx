@@ -7,6 +7,7 @@ import {
   syncVCARules, getVCASnapshotURL,
 } from '@/lib/api';
 import { vcaPullPreview, vcaPullApply, VCAPullResult } from '@/lib/milesight';
+import { mintMediaToken } from '@/lib/media';
 
 // ── Rule type config ──
 const RULE_TYPES = [
@@ -76,10 +77,19 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       }
     } catch { /* try fallback */ }
 
-    // Attempt 2: HLS live stream frame (grab first frame of the sub-stream m3u8)
+    // Attempt 2: HLS live stream frame (grab first frame of the sub-stream m3u8).
+    // P1-A-03: mint a signed /media/v1/<token> URL for the playlist. The
+    // playlist's inner segment URIs are already self-signed by the
+    // backend rewriter, so the <video> element follows them with no
+    // extra plumbing here.
     try {
-      const hlsUrl = `/hls/${cameraId}/sub_live.m3u8`;
-      const res = await fetch(hlsUrl, { headers });
+      const minted = await mintMediaToken({
+        camera_id: cameraId, kind: 'hls', path: 'sub_live.m3u8',
+      });
+      const hlsUrl = minted.url;
+      // The signed URL carries its own auth — no Authorization header
+      // needed (and chi's media-serve handler doesn't read one anyway).
+      const res = await fetch(hlsUrl);
       if (res.ok) {
         // If HLS exists, use a video element to grab a frame
         const video = document.createElement('video');

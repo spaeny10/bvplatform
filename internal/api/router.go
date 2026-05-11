@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +22,15 @@ import (
 // NewRouter creates the HTTP router with all API routes
 func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher, aiClient *ai.Client) http.Handler {
 	r := chi.NewRouter()
+
+	// P1-A-03: spin up the media-serve audit ring buffer. Every
+	// /media/v1/<token> hit enqueues one row; the auditor batches 100
+	// rows or 5 seconds (whichever is first) into audit_log. The
+	// goroutine outlives this constructor — cmd/server doesn't yet
+	// have an api-package shutdown hook, so we accept the leak on
+	// process exit (the OS reclaims the goroutine when main() returns).
+	mediaAuditor := newMediaAuditor(db)
+	mediaAuditor.Start()
 
 	// Middleware
 	r.Use(middleware.Logger)
@@ -142,7 +150,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Post("/discover/preview", HandleDiscoverPreview())
 
 		// Events & Timeline
-		r.Get("/events", HandleQueryEvents(db))
+		r.Get("/events", HandleQueryEvents(cfg, db))
 		r.Get("/timeline", HandleGetTimeline(db))
 		r.Get("/timeline/coverage", HandleGetCoverage(db))
 
@@ -167,19 +175,19 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Unified historical search: events (filtered by RBAC) with playback
 		// URLs resolved in one round trip. Frontend uses this to render a
 		// clickable list — each row carries the segment + seek offset.
-		r.Get("/search/events", HandleSearchEvents(db))
+		r.Get("/search/events", HandleSearchEvents(cfg, db))
 
 		// Semantic / keyword search over VLM-generated segment descriptions.
 		// Populated by the background indexer — any minute of recording is
 		// searchable by natural-language content ("red jacket", "ladder",
 		// "delivery truck"), not just by event-rule name.
-		r.Get("/search/semantic", HandleSemanticSearch(db))
+		r.Get("/search/semantic", HandleSemanticSearch(cfg, db))
 
 		// Unified safety + security frame search for the /search page.
 		// Returns shaped SearchResult[] matching the frontend type, unioning
 		// VLM-described segments with SOC alarms (so PPE violation filters
 		// and natural-language queries hit the same result list).
-		r.Post("/search/frames", HandleSearchFrames(db))
+		r.Post("/search/frames", HandleSearchFrames(cfg, db))
 
 		// Recording-health snapshot for operators + customers. Per-camera
 		// stats over the last 24h + traffic-light status so silent recording
@@ -441,8 +449,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Playback segment lookup (returns JSON with MP4 segment URLs) and
 		// HLS VOD playlist. Inside the auth group — handlers use CanAccessCamera
 		// to restrict playback to the caller's authorized cameras.
-		r.Get("/playback/{id}", HandlePlayback(db))
-		r.Get("/playback/{id}/playlist.m3u8", HandlePlaybackHLS(db))
+		r.Get("/playback/{id}", HandlePlayback(cfg, db))
+		r.Get("/playback/{id}/playlist.m3u8", HandlePlaybackHLS(cfg, db))
+
+		// P1-A-03 mint endpoint. JWT-authenticated; caller asks for a
+		// short-lived signed URL bound to (camera_id, kind, path) and
+		// gets back /media/v1/<token>. Tenant scope is enforced here
+		// AND re-enforced in HandleMediaServe.
+		r.Post("/media/mint", HandleMediaMint(cfg, db))
 	})
 
 	// Camera snapshot — public so <img> tags in the SOC feed can load without a Bearer token.
@@ -455,25 +469,25 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 	// Playback endpoints registered inside the /api auth group above.
 
-	// Static file serving for HLS segments
-	r.Handle("/hls/*", http.StripPrefix("/hls/", http.FileServer(http.Dir(cfg.HLSPath))))
+	// P1-A-03: authenticated media serving. Replaces the three bare
+	// http.FileServer registrations that previously served /hls/*,
+	// /recordings/*, and /snapshots/* with no authentication and no
+	// tenant scoping. The token in the URL is the authorization — the
+	// handler validates it, re-checks CanAccessCamera against the
+	// current DB state, then streams the file. See docs/media-auth.md.
+	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor))
 
 	// WebRTC WHEP proxy to MediaMTX
 	if mtxServer != nil {
 		r.Handle("/webrtc/*", http.StripPrefix("/webrtc", mtxServer.WHEPHandler()))
 	}
 
-	// Static file serving for recordings playback
-	r.Handle("/recordings/*", http.StripPrefix("/recordings/", http.FileServer(http.Dir(cfg.StoragePath))))
-
-	// Static file serving for alarm event snapshots (JPEG frames captured at detection time)
-	// Stored alongside recordings: {storageBase}/snapshots/{cameraID}/{alarmID}.jpg
-	if cfg.StoragePath != "" {
-		snapshotsDir := filepath.Join(filepath.Dir(cfg.StoragePath), "snapshots")
-		r.Handle("/snapshots/*", http.StripPrefix("/snapshots/", http.FileServer(http.Dir(snapshotsDir))))
-	}
-
-	// Static file serving for exports
+	// Static file serving for exports. NOTE: /exports is operator-only
+	// (admin / supervisor / soc_operator), bundled evidence ZIPs are
+	// already gated at the /api/events/{id}/export create path so the
+	// resulting download URLs are obscure-enough for the moment. A
+	// separate hardening task (P1-A-03 follow-up) can fold this into
+	// the same /media/v1/ scheme if Caleb wants belt-and-braces.
 	r.Handle("/exports/*", http.StripPrefix("/exports/", http.FileServer(http.Dir(cfg.ExportPath))))
 
 	return r

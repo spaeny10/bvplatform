@@ -14,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/drivers"
 	"ironsight/internal/onvif"
@@ -752,8 +754,10 @@ func HandlePTZPrewarm(db *database.DB) http.HandlerFunc {
 	}
 }
 
-// HandlePlayback finds the recorded MP4 segment(s) that cover a given time and returns their URLs as JSON
-func HandlePlayback(db *database.DB) http.HandlerFunc {
+// HandlePlayback finds the recorded MP4 segment(s) that cover a given time
+// and returns their URLs as JSON. URLs are P1-A-03 signed /media/v1/<token>
+// — each segment gets its own short-lived token bound to (camera, file).
+func HandlePlayback(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -800,7 +804,11 @@ func HandlePlayback(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		// Build a list of segment URLs
+		// Build a list of segment URLs. Each segment gets its own 5-min
+		// signed token. The frontend caches these (the player's segment-
+		// list cache window is up to ~1 h) — if a token has expired by
+		// the time the user scrubs back to it, the player will get 401
+		// and the cache layer re-fetches the segment list.
 		type segInfo struct {
 			URL       string `json:"url"`
 			StartTime string `json:"start_time"`
@@ -809,8 +817,16 @@ func HandlePlayback(db *database.DB) http.HandlerFunc {
 		}
 		var result []segInfo
 		for _, seg := range segments {
+			leaf := strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")
+			tok, terr := auth.SignMediaToken(claims.UserID, id.String(), auth.MediaKindSegment, leaf, cfg.JWTSecret, DefaultMediaTTL)
+			if terr != nil {
+				// Bad path (shouldn't happen — seg.FilePath is server-
+				// authored). Skip the row so a single malformed file
+				// doesn't poison the whole playback response.
+				continue
+			}
 			result = append(result, segInfo{
-				URL:       "/recordings/" + id.String() + "/" + strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/"),
+				URL:       "/media/v1/" + tok,
 				StartTime: seg.StartTime.Format(time.RFC3339),
 				EndTime:   seg.EndTime.Format(time.RFC3339),
 				Duration:  seg.DurationMs,
@@ -828,7 +844,8 @@ func HandlePlayback(db *database.DB) http.HandlerFunc {
 
 // HandlePlaybackHLS generates a dynamic HLS VOD playlist (M3U8) from recorded segments.
 // This allows HLS.js to manage all buffering, seeking, and segment transitions natively.
-func HandlePlaybackHLS(db *database.DB) http.HandlerFunc {
+// Segment URIs are P1-A-03 signed /media/v1/<token>; HLS.js follows them as-is.
+func HandlePlaybackHLS(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
@@ -914,7 +931,16 @@ func HandlePlaybackHLS(db *database.DB) http.HandlerFunc {
 				durSec = 5.0 // fallback
 			}
 
-			segURL := "/recordings/" + id.String() + "/" + strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")
+			leaf := strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")
+			// One signed token per segment — same shape we use for the
+			// JSON-segment-list endpoint. Player TTL is the standard
+			// 5 min; the playlist itself isn't cached (Cache-Control:
+			// no-cache below) so a re-fetch always gets fresh tokens.
+			tok, terr := auth.SignMediaToken(claims.UserID, id.String(), auth.MediaKindSegment, leaf, cfg.JWTSecret, DefaultMediaTTL)
+			if terr != nil {
+				continue
+			}
+			segURL := "/media/v1/" + tok
 
 			// Add discontinuity marker if there's a gap between segments (>2s gap)
 			if i > 0 {

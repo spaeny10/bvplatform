@@ -9,6 +9,7 @@ import { useIncidents } from '@/hooks/useIncidents';
 import { useAuth } from '@/contexts/AuthContext';
 import { listSecurityEvents } from '@/lib/ironsight-api';
 import type { SecurityEventRecord } from '@/lib/ironsight-api';
+import { mintMediaToken } from '@/lib/media';
 import Link from 'next/link';
 
 /* IRONSight Steel & Fire tokens */
@@ -49,20 +50,21 @@ export default function SiteDrilldownPage({ params }: { params: { id: string } }
     : null;
 
   useEffect(() => {
-    if (!selectedFullEvent) {
+    if (!selectedFullEvent || !selectedFullEvent.alarm_id) {
       setSnapshotUrl(null);
       return;
     }
-    const url = selectedFullEvent.alarm_id
-      ? `/snapshots/${selectedFullEvent.camera_id}/${selectedFullEvent.alarm_id}.jpg`
-      : null;
-    if (!url) { setSnapshotUrl(null); return; }
 
     let cancelled = false;
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
-    fetch(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    // P1-A-03: mint a signed /media/v1/<token> URL for the snapshot
+    // file. The naming convention <alarm_id>.jpg under the camera's
+    // snapshot dir is preserved on disk; only the URL shape changed.
+    mintMediaToken({
+      camera_id: selectedFullEvent.camera_id,
+      kind: 'snapshot',
+      path: `${selectedFullEvent.alarm_id}.jpg`,
     })
+      .then(({ url }) => fetch(url))
       .then(r => r.ok ? r.blob() : Promise.reject(r.status))
       .then(blob => {
         if (!cancelled && blob && blob.size > 0) {

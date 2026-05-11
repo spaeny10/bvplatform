@@ -169,8 +169,26 @@ type Event struct {
 
 	// PlaybackURL is a convenience field computed at read time for clients
 	// that want a ready-to-use URL pointing at the segment and seeked to the
-	// event offset (e.g. /recordings/{camera}/seg_….mp4#t=12.5). Not stored.
+	// event offset (e.g. /media/v1/{token}#t=12.5). Not stored.
+	//
+	// As of P1-A-03 this is populated by the API handler (which has access
+	// to the caller's claims + JWT secret to mint a per-user signed token),
+	// not the DB layer. QueryEvents fills SegmentFilePath and SegmentStart
+	// instead so the handler can derive both the URL and the seek offset.
 	PlaybackURL string `json:"playback_url,omitempty"`
+
+	// SegmentFilePath is the absolute on-disk path the segmenter wrote for
+	// the segment containing this event (e.g. /data/storage/<cam>/seg_….mp4).
+	// Populated when the event row joins to a segment row. The API layer
+	// uses this + the camera UUID to mint a signed media URL. Excluded
+	// from the JSON payload — clients receive PlaybackURL, not the raw
+	// path, so the on-disk layout never leaves the server.
+	SegmentFilePath string `json:"-"`
+
+	// SegmentStart is the wall-clock start time of the linked segment;
+	// the handler subtracts EventTime to compute the #t= seek offset.
+	// Like SegmentFilePath, excluded from JSON.
+	SegmentStart time.Time `json:"-"`
 }
 
 // EventQuery is used to filter events for timeline search

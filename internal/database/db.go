@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -688,25 +687,18 @@ func (db *DB) QueryEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 		}
 		e.SegmentID = segID
 		if segPath != nil && segStart != nil {
-			e.PlaybackURL = buildPlaybackURL(e.CameraID.String(), *segPath, *segStart, e.EventTime)
+			// Surface the raw segment info on the Event struct. The API
+			// layer (which has the caller's claims + JWT secret) mints
+			// the signed /media/v1/<token>#t=... URL and writes it back
+			// into PlaybackURL before the response is encoded. This
+			// keeps URL-signing out of the DB layer (it doesn't know
+			// about the auth package and shouldn't).
+			e.SegmentFilePath = *segPath
+			e.SegmentStart = *segStart
 		}
 		events = append(events, e)
 	}
 	return events, nil
-}
-
-// buildPlaybackURL returns a /recordings/... URL for a segment with a #t= seek
-// offset positioned at the event moment. segFilePath is the absolute filesystem
-// path the segmenter wrote (e.g. D:/recordings/<camera>/seg_…mp4); we drop the
-// directory and prefix with /recordings/<camera>/ so the static file server
-// can serve it.
-func buildPlaybackURL(cameraID, segFilePath string, segStart, eventTime time.Time) string {
-	base := filepath.Base(segFilePath)
-	offset := eventTime.Sub(segStart).Seconds()
-	if offset < 0 || offset > 7200 {
-		return fmt.Sprintf("/recordings/%s/%s", cameraID, base)
-	}
-	return fmt.Sprintf("/recordings/%s/%s#t=%.1f", cameraID, base, offset)
 }
 
 // GetTimelineBuckets returns aggregated event counts per time interval for the timeline UI
