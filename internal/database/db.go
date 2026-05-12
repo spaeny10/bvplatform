@@ -421,19 +421,37 @@ func (db *DB) UpdateVCARuleSync(ctx context.Context, id uuid.UUID, synced bool, 
 // Segment Operations
 // ============================================================
 
-// InsertSegment records a new video segment
+// InsertSegment records a new video segment. video_codec is written when
+// non-empty; an empty VideoCodec field results in a NULL column value, which
+// the serve handler later replaces via lazy probe-on-first-request.
 func (db *DB) InsertSegment(ctx context.Context, s *Segment) error {
+	var codec interface{}
+	if s.VideoCodec != "" {
+		codec = s.VideoCodec
+	}
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio)
+		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio, video_codec)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio, codec)
+	return err
+}
+
+// UpdateSegmentVideoCodec backfills the video_codec column for an existing
+// segment row. Used by the serve handler when it lazy-probes a segment that
+// was recorded before migration 0002 landed. No-op (no error) if the row
+// doesn't exist — that race is harmless; the next playback request will
+// re-probe.
+func (db *DB) UpdateSegmentVideoCodec(ctx context.Context, segmentID int64, codec string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE segments SET video_codec = $1 WHERE id = $2 AND video_codec IS NULL`,
+		codec, segmentID)
 	return err
 }
 
 // GetSegments returns segments for a camera within a time range
 func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end time.Time) ([]Segment, error) {
 	rows, err := db.Pool.Query(ctx, `
-		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false)
+		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false), COALESCE(video_codec, '')
 		FROM segments
 		WHERE camera_id = $1 AND start_time <= $2 AND end_time >= $3
 		ORDER BY start_time ASC`, cameraID, end, start)
@@ -445,7 +463,7 @@ func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end ti
 	var segments []Segment
 	for rows.Next() {
 		var s Segment
-		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio); err != nil {
+		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio, &s.VideoCodec); err != nil {
 			return nil, err
 		}
 		segments = append(segments, s)

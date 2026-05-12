@@ -151,6 +151,13 @@ type Segment struct {
 	FileSize   int64     `json:"file_size"`
 	DurationMs int       `json:"duration_ms"`
 	HasAudio   bool      `json:"has_audio"`
+	// VideoCodec is the lowercase codec_name from ffprobe ("h264", "hevc",
+	// etc.) captured at index time. Empty string means "unknown / not
+	// probed yet" — typically only true for rows older than migration
+	// 0002. The recorded-playback serve handler uses this to decide
+	// whether to pass the file through or route it through transcoding;
+	// empty triggers a lazy probe-and-backfill on first request.
+	VideoCodec string `json:"video_codec,omitempty"`
 }
 
 // Event represents a metadata event (motion, LPR, object detection, etc.)

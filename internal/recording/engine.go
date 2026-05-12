@@ -770,6 +770,17 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					startTime = info.ModTime().Add(-time.Duration(r.segmentDur) * time.Second)
 				}
 
+				// Probe the codec so the recorded-playback serve handler can
+				// decide pass-through vs transcode without ffprobing every
+				// segment on every request. Probe failure is non-fatal: leave
+				// VideoCodec empty and the serve handler will lazy-probe on
+				// first request. Don't block indexing on a slow/missing
+				// ffprobe.
+				videoCodec, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
+				if codecErr != nil {
+					log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
+				}
+
 				segment := &database.Segment{
 					CameraID:   r.cameraID,
 					StartTime:  startTime,
@@ -778,6 +789,7 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					FileSize:   info.Size(),
 					DurationMs: r.segmentDur * 1000,
 					HasAudio:   r.hasAudio,
+					VideoCodec: videoCodec,
 				}
 
 				if err := r.db.InsertSegment(ctx, segment); err != nil {

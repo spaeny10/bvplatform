@@ -32,6 +32,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	mediaAuditor := newMediaAuditor(db)
 	mediaAuditor.Start()
 
+	// LOCAL-11: registry that serialises concurrent transcode requests
+	// for the same HEVC segment so we don't burn fred CPU running the
+	// same ffmpeg job in parallel for a popular segment.
+	transcoder := newTranscodeRegistry()
+
 	// Middleware
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -475,7 +480,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// tenant scoping. The token in the URL is the authorization — the
 	// handler validates it, re-checks CanAccessCamera against the
 	// current DB state, then streams the file. See docs/media-auth.md.
-	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor))
+	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor, transcoder))
 
 	// WebRTC WHEP proxy to MediaMTX
 	if mtxServer != nil {

@@ -365,7 +365,7 @@ func HandleMediaMint(cfg *config.Config, db *database.DB) http.HandlerFunc {
 //	tenant scope check fails (camera deleted, user demoted, etc.) → 404
 //	file missing on disk → 404 (same response as cross-tenant: don't leak)
 //	path traversal somehow survives → 400 (should be unreachable post-parse)
-func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor) http.HandlerFunc {
+func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor, transcoder *transcodeRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := chi.URLParam(r, "token")
 		if tokenStr == "" {
@@ -440,6 +440,28 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		if claims.Kind == auth.MediaKindHLS && strings.HasSuffix(strings.ToLower(claims.Path), ".m3u8") {
 			serveRewrittenM3U8(w, r, cfg, claims, absPath)
 			return
+		}
+
+		// LOCAL-11: HEVC recorded-playback bridge. If the source is a
+		// non-browser-playable codec (HEVC), produce or reuse a cached
+		// H.264 copy and serve that instead. Pass-through for H.264.
+		// See ironsight/feature-requests/hevc-recorded-playback.md.
+		if transcoder != nil {
+			servePath, terr := transcoder.maybeTranscodeForBrowser(cfg, claims, absPath)
+			if terr != nil {
+				log.Printf("[MEDIA] transcode failed for cam=%s path=%s: %v", claims.CameraID, claims.Path, terr)
+				http.Error(w, "media unavailable", http.StatusInternalServerError)
+				return
+			}
+			if servePath != absPath {
+				// Refresh stat / info from the cache file so http.ServeContent
+				// reports the correct size + ModTime for Range requests.
+				cInfo, cErr := os.Stat(servePath)
+				if cErr == nil && !cInfo.IsDir() {
+					absPath = servePath
+					info = cInfo
+				}
+			}
 		}
 
 		// Content-type hint for the common cases. http.ServeContent
