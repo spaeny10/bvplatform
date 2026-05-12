@@ -763,6 +763,21 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					continue // Skip tiny/incomplete files
 				}
 
+				// LOCAL-10: only process files this recorder run produced.
+				// Files older than startedAt are already in the DB from
+				// prior runs (the segments hypertable has no UNIQUE
+				// constraint on (camera_id, file_path) yet, so duplicate
+				// InsertSegment calls on every restart bloat the table by
+				// ~9.5K rows per camera per startup — and on 27M-row
+				// tables each InsertSegment is slow enough that the
+				// rescan never finishes before the next ffmpeg stall +
+				// restart, blocking fresh segments from being indexed
+				// at all). Mark as seen and skip entirely.
+				if info.ModTime().Before(startedAt) {
+					seen[name] = true
+					continue
+				}
+
 				// Only do the expensive 2-second stability check for files that
 				// could still be actively written (modified recently). Old files
 				// from previous sessions are already complete on disk — sleeping
