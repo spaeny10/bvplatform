@@ -745,7 +745,19 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					continue
 				}
 
-				filePath := filepath.Join(r.outputDir, entry.Name())
+				// LOCAL-10: only index files that match the segment-output
+				// pattern this recorder is writing — seg_*.mp4 (continuous
+				// mode) or ring_*.mp4 (event mode). The previous loop
+				// also picked up `ffmpeg_stderr.log` (4-9 KB, passes the
+				// size gate) and indexed it as a "segment". That row then
+				// flows through the timeline endpoint and the player tries
+				// to render the text log as video. Filter at the source.
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".mp4") || (!strings.HasPrefix(name, "seg_") && !strings.HasPrefix(name, "ring_")) {
+					continue
+				}
+
+				filePath := filepath.Join(r.outputDir, name)
 				info, err := entry.Info()
 				if err != nil || info.Size() < 1000 {
 					continue // Skip tiny/incomplete files
