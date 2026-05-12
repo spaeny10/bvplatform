@@ -772,13 +772,28 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 
 				// Probe the codec so the recorded-playback serve handler can
 				// decide pass-through vs transcode without ffprobing every
-				// segment on every request. Probe failure is non-fatal: leave
-				// VideoCodec empty and the serve handler will lazy-probe on
-				// first request. Don't block indexing on a slow/missing
-				// ffprobe.
-				videoCodec, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
-				if codecErr != nil {
-					log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
+				// segment on every request.
+				//
+				// Scope-limited to segments produced by THIS recorder run
+				// (mtime after startedAt). On startup, watchSegments re-
+				// scans every existing file in the camera dir — for a
+				// 9.5 K-file backlog at ~100 ms/probe that's a 16-minute
+				// stall before any fresh segment gets indexed, which we
+				// can't accept. Old segments inherit a NULL `video_codec`
+				// and get lazy-probed on first playback request via the
+				// /media/v1 handler (which writes back via
+				// db.UpdateSegmentVideoCodec).
+				//
+				// Probe failure on a fresh segment is non-fatal: leave
+				// VideoCodec empty and the serve handler will lazy-probe.
+				var videoCodec string
+				if info.ModTime().After(startedAt) {
+					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
+					if codecErr != nil {
+						log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
+					} else {
+						videoCodec = vc
+					}
 				}
 
 				segment := &database.Segment{
