@@ -9,8 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/detection"
+	"ironsight/internal/database"
+	"ironsight/internal/detection"
 )
 
 // HandleDetectLatest handles GET /api/cameras/{id}/detect

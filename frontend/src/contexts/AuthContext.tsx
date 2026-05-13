@@ -114,26 +114,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             return;
         }
 
+        // Always probe /auth/me — even without a stored token. Behind a
+        // reverse proxy that injects X-Forwarded-Email (BigView's NPM +
+        // oauth2-proxy), the API will identify the user from the header
+        // and we never need a JWT. With a stored token we still pass it
+        // (Bearer) so emergency local-login users get the same flow.
         const storedToken = localStorage.getItem(TOKEN_KEY);
-        if (!storedToken) {
-            setReady(true);
-            return;
-        }
+        const headers: Record<string, string> = {};
+        if (storedToken) headers.Authorization = `Bearer ${storedToken}`;
 
-        fetch('/auth/me', {
-            headers: { Authorization: `Bearer ${storedToken}` },
-        })
+        fetch('/auth/me', { headers, credentials: 'same-origin' })
             .then(res => {
-                if (!res.ok) throw new Error('token invalid');
+                if (!res.ok) throw new Error('not authenticated');
                 return res.json() as Promise<AuthUser>;
             })
             .then(u => {
-                setToken(storedToken);
+                if (storedToken) setToken(storedToken);
                 setUser(u);
                 localStorage.setItem(USER_KEY, JSON.stringify(u));
             })
             .catch(() => {
-                // Token expired or invalid — clear it
+                // No SSO header AND no valid token — clear any stale state.
                 localStorage.removeItem(TOKEN_KEY);
                 localStorage.removeItem(USER_KEY);
             })
@@ -185,7 +186,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (
         <AuthContext.Provider value={{
             user, token, login, logout,
-            isAuthenticated: !!token,
+            // Authenticated if we have either a JWT (local-login flow) OR a
+            // user object (header-trust SSO populates user without a token).
+            isAuthenticated: !!user || !!token,
             hasPermission, canAccess,
         }}>
             {children}

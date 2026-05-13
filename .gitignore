@@ -10,6 +10,21 @@ bin/mediamtx
 bin/mediamtx_runtime.yml
 bin/mediamtx.log
 
+# ── Python build artefacts ─────────────────────────────────────
+# CPython bytecode cache directories and compiled files. Historically
+# escaped into the repo from the now-removed FastAPI tree (P1-B-06)
+# and from the YOLO + Qwen sidecar services. Never want them tracked.
+__pycache__/
+*.pyc
+*.pyo
+
+# Local-dev SQLite databases. The old FastAPI tree shipped a
+# 32 KB ironsight.db committed by accident. Real persistence is
+# Postgres in compose; SQLite is dev-only at most.
+*.db
+*.sqlite
+*.sqlite-journal
+
 # ── AI model weights ───────────────────────────────────────────
 # PyTorch checkpoints are 10-120 MB each and should live in a model
 # registry (S3, HuggingFace, or a download script), not git. If a model

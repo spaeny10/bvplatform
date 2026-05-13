@@ -18,11 +18,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/avs"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/evidence"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/avs"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/evidence"
+	"ironsight/internal/recording"
 )
 
 // EvidenceManifest is serialized as event.json inside the downloaded ZIP.

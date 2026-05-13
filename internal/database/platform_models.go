@@ -5,7 +5,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/avs"
+	"ironsight/internal/avs"
 )
 
 // ═══════════════════════════════════════════════════════════════

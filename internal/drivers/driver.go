@@ -8,7 +8,7 @@ import (
 	"context"
 	"strings"
 
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/onvif"
 )
 
 // CameraDriver is the interface that manufacturer-specific drivers implement.

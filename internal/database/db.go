@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -422,19 +421,37 @@ func (db *DB) UpdateVCARuleSync(ctx context.Context, id uuid.UUID, synced bool, 
 // Segment Operations
 // ============================================================
 
-// InsertSegment records a new video segment
+// InsertSegment records a new video segment. video_codec is written when
+// non-empty; an empty VideoCodec field results in a NULL column value, which
+// the serve handler later replaces via lazy probe-on-first-request.
 func (db *DB) InsertSegment(ctx context.Context, s *Segment) error {
+	var codec interface{}
+	if s.VideoCodec != "" {
+		codec = s.VideoCodec
+	}
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio)
+		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio, video_codec)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio, codec)
+	return err
+}
+
+// UpdateSegmentVideoCodec backfills the video_codec column for an existing
+// segment row. Used by the serve handler when it lazy-probes a segment that
+// was recorded before migration 0002 landed. No-op (no error) if the row
+// doesn't exist — that race is harmless; the next playback request will
+// re-probe.
+func (db *DB) UpdateSegmentVideoCodec(ctx context.Context, segmentID int64, codec string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE segments SET video_codec = $1 WHERE id = $2 AND video_codec IS NULL`,
+		codec, segmentID)
 	return err
 }
 
 // GetSegments returns segments for a camera within a time range
 func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end time.Time) ([]Segment, error) {
 	rows, err := db.Pool.Query(ctx, `
-		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false)
+		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false), COALESCE(video_codec, '')
 		FROM segments
 		WHERE camera_id = $1 AND start_time <= $2 AND end_time >= $3
 		ORDER BY start_time ASC`, cameraID, end, start)
@@ -446,7 +463,7 @@ func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end ti
 	var segments []Segment
 	for rows.Next() {
 		var s Segment
-		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio); err != nil {
+		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio, &s.VideoCodec); err != nil {
 			return nil, err
 		}
 		segments = append(segments, s)
@@ -688,25 +705,18 @@ func (db *DB) QueryEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 		}
 		e.SegmentID = segID
 		if segPath != nil && segStart != nil {
-			e.PlaybackURL = buildPlaybackURL(e.CameraID.String(), *segPath, *segStart, e.EventTime)
+			// Surface the raw segment info on the Event struct. The API
+			// layer (which has the caller's claims + JWT secret) mints
+			// the signed /media/v1/<token>#t=... URL and writes it back
+			// into PlaybackURL before the response is encoded. This
+			// keeps URL-signing out of the DB layer (it doesn't know
+			// about the auth package and shouldn't).
+			e.SegmentFilePath = *segPath
+			e.SegmentStart = *segStart
 		}
 		events = append(events, e)
 	}
 	return events, nil
-}
-
-// buildPlaybackURL returns a /recordings/... URL for a segment with a #t= seek
-// offset positioned at the event moment. segFilePath is the absolute filesystem
-// path the segmenter wrote (e.g. D:/recordings/<camera>/seg_…mp4); we drop the
-// directory and prefix with /recordings/<camera>/ so the static file server
-// can serve it.
-func buildPlaybackURL(cameraID, segFilePath string, segStart, eventTime time.Time) string {
-	base := filepath.Base(segFilePath)
-	offset := eventTime.Sub(segStart).Seconds()
-	if offset < 0 || offset > 7200 {
-		return fmt.Sprintf("/recordings/%s/%s", cameraID, base)
-	}
-	return fmt.Sprintf("/recordings/%s/%s#t=%.1f", cameraID, base, offset)
 }
 
 // GetTimelineBuckets returns aggregated event counts per time interval for the timeline UI
@@ -923,6 +933,48 @@ func (db *DB) CreateUser(ctx context.Context, c *UserCreate, passwordHash string
 		return nil, err
 	}
 	return u, nil
+}
+
+// GetOrCreateUserByEmail looks up a user by case-insensitive email; if not
+// found, creates a new user with the given role. Used by the reverse-proxy
+// header-trust SSO middleware: oauth2-proxy authenticates the user against
+// Google, NPM forwards X-Forwarded-Email, and on first sight we materialize
+// a row so downstream RBAC has something to attach permissions to.
+//
+// Username is derived from the email's local-part with the at-sign and
+// anything after stripped (caleb@example.com → caleb). DisplayName mirrors
+// it. Password hash is set to "!sso!" — a sentinel that can never validate
+// against bcrypt, so the row exists for ID/role purposes but cannot be used
+// for password login.
+func (db *DB) GetOrCreateUserByEmail(ctx context.Context, email, role string) (*User, error) {
+	if email == "" {
+		return nil, nil
+	}
+	// Try lookup first.
+	if u, _ := db.GetUserByUsernameOrEmail(ctx, email); u != nil {
+		return u, nil
+	}
+	// Derive a stable username from the local-part. Collisions are
+	// possible across domains (caleb@a.com vs caleb@b.com) — append the
+	// domain on conflict.
+	localPart := email
+	if i := strings.Index(email, "@"); i > 0 {
+		localPart = email[:i]
+	}
+	username := localPart
+	for tries := 0; tries < 5; tries++ {
+		if existing, _ := db.GetUserByUsernameOrEmail(ctx, username); existing == nil {
+			break
+		}
+		username = fmt.Sprintf("%s.%d", localPart, tries+1)
+	}
+	c := &UserCreate{
+		Username:    username,
+		Role:        role,
+		DisplayName: localPart,
+		Email:       email,
+	}
+	return db.CreateUser(ctx, c, "!sso!")
 }
 
 // GetUserByUsernameOrEmail retrieves a user by username or email (case-insensitive email match)

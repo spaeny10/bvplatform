@@ -38,6 +38,18 @@ type Config struct {
 	JWTSecret        string // sign/verify JWTs; set JWT_SECRET in env
 	DefaultAdminPass string // auto-created admin password on first run
 
+	// SSO via reverse-proxy header trust. When SSOTrustHeader == "email", the
+	// API trusts an "X-Forwarded-Email" header injected by an upstream proxy
+	// (oauth2-proxy + NPM in the BigView deployment) and skips JWT entirely.
+	// Empty (default) keeps the original JWT-only flow. SSOAdminEmails is a
+	// comma-separated allowlist; addresses on it become admin on first sight,
+	// so a freshly-deployed system can be administered without a DB seed step.
+	// SSODefaultRole is what every other SSO-provisioned user gets ("viewer"
+	// is the least-privilege role, recommended).
+	SSOTrustHeader  string
+	SSOAdminEmails  []string
+	SSODefaultRole  string
+
 	// CORS allowlist for the API. Comma-separated origins in the env;
 	// the helper splits on commas and trims whitespace. UL 827B
 	// reviewers will look for this to be locked down to the
@@ -115,6 +127,50 @@ type Config struct {
 	MediaMTXRTSPAddr   string // host[:port] the local RTSP relay listens on (recording engine pulls from this)
 	MediaMTXAPIAddr    string // host[:port] of MediaMTX's HTTP control API — runtime path adds/removes go here
 	                          // so we stop round-tripping YAML config through a shared volume.
+
+	// WebRTCAdditionalHosts is a list of hostnames or IPs MediaMTX advertises
+	// in WebRTC ICE candidates in addition to its own bound interface(s). In
+	// docker-compose deployments MediaMTX otherwise only sees its bridge IP
+	// (e.g. 172.19.0.5), which the browser cannot reach — every WHEP session
+	// then times out with "deadline exceeded while waiting connection". Set
+	// WEBRTC_ADDITIONAL_HOSTS to fred's LAN IP and/or public hostname.
+	WebRTCAdditionalHosts []string
+
+	// AI pipeline endpoints — the YOLO (detection) and Qwen (reasoning) HTTP
+	// sidecars that the api and the worker call for event analysis and
+	// background VLM indexing. Defaults point at the in-host loopback ports
+	// our docker-compose layout publishes; production overrides set the
+	// sibling-container hostnames. AIEnabled is the kill-switch — set
+	// AI_ENABLED=false to short-circuit every AI call back to a stub.
+	AIYOLOURL string
+	AIQwenURL string
+	AIEnabled bool
+
+	// GortCameras opts a subset of cameras out of the FFmpeg recorder and into
+	// the pure-Go (gortsplib) recorder. Comma-separated list of full UUIDs or
+	// 8-char prefixes; entries are parsed once at startup. Empty (default)
+	// keeps every camera on FFmpeg. The recorder engine consults this at
+	// camera-start time, and /api/recording/health reports per-camera engine
+	// choice using the same set.
+	GortCameras []string
+
+	// Indexer — VLM segment-description background worker. IndexerConcurrency
+	// is the number of goroutines (clamped 1-16 at load time; values outside
+	// the range fall back to default 1). IndexerEnabled gates the whole
+	// subsystem. IndexerMinAgeSec is the minimum age in seconds before a
+	// closed segment becomes eligible for indexing — guards against racing a
+	// still-writing file.
+	IndexerConcurrency int
+	IndexerEnabled     bool
+	IndexerMinAgeSec   int
+
+	// WorkerLeaderDisabled skips the Postgres advisory-lock leader election
+	// in the worker binary. Single-binary dev (api runs the worker loops
+	// in-process via RUN_WORKERS=true) sets this to true so a sibling worker
+	// process — if one ever launches by accident — doesn't deadlock on the
+	// lock. Default false: multi-container deploys want exactly-one-leader
+	// semantics.
+	WorkerLeaderDisabled bool
 }
 
 // Load reads configuration from environment variables with defaults
@@ -154,6 +210,11 @@ func Load() *Config {
 		MediaMTXRTSPAddr:   getEnv("MEDIAMTX_RTSP_ADDR", "127.0.0.1:18554"),
 		MediaMTXAPIAddr:    getEnv("MEDIAMTX_API_ADDR", "127.0.0.1:9997"),
 
+		// Empty = only advertise interfaces MediaMTX picks up itself
+		// (the docker bridge IP, in compose). For LAN browsers, set
+		// WEBRTC_ADDITIONAL_HOSTS to the host's LAN IP (or public hostname).
+		WebRTCAdditionalHosts: parseAllowedOrigins(getEnv("WEBRTC_ADDITIONAL_HOSTS", "")),
+
 		RedisURL:       getEnv("REDIS_URL", ""),
 		RedisWSChannel: getEnv("REDIS_WS_CHANNEL", "ironsight:ws:broadcast"),
 
@@ -161,8 +222,74 @@ func Load() *Config {
 		// jobs in-process). Docker-compose prod sets RUN_WORKERS=false on
 		// the api service and spins a separate `worker` container.
 		RunWorkers: getEnvBool("RUN_WORKERS", true),
+
+		// SSO header-trust. Empty == JWT-only (default). Set
+		// SSO_TRUST_HEADER=email to opt in, then SSO_ADMIN_EMAILS to
+		// auto-promote initial admins, and SSO_DEFAULT_ROLE for the
+		// rest. Only enable behind a trusted reverse proxy (oauth2-proxy
+		// + NPM in the BigView deployment) that strips inbound copies
+		// of X-Forwarded-Email; otherwise any client could impersonate
+		// any user.
+		SSOTrustHeader:  getEnv("SSO_TRUST_HEADER", ""),
+		SSOAdminEmails:  parseAllowedOrigins(getEnv("SSO_ADMIN_EMAILS", "")),
+		SSODefaultRole:  getEnv("SSO_DEFAULT_ROLE", "viewer"),
+
+		// AI pipeline endpoints. Defaults match the in-host loopback ports
+		// the docker-compose layout publishes; sibling-container deployments
+		// override with the service DNS names. AI_ENABLED semantics: any
+		// value other than the literal string "false" enables the pipeline
+		// (matches the historical inline check `os.Getenv("AI_ENABLED") != "false"`).
+		AIYOLOURL: getEnv("AI_YOLO_URL", "http://127.0.0.1:8501"),
+		AIQwenURL: getEnv("AI_QWEN_URL", "http://127.0.0.1:8502"),
+		AIEnabled: getEnv("AI_ENABLED", "true") != "false",
+
+		// GORT_CAMERAS — comma-separated UUIDs / 8-char prefixes routed to the
+		// pure-Go recorder. Default empty (everyone on FFmpeg).
+		GortCameras: parseAllowedOrigins(getEnv("GORT_CAMERAS", "")),
+
+		// Indexer settings — see internal/indexer/indexer.go for the worker
+		// loop. Concurrency outside 1..16 falls back to default 1 (matches
+		// the historical clamping behaviour). INDEXER_ENABLED uses the
+		// narrower "0 or case-insensitive false disables" rule that the
+		// indexer's original inline parser used — wider getEnvBool ("no" /
+		// "off" / etc) would silently flip behaviour on existing
+		// deployments using those strings.
+		IndexerConcurrency: clampIndexerConcurrency(getEnvInt("INDEXER_CONCURRENCY", 1)),
+		IndexerEnabled:     indexerEnabledFromEnv(),
+		IndexerMinAgeSec:   getEnvInt("INDEXER_MIN_AGE_SEC", 90),
+
+		// WORKER_LEADER_DISABLED — historical contract is "set to literal 1
+		// to skip leader election". Preserved as an exact-string check so a
+		// value like "true" doesn't silently start triggering the skip path.
+		WorkerLeaderDisabled: os.Getenv("WORKER_LEADER_DISABLED") == "1",
 	}
 	return cfg
+}
+
+// clampIndexerConcurrency mirrors the historical inline check in
+// internal/indexer/indexer.go: only positive values in [1,16] are honoured;
+// everything else falls back to the default 1.
+func clampIndexerConcurrency(n int) int {
+	if n < 1 || n > 16 {
+		return 1
+	}
+	return n
+}
+
+// indexerEnabledFromEnv preserves the indexer's original on/off semantics:
+// default true; INDEXER_ENABLED=0 or INDEXER_ENABLED=false (case-insensitive)
+// disables. Other values keep it on. This is intentionally narrower than the
+// shared getEnvBool helper so a value of "no" / "off" doesn't silently flip
+// behaviour on a deployment that previously left those untreated.
+func indexerEnabledFromEnv() bool {
+	v := os.Getenv("INDEXER_ENABLED")
+	if v == "" {
+		return true
+	}
+	if v == "0" || strings.EqualFold(v, "false") {
+		return false
+	}
+	return true
 }
 
 // defaultFFmpegPath picks a sensible default for each platform. Linux ships

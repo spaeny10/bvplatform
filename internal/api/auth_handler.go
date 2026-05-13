@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -281,9 +281,55 @@ const ContextKeyClaims contextKey = "claims"
 // valid. The DB hit is one indexed point lookup on the jti primary
 // key, so the cost is negligible compared to the bcrypt and JWT
 // parsing already on the path.
+//
+// Reverse-proxy header-trust SSO: when cfg.SSOTrustHeader == "email" AND the
+// inbound request carries X-Forwarded-Email (injected by oauth2-proxy via NPM
+// in the BigView deployment), we trust the header, look up or auto-provision
+// the user, synthesize *auth.Claims into context, and skip JWT entirely. The
+// JWT path stays alive as an emergency local-login fallback and for
+// service-to-service tokens. SECURITY: only enable behind a trusted reverse
+// proxy that strips client-supplied X-Forwarded-Email — see config docs.
 func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Handler {
+	// Build a fast lookup set of admin-allowlisted emails (case-insensitive).
+	adminSet := make(map[string]struct{}, len(cfg.SSOAdminEmails))
+	for _, e := range cfg.SSOAdminEmails {
+		adminSet[strings.ToLower(strings.TrimSpace(e))] = struct{}{}
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Header-trust SSO path.
+			if cfg.SSOTrustHeader == "email" {
+				email := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Forwarded-Email")))
+				if email != "" {
+					role := cfg.SSODefaultRole
+					if _, isAdmin := adminSet[email]; isAdmin {
+						role = "admin"
+					}
+					user, err := db.GetOrCreateUserByEmail(r.Context(), email, role)
+					if err != nil || user == nil {
+						http.Error(w, "sso provisioning failed", http.StatusInternalServerError)
+						return
+					}
+					// Promote allowlisted users that pre-existed at a lower role.
+					if _, isAdmin := adminSet[email]; isAdmin && user.Role != "admin" {
+						_, _ = db.Pool.Exec(r.Context(),
+							`UPDATE users SET role='admin', updated_at=NOW() WHERE id=$1`, user.ID)
+						user.Role = "admin"
+					}
+					claims := &auth.Claims{
+						UserID:         user.ID.String(),
+						Username:       user.Username,
+						Role:           user.Role,
+						DisplayName:    user.DisplayName,
+						OrganizationID: user.OrganizationID,
+					}
+					ctx := contextWithValue(r.Context(), ContextKeyClaims, claims)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				// Header missing — fall through to JWT (emergency local login).
+			}
+
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				http.Error(w, "authorization required", http.StatusUnauthorized)

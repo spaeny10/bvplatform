@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"onvif-tool/internal/avs"
+	"ironsight/internal/avs"
 )
 
 // scanSiteRows is the shared row → []Site reader used by both the

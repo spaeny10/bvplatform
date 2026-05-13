@@ -1,14 +1,14 @@
-# ONVIF Tool
+# Ironsight
 
 .PHONY: build run dev clean docker-db docker-down
 
 # Build the server binary
 build:
-	go build -o bin/onvif-tool.exe ./cmd/server
+	go build -o bin/ironsight.exe ./cmd/server
 
 # Run the server
 run: build
-	./bin/onvif-tool.exe
+	./bin/ironsight.exe
 
 # Run with live reload (requires air: go install github.com/cosmtrek/air@latest)
 dev:

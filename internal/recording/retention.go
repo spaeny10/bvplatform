@@ -7,8 +7,36 @@ import (
 	"strings"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
+
+// removeSegmentAndCache deletes a recording segment from disk along with
+// any LOCAL-11 cached H.264 transcode that lives in the sibling
+// .h264-cache/ directory. Returns total bytes freed across both files.
+// Missing files are silently ignored — retention is idempotent and the
+// cache is optional, so its absence is the common case (only watched
+// segments get a transcode).
+//
+// Caller is expected to have already deleted the corresponding DB rows
+// (segments + transcode_cache, when the latter exists); this helper only
+// touches the filesystem.
+func removeSegmentAndCache(path string) int64 {
+	var freed int64
+	if info, err := os.Stat(path); err == nil {
+		freed += info.Size()
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("[RETENTION] failed to delete %s: %v", path, err)
+	}
+	cache := CachedTranscodePath(path)
+	if info, err := os.Stat(cache); err == nil {
+		freed += info.Size()
+		if err := os.Remove(cache); err != nil && !os.IsNotExist(err) {
+			log.Printf("[RETENTION] failed to delete cached transcode %s: %v", cache, err)
+		}
+	}
+	return freed
+}
 
 // RetentionManager periodically cleans up old recording segments based on:
 //  1. Disk space caps (max_gb per storage location) — highest priority
@@ -191,12 +219,21 @@ func (rm *RetentionManager) enforceCapacitySafetyValve(ctx context.Context) (int
 			if len(paths) == 0 {
 				break
 			}
+			batchFreed := int64(0)
 			for _, p := range paths {
-				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-					log.Printf("[RETENTION] Safety valve: file rm %s: %v", p, err)
-				}
+				// removeSegmentAndCache returns source+cache bytes so the
+				// valve budget tracks REAL disk freed, not just DB-recorded
+				// segment bytes (an HEVC source with a cache is ~2-3× the
+				// file_size column).
+				batchFreed += removeSegmentAndCache(p)
 			}
-			freedHere += freed
+			// Fall back to the DB-reported total if the on-disk stat came
+			// up empty (paths missing, permission issues) so we don't loop
+			// forever on a no-op delete.
+			if batchFreed < freed {
+				batchFreed = freed
+			}
+			freedHere += batchFreed
 			deletedHere += len(paths)
 		}
 		totalDeleted += deletedHere
@@ -255,19 +292,22 @@ func (rm *RetentionManager) enforceStorageCaps(ctx context.Context) (int, int64)
 				break // No more segments to delete
 			}
 
-			// Remove files from disk
+			// Remove files from disk. removeSegmentAndCache also drops
+			// the LOCAL-11 H.264 transcode cache file if one exists.
+			batchFreed := int64(0)
 			for _, path := range paths {
-				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-					log.Printf("[RETENTION] Failed to delete file %s: %v", path, err)
-				}
+				batchFreed += removeSegmentAndCache(path)
+			}
+			if batchFreed < freed {
+				batchFreed = freed
 			}
 
 			totalDeleted += len(paths)
-			totalBytes += freed
-			usage -= freed
+			totalBytes += batchFreed
+			usage -= batchFreed
 
 			log.Printf("[RETENTION] Storage '%s': deleted %d segment(s), freed %.2f MB",
-				loc.Label, len(paths), float64(freed)/1024/1024)
+				loc.Label, len(paths), float64(batchFreed)/1024/1024)
 		}
 	}
 
@@ -351,13 +391,9 @@ func (rm *RetentionManager) enforceRetentionDays(ctx context.Context) (int, int6
 		}
 
 		for _, path := range paths {
-			info, err := os.Stat(path)
-			if err == nil {
-				totalBytes += info.Size()
-			}
-			if err := os.Remove(path); err != nil {
-				log.Printf("[RETENTION] Failed to delete file %s: %v", path, err)
-			}
+			// removeSegmentAndCache stats + removes both source and any
+			// LOCAL-11 cached H.264 transcode in one call.
+			totalBytes += removeSegmentAndCache(path)
 		}
 
 		if len(paths) > 0 {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // createSenseCamera handles the camera-add path for push-only devices

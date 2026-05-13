@@ -113,7 +113,7 @@ Renaming these creates churn with zero user impact. **Don't touch.**
 
 | File | What looks like brand | Why leave it |
 |---|---|---|
-| [go.mod](../../go.mod) | `module onvif-tool` | Internal identifier; renaming churns every `import` statement |
+| ~~[go.mod](../../go.mod)~~ | ~~`module onvif-tool`~~ | **Renamed to `module ironsight` 2026-05-08 (P1-B-07).** Out of date — kept here for history. |
 | Go DB name in [docker-compose.yml](../../docker-compose.yml) (`onvif_tool`) | Matches module name | Renaming requires a DB migration for existing deployments |
 | Frontend file paths (`@/lib/ironsight-api`, `@/types/ironsight`) | 80+ hits | Internal module names; never seen by users |
 | Component import paths (`@/components/shared/Logo` — but inside it was `IronsightLogo`) | Already renamed | Done |

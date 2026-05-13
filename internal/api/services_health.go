@@ -7,15 +7,14 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -58,8 +57,8 @@ func HandleServicesHealth(cfg *config.Config, db *database.DB, aiClient *ai.Clie
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		yoloURL := envOrDefault("AI_YOLO_URL", "http://127.0.0.1:8501")
-		qwenURL := envOrDefault("AI_QWEN_URL", "http://127.0.0.1:8502")
+		yoloURL := cfg.AIYOLOURL
+		qwenURL := cfg.AIQwenURL
 		mtxURL := "http://" + cfg.MediaMTXAPIAddr
 
 		// Each probe is independent — fan out, then collect.
@@ -260,13 +259,6 @@ func condenseErr(err error) string {
 		return s[i+2:]
 	}
 	return s
-}
-
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // AIMetricSample is one row in the time-series response. ts is RFC3339;

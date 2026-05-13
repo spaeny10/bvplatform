@@ -9,7 +9,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // SemanticMatch is one row of /api/search/semantic output — a segment whose
@@ -52,7 +53,7 @@ type SemanticSearchResponse struct {
 //
 // RBAC: restricted roles only see matches on their authorized cameras.
 // Empty-query responses return a helpful error rather than all rows.
-func HandleSemanticSearch(db *database.DB) http.HandlerFunc {
+func HandleSemanticSearch(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -183,8 +184,9 @@ func HandleSemanticSearch(db *database.DB) http.HandlerFunc {
 				return
 			}
 			// Playback URL: open the segment at its beginning. The caller
-			// typically refines with the segment timestamp range.
-			m.PlaybackURL = buildSegmentURL(m.CameraID.String(), filePath)
+			// typically refines with the segment timestamp range. P1-A-03:
+			// signed /media/v1/<token> bound to (caller, camera, leaf).
+			m.PlaybackURL = MintSegmentPlaybackURL(cfg, claims.UserID, m.CameraID.String(), filePath, m.StartTime, m.StartTime)
 			results = append(results, m)
 		}
 
@@ -208,16 +210,6 @@ func HandleSemanticSearch(db *database.DB) http.HandlerFunc {
 	}
 }
 
-// buildSegmentURL trims the absolute file path to the /recordings/<cam>/<file>
-// form the static handler serves. No seek offset; the player starts at 0 and
-// the user can scrub.
-func buildSegmentURL(cameraID, filePath string) string {
-	base := filePath
-	for i := len(base) - 1; i >= 0; i-- {
-		if base[i] == '/' || base[i] == '\\' {
-			base = base[i+1:]
-			break
-		}
-	}
-	return "/recordings/" + cameraID + "/" + base
-}
+// buildSegmentURL was replaced by MintSegmentPlaybackURL in P1-A-03. Kept
+// only as a comment so any rebase conflict that brings back the original
+// definition surfaces a reviewer-visible reminder.

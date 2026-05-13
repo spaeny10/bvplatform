@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/database"
+	"ironsight/internal/ai"
+	"ironsight/internal/database"
 )
 
 // StartAIMetricsSampler runs a background loop that snapshots the AI
