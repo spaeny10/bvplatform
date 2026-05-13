@@ -193,6 +193,17 @@ func transcodeToH264(ffmpegPath, srcPath, destPath string) error {
 		"-crf", "23",
 		"-c:a", "aac",
 		"-movflags", "+faststart",
+		// Pass the source's frame timestamps through unchanged. Milesight
+		// cameras advertise a nominal 60 fps in their RTSP SDP but only
+		// deliver ~9-10 fps in practice. Without this, ffmpeg's default
+		// CFR output duplicates each real frame ~6× to hit the nominal
+		// rate — playback looks chunky / "distorted" because every real
+		// motion frame is held for 6 output frames then jumps. With
+		// passthrough the H.264 output matches the source's actual frame
+		// cadence and motion is smooth. Cost: ~2× larger cache file (the
+		// encoder can no longer cheat with tiny P-frames for duplicates)
+		// — acceptable given the cache only fills on demand.
+		"-fps_mode", "passthrough",
 		// ffmpeg picks output format from the filename extension; the
 		// .tmp suffix on our temp file confuses it ("Unable to find a
 		// suitable output format"), so force the muxer explicitly.
