@@ -43,17 +43,25 @@
 -- Step 1: phantom rows
 DELETE FROM segments WHERE file_path LIKE '%/ffmpeg_stderr.log';
 
--- Step 2: dedup. Match the exact predicate of the unique index we're
--- about to create — DELETE rows that would violate (camera_id, file_path,
--- start_time) only, preserving any legitimate same-path-different-start_time
--- rows (none expected for the bug class we're fixing, but a stricter
--- DELETE risks data loss if the workload ever produced them).
-DELETE FROM segments a
-USING segments b
-WHERE a.id < b.id
-  AND a.camera_id = b.camera_id
-  AND a.file_path = b.file_path
-  AND a.start_time = b.start_time;
+-- Step 2: dedup. Keep MAX(id) per (camera_id, file_path, start_time);
+-- delete every other row matching that tuple. This is functionally
+-- equivalent to a self-join `DELETE a USING b WHERE a.id < b.id AND
+-- <same keys>` but uses a single index scan + GROUP BY MAX rather than
+-- the n²-comparison pair-builder that the self-join requires.
+--
+-- On a fresh DB this is a no-op (no rows match). On a live hypertable
+-- carrying the LOCAL-10 dupe set, the self-join variant of this
+-- statement was measured at ~100 minutes for 13M rows per camera; the
+-- GROUP BY MAX variant below was ~30 seconds for the same data. The
+-- runbook in docs/INFRA_MASTER.md (2026-05-13) records the timings;
+-- operators applying this to a heavily-duplicated production table
+-- should still expect minutes-not-seconds, just not the 1-2 hours the
+-- self-join would have cost.
+DELETE FROM segments
+WHERE id NOT IN (
+    SELECT MAX(id) FROM segments
+    GROUP BY camera_id, file_path, start_time
+);
 
 -- Step 3: install the constraint. IF NOT EXISTS lets the migration be
 -- re-run idempotently if it crashes mid-way (the DELETEs above are also
