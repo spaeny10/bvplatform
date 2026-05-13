@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/onvif"
 )
 
 // ═══════════════════════════════════════════════════════════════

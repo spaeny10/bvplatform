@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/avs"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/auth"
+	"ironsight/internal/avs"
+	"ironsight/internal/database"
+	"ironsight/internal/notify"
+	"ironsight/internal/recording"
 )
 
 // ═══════════════════════════════════════════════════════════════

@@ -9,6 +9,7 @@ import { useSite, useSiteCameras } from '@/hooks/useSites';
 import SeverityPill from '@/components/shared/SeverityPill';
 import SiteMapModal from '@/components/operator/SiteMapModal';
 import AVSFactorChecklist from '@/components/operator/AVSFactorChecklist';
+import SignedImage from '@/components/shared/SignedImage';
 
 interface Props {
   alarm: AlertEvent;
@@ -130,6 +131,11 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
     location: c.camera_group || c.location || '',
     status: (c.status as 'online' | 'offline' | 'degraded') ?? 'offline',
     has_alert: String(c.id) === alarm.camera_id,
+    // Legacy `/hls/<cam>/<file.m3u8>` URL shape. HLSVideoPlayer
+    // recognises this and transparently re-mints a signed
+    // /media/v1/<token> on a 4-min cadence (P1-A-03). Frontends
+    // that need to bypass the player (e.g. raw <video src>) must
+    // call mintMediaToken() directly instead.
     stream_url: `/hls/${c.id}/main_live.m3u8`,
   }));
   const siteNotes: string[] = (siteData as any)?.site_notes ?? (siteData as any)?.risk_notes ?? [];
@@ -707,7 +713,7 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
                       }}
                     >
                       {camAlarm.snapshot_url ? (
-                        <img
+                        <SignedImage
                           src={camAlarm.snapshot_url}
                           alt={camAlarm.camera_name}
                           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
@@ -1568,27 +1574,46 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
       .catch(() => {});
   }, [cameraId]);
 
-  // Fetch the event snapshot once (for snapshot mode)
+  // Fetch the event snapshot once (for snapshot mode).
+  // P1-A-03: eventSnapshotUrl may be a legacy /snapshots/<cam>/<file>
+  // URL stored by the sense webhook / alarm pipeline before the
+  // signed-URL flow existed. resolveMediaURL handles both shapes —
+  // already-signed pass-through, legacy → mint.
   useEffect(() => {
     if (!eventSnapshotUrl) {
       setSnapshotState('unavailable');
       return;
     }
     setSnapshotState('loading');
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
-    fetch(eventSnapshotUrl, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then(r => r.ok ? r.blob() : Promise.reject(r.status))
-      .then(blob => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { resolveMediaURL } = await import('@/lib/media');
+        const url = await resolveMediaURL(eventSnapshotUrl);
+        if (cancelled || !url) {
+          setSnapshotState('unavailable');
+          return;
+        }
+        // The signed /media/v1/<token> URL carries its own auth — no
+        // Authorization header needed (the handler doesn't read one).
+        const res = await fetch(url);
+        if (!res.ok) {
+          setSnapshotState('error');
+          return;
+        }
+        const blob = await res.blob();
+        if (cancelled) return;
         if (blob && blob.size > 0) {
           setEventFrameUrl(URL.createObjectURL(blob));
           setSnapshotState('ok');
         } else {
           setSnapshotState('unavailable');
         }
-      })
-      .catch(() => setSnapshotState('error'));
+      } catch {
+        if (!cancelled) setSnapshotState('error');
+      }
+    })();
+    return () => { cancelled = true; };
   }, [eventSnapshotUrl]);
 
   // Refreshing snapshot for live mode (unused currently — LIVE opens NVR in new tab,

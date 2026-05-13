@@ -6,7 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandleListSiteContacts returns the customer-maintained contact list

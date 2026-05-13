@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
 )
 
 // shareDefaultTTL is what we hand out when the caller doesn't supply

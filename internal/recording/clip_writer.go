@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // ClipWriter manages event-triggered clip creation with pre/post buffer.

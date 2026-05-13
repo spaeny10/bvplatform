@@ -15,8 +15,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // Engine manages FFmpeg recording processes for all cameras
@@ -65,18 +65,17 @@ func NewEngine(cfg *config.Config, db *database.DB) *Engine {
 }
 
 // useGortRecorder returns true if the given camera should use the pure-Go
-// recorder instead of FFmpeg. Set via env var GORT_CAMERAS as a comma-separated
-// list of full UUIDs or 8-char prefixes. Example:
+// recorder instead of FFmpeg. The set comes from cfg.GortCameras (env var
+// GORT_CAMERAS, parsed at config-load time into a slice of full UUIDs or
+// 8-char prefixes). Example env value:
 //
 //	GORT_CAMERAS=9ca4bcfd,6884a556
-func useGortRecorder(cameraID uuid.UUID) bool {
-	env := os.Getenv("GORT_CAMERAS")
-	if env == "" {
+func useGortRecorder(gortCameras []string, cameraID uuid.UUID) bool {
+	if len(gortCameras) == 0 {
 		return false
 	}
 	id := cameraID.String()
-	for _, raw := range strings.Split(env, ",") {
-		tok := strings.TrimSpace(raw)
+	for _, tok := range gortCameras {
 		if tok == "" {
 			continue
 		}
@@ -113,7 +112,7 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 
 	// Opt-in: use the pure-Go gortsplib recorder for cameras listed in GORT_CAMERAS.
 	// Skips FFmpeg entirely for that camera (no HLS from this engine either).
-	if useGortRecorder(cameraID) {
+	if useGortRecorder(e.cfg.GortCameras, cameraID) {
 		gr := NewGortRecorder(cameraID, cameraName, rtspURI, outputDir, e.db, time.Duration(e.cfg.SegmentDuration)*time.Second)
 		if err := gr.Start(); err != nil {
 			return err
@@ -746,10 +745,37 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					continue
 				}
 
-				filePath := filepath.Join(r.outputDir, entry.Name())
+				// LOCAL-10: only index files that match the segment-output
+				// pattern this recorder is writing — seg_*.mp4 (continuous
+				// mode) or ring_*.mp4 (event mode). The previous loop
+				// also picked up `ffmpeg_stderr.log` (4-9 KB, passes the
+				// size gate) and indexed it as a "segment". That row then
+				// flows through the timeline endpoint and the player tries
+				// to render the text log as video. Filter at the source.
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".mp4") || (!strings.HasPrefix(name, "seg_") && !strings.HasPrefix(name, "ring_")) {
+					continue
+				}
+
+				filePath := filepath.Join(r.outputDir, name)
 				info, err := entry.Info()
 				if err != nil || info.Size() < 1000 {
 					continue // Skip tiny/incomplete files
+				}
+
+				// LOCAL-10: only process files this recorder run produced.
+				// Files older than startedAt are already in the DB from
+				// prior runs (the segments hypertable has no UNIQUE
+				// constraint on (camera_id, file_path) yet, so duplicate
+				// InsertSegment calls on every restart bloat the table by
+				// ~9.5K rows per camera per startup — and on 27M-row
+				// tables each InsertSegment is slow enough that the
+				// rescan never finishes before the next ffmpeg stall +
+				// restart, blocking fresh segments from being indexed
+				// at all). Mark as seen and skip entirely.
+				if info.ModTime().Before(startedAt) {
+					seen[name] = true
+					continue
 				}
 
 				// Only do the expensive 2-second stability check for files that
@@ -771,6 +797,32 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					startTime = info.ModTime().Add(-time.Duration(r.segmentDur) * time.Second)
 				}
 
+				// Probe the codec so the recorded-playback serve handler can
+				// decide pass-through vs transcode without ffprobing every
+				// segment on every request.
+				//
+				// Scope-limited to segments produced by THIS recorder run
+				// (mtime after startedAt). On startup, watchSegments re-
+				// scans every existing file in the camera dir — for a
+				// 9.5 K-file backlog at ~100 ms/probe that's a 16-minute
+				// stall before any fresh segment gets indexed, which we
+				// can't accept. Old segments inherit a NULL `video_codec`
+				// and get lazy-probed on first playback request via the
+				// /media/v1 handler (which writes back via
+				// db.UpdateSegmentVideoCodec).
+				//
+				// Probe failure on a fresh segment is non-fatal: leave
+				// VideoCodec empty and the serve handler will lazy-probe.
+				var videoCodec string
+				if info.ModTime().After(startedAt) {
+					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
+					if codecErr != nil {
+						log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
+					} else {
+						videoCodec = vc
+					}
+				}
+
 				segment := &database.Segment{
 					CameraID:   r.cameraID,
 					StartTime:  startTime,
@@ -779,6 +831,7 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					FileSize:   info.Size(),
 					DurationMs: r.segmentDur * 1000,
 					HasAudio:   r.hasAudio,
+					VideoCodec: videoCodec,
 				}
 
 				if err := r.db.InsertSegment(ctx, segment); err != nil {

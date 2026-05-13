@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,20 +14,23 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/indexer"
-	"onvif-tool/internal/api"
-	authpkg "onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/detection"
-	"onvif-tool/internal/export"
-	msdriver "onvif-tool/internal/milesight"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/onvif"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/ai"
+	"ironsight/internal/indexer"
+	"ironsight/internal/api"
+	authpkg "ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/detection"
+	"ironsight/internal/export"
+	msdriver "ironsight/internal/milesight"
+	"ironsight/internal/notify"
+	"ironsight/internal/onvif"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
+	"ironsight/migrations"
 	"strings"
 )
 
@@ -55,7 +57,36 @@ func main() {
 	}
 	defer db.Close()
 
+	// Apply goose-tracked migrations before any other DB-touching startup
+	// runs. The 0001_baseline.sql migration is idempotent against fred's
+	// already-populated schema (every CREATE / ADD CONSTRAINT / TRIGGER
+	// is guarded), so on fred this just records "version 1 applied" in
+	// goose_db_version and changes nothing else. On a fresh DB it builds
+	// the full schema from scratch. Subsequent migrations (P1-B-02 onward)
+	// will land in migrations/000N_*.sql and be picked up automatically
+	// via the //go:embed directive in the migrations package.
+	//
+	// We bridge the existing pgxpool to database/sql via pgx's stdlib
+	// helper so goose (which is database/sql-only) shares the same pool
+	// rather than opening a second connection. The bridge *sql.DB is
+	// closed before we exit so we don't leak the wrapping handles.
+	gooseDB := stdlib.OpenDBFromPool(db.Pool)
+	if err := goose.SetDialect("postgres"); err != nil {
+		log.Fatalf("[FATAL] goose.SetDialect: %v", err)
+	}
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.UpContext(context.Background(), gooseDB, "."); err != nil {
+		gooseDB.Close()
+		log.Fatalf("[FATAL] goose.Up: %v", err)
+	}
+	gooseDB.Close()
+	log.Println("[MIGRATIONS] goose up applied; see goose_db_version for current version")
+
 	// Auto-migrate: add new columns if they don't exist
+	// NOTE: this inline block is the legacy path scheduled for extraction
+	// in P1-B-02. It runs AFTER goose so any column/index it adds is also
+	// present on a fresh-from-baseline DB. Once P1-B-02 lands, every ALTER
+	// here becomes a numbered migration file and this block is deleted.
 	_, err = db.Pool.Exec(context.Background(), `
 		-- Camera device class: 'continuous' = traditional always-on IP
 		-- camera (RTSP stream + ONVIF subscription, current behavior),
@@ -973,14 +1004,12 @@ func main() {
 		}
 	}
 
-	// Seed the demo portfolio (orgs + sites + ~30 days of dispositioned
-	// events) BEFORE seedDemoUsers so users can be linked to existing
-	// orgs. Idempotent: skips entirely if any of the demo orgs already
-	// exists, so restarts don't pile on duplicate events.
-	seedDemoPortfolio(context.Background(), db)
-
-	// Seed demo platform users (SOC operators and portal users) if they don't exist
-	seedDemoUsers(context.Background(), db)
+	// Demo data seeding (P1-B-09): the demo-portfolio + demo-users
+	// helpers, and the prior env-gate that wrapped them, live in the
+	// separate cmd/seed binary now. Server startup never seeds.
+	// Operators run `/app/seed --all` (or its --portfolio / --users
+	// variants) explicitly against a staging database when they need
+	// demo content. See internal/seed/ and cmd/seed/main.go.
 
 	// Root context for all background goroutines. Cancelled on SIGINT /
 	// SIGTERM so the WS hub, recording engine, retention manager, and
@@ -1021,26 +1050,20 @@ func main() {
 	det := detection.New(hub)
 	log.Println("[DET] ONVIF analytics detection enabled (Profile M cameras)")
 
-	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis
-	aiYOLO := os.Getenv("AI_YOLO_URL")
-	if aiYOLO == "" {
-		aiYOLO = "http://127.0.0.1:8501"
-	}
-	aiQwen := os.Getenv("AI_QWEN_URL")
-	if aiQwen == "" {
-		aiQwen = "http://127.0.0.1:8502"
-	}
+	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis.
+	// Endpoints and the on/off switch come from cfg (env vars AI_YOLO_URL /
+	// AI_QWEN_URL / AI_ENABLED parsed at startup).
 	aiClient := ai.NewClient(ai.Config{
-		YOLOEndpoint: aiYOLO,
-		QwenEndpoint: aiQwen,
-		Enabled:      os.Getenv("AI_ENABLED") != "false",
+		YOLOEndpoint: cfg.AIYOLOURL,
+		QwenEndpoint: cfg.AIQwenURL,
+		Enabled:      cfg.AIEnabled,
 	})
 	aiClient.CheckHealth(context.Background())
 
 	// Persisted runtime metrics for the Services dashboard. Samples
 	// every 30s; rows go to the ai_runtime_metrics hypertable created
 	// during the migration block above.
-	api.StartAIMetricsSampler(context.Background(), db, aiClient, aiYOLO, aiQwen, 30*time.Second)
+	api.StartAIMetricsSampler(context.Background(), db, aiClient, cfg.AIYOLOURL, cfg.AIQwenURL, 30*time.Second)
 
 	// Background VLM indexer: enriches every recording segment with a
 	// searchable description during idle hours. Scales with INDEXER_CONCURRENCY
@@ -1212,364 +1235,6 @@ func main() {
 	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatalf("[FATAL] Server failed: %v", err)
 	}
-}
-
-// seedDemoUsers creates demo user accounts for each platform role if they don't already exist.
-// Runs on every startup but only inserts rows that are missing.
-func seedDemoUsers(ctx context.Context, db *database.DB) {
-	type seed struct {
-		username    string
-		password    string
-		role        string
-		displayName string
-		email       string
-		phone       string
-		orgID       string
-		siteIDs     []string
-	}
-
-	demo := []seed{
-		// SOC operators — linked to operators table
-		{"jhayes", "demo123", "soc_operator", "Jordan Hayes", "jhayes@ironsight.io", "312-555-0111", "", nil},
-		{"ctorres", "demo123", "soc_operator", "Casey Torres", "ctorres@ironsight.io", "312-555-0122", "", nil},
-		{"rmorgan", "demo123", "soc_supervisor", "Riley Morgan", "rmorgan@ironsight.io", "312-555-0133", "", nil},
-		// Portal users — linked to organizations/sites
-		{"marcus.webb", "demo123", "site_manager", "Marcus Webb", "marcus.webb@apexcg.com", "312-555-0147", "co-alpha001", []string{"ACG-301", "ACG-302"}},
-		{"spierce", "demo123", "customer", "Sandra Pierce", "spierce@apexcg.com", "312-555-0198", "co-alpha001", []string{"ACG-301", "ACG-302"}},
-		{"priya.sharma", "demo123", "site_manager", "Priya Sharma", "priya@meridiandv.com", "512-555-0293", "co-beta002", []string{"MDV-501"}},
-		{"derek.lawson", "demo123", "site_manager", "Derek Lawson", "dlawson@ironcladsites.com", "602-555-0311", "co-gamma003", []string{"ISS-201"}},
-	}
-
-	for _, s := range demo {
-		// Skip if user already exists
-		existing, _ := db.GetUserByUsernameOrEmail(ctx, s.username)
-		if existing != nil {
-			continue
-		}
-		hash, err := authpkg.HashPassword(s.password)
-		if err != nil {
-			log.Printf("[SEED] Failed to hash password for %s: %v", s.username, err)
-			continue
-		}
-		u, err := db.CreateUser(ctx, &database.UserCreate{
-			Username:        s.username,
-			Role:            s.role,
-			DisplayName:     s.displayName,
-			Email:           s.email,
-			Phone:           s.phone,
-			OrganizationID:  s.orgID,
-			AssignedSiteIDs: s.siteIDs,
-		}, hash)
-		if err != nil {
-			log.Printf("[SEED] Could not create user %s: %v", s.username, err)
-			continue
-		}
-		log.Printf("[SEED] Created user %s (%s)", s.username, s.role)
-
-		// Link SOC users to their operators table row
-		switch s.username {
-		case "jhayes":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-001'`, u.ID)
-		case "ctorres":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-002'`, u.ID)
-		case "rmorgan":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-003'`, u.ID)
-		}
-	}
-}
-
-// seedDemoPortfolio creates a believable customer portfolio so the
-// portal's "what we handled for you" panel and incident-detail
-// "How the SOC handled this" block render with real numbers
-// instead of zeros on a clean install.
-//
-// Three orgs, five sites, a 30-day spread of dispositioned events
-// weighted toward false positives — that's the actual story the SOC
-// tells the customer ("most events are noise; we filtered them so
-// you didn't have to"). Operator callsigns match the SOC users that
-// seedDemoUsers creates so the same names appear consistently
-// across the portal and the operator console.
-//
-// Idempotent: bails out if the first demo org already exists, so
-// restarts don't append duplicate events.
-func seedDemoPortfolio(ctx context.Context, db *database.DB) {
-	var existing string
-	_ = db.Pool.QueryRow(ctx, `SELECT id FROM organizations WHERE id='co-alpha001'`).Scan(&existing)
-	if existing != "" {
-		return // already seeded
-	}
-
-	type orgSeed struct {
-		ID           string
-		Name         string
-		Plan         string
-		ContactName  string
-		ContactEmail string
-	}
-	type siteSeed struct {
-		ID      string
-		OrgID   string
-		Name    string
-		Address string
-		Lat     float64
-		Lng     float64
-	}
-
-	orgs := []orgSeed{
-		{"co-alpha001", "Apex Construction Group", "enterprise", "Sandra Pierce", "spierce@apexcg.com"},
-		{"co-beta002", "Meridian Development Ventures", "professional", "Priya Sharma", "priya@meridiandv.com"},
-		{"co-gamma003", "Ironclad Site Services", "professional", "Derek Lawson", "dlawson@ironcladsites.com"},
-	}
-	sites := []siteSeed{
-		{"ACG-301", "co-alpha001", "Apex Tower — Phase 2", "1450 N Wells St, Chicago, IL", 41.9089, -87.6342},
-		{"ACG-302", "co-alpha001", "Apex Riverside Plaza", "200 W Wacker Dr, Chicago, IL", 41.8870, -87.6350},
-		{"MDV-501", "co-beta002", "Meridian Industrial Park", "5500 E Riverside Dr, Austin, TX", 30.2389, -97.7197},
-		{"MDV-502", "co-beta002", "Meridian Logistics Hub", "10000 W Cesar Chavez St, Austin, TX", 30.2562, -97.7986},
-		{"ISS-201", "co-gamma003", "Ironclad HQ Yard", "4400 N 32nd St, Phoenix, AZ", 33.4938, -112.0118},
-	}
-
-	// Insert orgs and sites.
-	for _, o := range orgs {
-		if _, err := db.Pool.Exec(ctx, `
-			INSERT INTO organizations (id, name, plan, contact_name, contact_email)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (id) DO NOTHING`,
-			o.ID, o.Name, o.Plan, o.ContactName, o.ContactEmail,
-		); err != nil {
-			log.Printf("[SEED] org %s: %v", o.ID, err)
-		}
-	}
-	for _, s := range sites {
-		if _, err := db.Pool.Exec(ctx, `
-			INSERT INTO sites (id, name, address, organization_id, latitude, longitude, status)
-			VALUES ($1,$2,$3,$4,$5,$6,'active')
-			ON CONFLICT (id) DO NOTHING`,
-			s.ID, s.Name, s.Address, s.OrgID, s.Lat, s.Lng,
-		); err != nil {
-			log.Printf("[SEED] site %s: %v", s.ID, err)
-		}
-	}
-	log.Printf("[SEED] %d demo orgs and %d sites created", len(orgs), len(sites))
-
-	// Generate 30 days of dispositioned events. The distribution is
-	// shaped to match what a real SOC tells customers: most alarms
-	// are noise (animals, weather, lighting), a smaller slice are
-	// activity-without-action (workers on schedule), and a thin
-	// minority are verified threats. Response times follow a
-	// log-normal-ish curve clamped to reasonable SOC SLAs.
-	type dispMix struct {
-		code   string
-		label  string
-		weight int
-	}
-	dispositions := []dispMix{
-		{"false-positive-shadow", "False Positive — Shadow / Light", 22},
-		{"false-positive-animal", "False Positive — Animal", 18},
-		{"false-positive-weather", "False Positive — Weather / Foliage", 14},
-		{"false-positive-vehicle", "False Positive — Authorized Vehicle", 8},
-		{"no-action-scheduled-activity", "Activity Within Schedule", 12},
-		{"activity-logs", "Logged Activity — No Action", 8},
-		{"verified-threat-trespasser", "Verified — Trespasser, Deterrence Fired", 8},
-		{"verified-threat-attempted-entry", "Verified — Attempted Entry, Police Dispatched", 4},
-		{"verified-threat-vandalism", "Verified — Vandalism in Progress", 3},
-		{"test-system-test", "Test — System Verification", 3},
-	}
-	totalWeight := 0
-	for _, d := range dispositions {
-		totalWeight += d.weight
-	}
-	pickDisp := func(r *rand.Rand) dispMix {
-		n := r.Intn(totalWeight)
-		for _, d := range dispositions {
-			if n < d.weight {
-				return d
-			}
-			n -= d.weight
-		}
-		return dispositions[0]
-	}
-
-	severityFor := func(code string, r *rand.Rand) string {
-		switch {
-		case strings.HasPrefix(code, "verified"):
-			if r.Intn(3) == 0 {
-				return "critical"
-			}
-			return "high"
-		case strings.HasPrefix(code, "activity-logs"), strings.HasPrefix(code, "no-action"):
-			return "low"
-		default:
-			// false-positives skew low/medium
-			if r.Intn(4) == 0 {
-				return "high"
-			}
-			if r.Intn(2) == 0 {
-				return "medium"
-			}
-			return "low"
-		}
-	}
-
-	eventTypes := []string{"intrusion", "linecross", "person", "vehicle", "loitering"}
-	operators := []struct {
-		ID, Callsign string
-	}{
-		{"op-001", "JHAYES"},
-		{"op-002", "CTORRES"},
-		{"op-003", "RMORGAN"},
-	}
-
-	r := rand.New(rand.NewSource(42)) // deterministic seed → stable demo
-	now := time.Now()
-	startWindow := now.Add(-30 * 24 * time.Hour)
-
-	// Roughly 6 events per site per day, more during business hours.
-	// Total: 5 sites × 30 days × ~6 = ~900 events. Plenty for the
-	// "we handled X events" panel to show convincing numbers.
-	eventCount := 0
-	alarmCount := 0
-	for _, s := range sites {
-		// Per-site volume varies — bigger sites get more events.
-		dailyAvg := 4 + r.Intn(5) // 4-8 events/day per site
-		for day := 0; day < 30; day++ {
-			eventsToday := dailyAvg + r.Intn(4) - 2 // ±2 jitter
-			if eventsToday < 0 {
-				eventsToday = 0
-			}
-			for i := 0; i < eventsToday; i++ {
-				// Time of day: bias toward 18:00-06:00 (active monitoring window).
-				// 70% events at night, 30% during the day.
-				var hour int
-				if r.Intn(10) < 7 {
-					// Night hours: 18-23 or 0-5
-					if r.Intn(2) == 0 {
-						hour = 18 + r.Intn(6)
-					} else {
-						hour = r.Intn(6)
-					}
-				} else {
-					hour = 6 + r.Intn(12) // 6-17
-				}
-				dayBase := startWindow.Add(time.Duration(day) * 24 * time.Hour)
-				eventTime := time.Date(dayBase.Year(), dayBase.Month(), dayBase.Day(),
-					hour, r.Intn(60), r.Intn(60), 0, time.UTC)
-				if eventTime.After(now) {
-					continue // don't seed events in the future
-				}
-
-				disp := pickDisp(r)
-				sev := severityFor(disp.code, r)
-				op := operators[r.Intn(len(operators))]
-				evType := eventTypes[r.Intn(len(eventTypes))]
-
-				// Response time: log-ish curve. Most under 60s; tail to ~5min.
-				// Verified threats get faster response; informational slower.
-				baseSec := 20 + r.Intn(60)
-				if strings.HasPrefix(disp.code, "verified") {
-					baseSec = 8 + r.Intn(25) // 8-33s
-				} else if strings.HasPrefix(disp.code, "test") {
-					baseSec = 3 + r.Intn(8)
-				}
-				// Long-tail: 10% of responses run 2-5min
-				if r.Intn(10) == 0 {
-					baseSec = 120 + r.Intn(180)
-				}
-				ackTime := eventTime.Add(time.Duration(baseSec) * time.Second)
-
-				// Resolved-at trails ack by another 30-180s while the
-				// operator finishes notes / disposition.
-				resolvedAt := ackTime.Add(time.Duration(30+r.Intn(150)) * time.Second)
-
-				alarmID := fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), eventCount+1)
-				eventID := fmt.Sprintf("EVT-%s-%04d", eventTime.Format("060102"), eventCount+1)
-				camID := fmt.Sprintf("%s-CAM-%02d", s.ID, 1+r.Intn(6))
-
-				// Active alarm row — needed for the response-time
-				// metrics (acknowledged_at - ts).
-				_, err := db.Pool.Exec(ctx, `
-					INSERT INTO active_alarms
-					  (id, alarm_code, site_id, site_name, camera_id, camera_name,
-					   severity, type, description, ts, acknowledged, acknowledged_at,
-					   acknowledged_by_callsign, sla_deadline_ms, organization_id, created_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,$15)
-					ON CONFLICT (id) DO NOTHING`,
-					alarmID,
-					fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), alarmCount+1),
-					s.ID, s.Name,
-					camID, fmt.Sprintf("%s Camera %d", s.Name, 1+r.Intn(6)),
-					sev, evType,
-					fmt.Sprintf("%s detected at %s", evType, s.Name),
-					eventTime.UnixMilli(),
-					ackTime,
-					op.Callsign,
-					eventTime.UnixMilli()+90_000, // 90s SLA
-					s.OrgID,
-					eventTime,
-				)
-				if err != nil {
-					log.Printf("[SEED] active_alarm: %v", err)
-					continue
-				}
-
-				// Action log: 2-4 entries per event so the timeline panel renders.
-				actionLog := []map[string]interface{}{
-					{"ts": eventTime.UnixMilli(), "text": "Alarm received", "auto": true},
-					{"ts": ackTime.Add(-2 * time.Second).UnixMilli(), "text": fmt.Sprintf("Operator %s engaged", op.Callsign), "auto": false},
-					{"ts": ackTime.UnixMilli(), "text": fmt.Sprintf("Disposition: %s", disp.label), "auto": false},
-				}
-				if strings.HasPrefix(disp.code, "verified-threat-trespasser") {
-					actionLog = append(actionLog, map[string]interface{}{
-						"ts": ackTime.Add(15 * time.Second).UnixMilli(), "text": "Audio deterrence fired (3x)", "auto": false,
-					})
-				}
-				if disp.code == "verified-threat-attempted-entry" {
-					actionLog = append(actionLog, map[string]interface{}{
-						"ts": ackTime.Add(20 * time.Second).UnixMilli(), "text": "Police dispatched (911)", "auto": false,
-					})
-				}
-				actionLogJSON, _ := json.Marshal(actionLog)
-
-				notes := ""
-				switch {
-				case disp.code == "verified-threat-trespasser":
-					notes = "Single subject in restricted zone. Deterrence audio fired; subject left within 30s."
-				case disp.code == "verified-threat-attempted-entry":
-					notes = "Two subjects testing perimeter gate. PD dispatched; arrived in 6m."
-				case disp.code == "false-positive-animal":
-					notes = "Confirmed wildlife (deer / coyote pattern). No action."
-				case disp.code == "false-positive-shadow":
-					notes = "Tree shadow movement triggered detection. False positive."
-				}
-
-				_, err = db.Pool.Exec(ctx, `
-					INSERT INTO security_events
-					  (id, alarm_id, site_id, camera_id, severity, type, description,
-					   disposition_code, disposition_label, operator_id, operator_callsign,
-					   operator_notes, action_log, ts, resolved_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-					ON CONFLICT (id) DO NOTHING`,
-					eventID, alarmID, s.ID, camID,
-					sev, evType,
-					fmt.Sprintf("%s detected at %s", evType, s.Name),
-					disp.code, disp.label,
-					op.ID, op.Callsign, notes,
-					actionLogJSON,
-					eventTime.UnixMilli(),
-					resolvedAt.UnixMilli(),
-				)
-				if err != nil {
-					log.Printf("[SEED] security_event: %v", err)
-					continue
-				}
-
-				eventCount++
-				alarmCount++
-			}
-		}
-	}
-
-	log.Printf("[SEED] %d alarms + %d dispositioned events seeded across %d sites",
-		alarmCount, eventCount, len(sites))
 }
 
 // autoStartCameras initializes recording and HLS for cameras with recording enabled

@@ -12,9 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/notify"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
+	"ironsight/internal/notify"
 )
 
 // Customer ↔ SOC support ticket handlers.

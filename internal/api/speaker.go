@@ -10,9 +10,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // HandleListSpeakers returns all speakers

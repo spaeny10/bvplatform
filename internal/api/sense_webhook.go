@@ -14,8 +14,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HandleSenseWebhook is the inbound endpoint for Milesight Sense / SC4xx
@@ -67,8 +67,14 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 
 		// Persist the snapshot so the operator console can render it.
 		// Using the same on-disk layout as the continuous-camera path
-		// (snapshots/<camera_id>/<filename>) so the existing snapshot
-		// HTTP handler serves it without changes.
+		// (snapshots/<camera_id>/<filename>). The URL we store is the
+		// LEGACY /snapshots/<cam>/<file> shape — this is no longer a
+		// live file-server route (removed in P1-A-03), but the shape
+		// encodes camera_id + filename which is everything the frontend
+		// needs to call /api/media/mint and get a signed /media/v1/...
+		// URL. The frontend's snapshot resolver (see resolveMediaURL in
+		// frontend/src/lib/media.ts) handles the rewrite transparently
+		// for any UI surface that renders this stored URL.
 		var snapshotURL string
 		if len(snapshot) > 0 && cfg.StoragePath != "" {
 			snapDir := filepath.Join(filepath.Dir(cfg.StoragePath), "snapshots", cam.ID.String())

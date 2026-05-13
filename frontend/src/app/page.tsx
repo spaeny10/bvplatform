@@ -56,11 +56,11 @@ function HomeInner() {
         setPageKey(k => k + 1);
     }, []);
 
-    // Redirect to login if not authenticated; redirect soc_operator to their home
+    // Redirect soc_operator to their home; AuthContext + RouteGuard handle
+    // unauthenticated redirects (a stale localStorage token check here would
+    // mis-fire under header-trust SSO where no token is ever stored).
     useEffect(() => {
-        if (typeof window !== 'undefined' && !localStorage.getItem('ironsight_token')) {
-            router.replace('/login');
-        } else if (user?.role === 'soc_operator') {
+        if (user?.role === 'soc_operator') {
             router.replace('/operator');
         }
     }, [router, user]);
@@ -219,7 +219,11 @@ function HomeInner() {
 
         function connect() {
             if (unmounted) return;
-            const ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
+            // Same-origin WebSocket — proto follows page scheme (wss when HTTPS),
+            // host follows current location so reverse-proxy deployments work
+            // without a hardcoded port. Behind NPM/Caddy at /ws.
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
             wsRef.current = ws;
 
             ws.onopen = () => {

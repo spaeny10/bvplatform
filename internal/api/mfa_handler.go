@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HandleMFAEnroll generates a fresh TOTP secret and 10 recovery codes

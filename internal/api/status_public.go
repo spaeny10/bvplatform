@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandlePublicStatus is the GET /status endpoint that backs a

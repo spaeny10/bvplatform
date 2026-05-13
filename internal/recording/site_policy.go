@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // SettingsForCamera resolves the recording policy a camera should run under.
