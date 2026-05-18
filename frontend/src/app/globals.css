@@ -1302,6 +1302,12 @@ body::before {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* LOCAL-03: reserve 32px on the left for the .cell-swap-btn gear icon
+     (28px wide at top:8px / left:8px). The cog appears on cell-hover and
+     would otherwise overlap the camera name, hiding the first 3-4
+     characters. Reserving the space unconditionally avoids a layout
+     shift when the cog fades in. */
+  padding-left: 32px;
 }
 
 .video-cell-badge {
