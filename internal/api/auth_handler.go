@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	"ironsight/internal/logging"
 )
 
 // ── Login ─────────────────────────────────────────────────────────────────
@@ -133,9 +135,13 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 				reason = "bad_password_lockout_triggered"
 			}
 			logFailedLogin(db, r, req.Username, reason)
-			log.Printf("[AUTH] Failed login for %q from %s (attempt %d%s)",
-				req.Username, clientIP(r), attempts,
-				map[bool]string{true: ", locked", false: ""}[nowLocked])
+			logging.FromContext(r.Context()).LogAttrs(r.Context(), slog.LevelWarn, "auth_failed_login",
+				slog.String("username", req.Username),
+				slog.String("client_ip", clientIP(r)),
+				slog.Int("attempts", attempts),
+				slog.Bool("now_locked", nowLocked),
+				slog.String("reason", reason),
+			)
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
@@ -162,9 +168,13 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 					reason = "bad_mfa_lockout_triggered"
 				}
 				logFailedLogin(db, r, req.Username, reason)
-				log.Printf("[AUTH] Bad MFA for %q from %s (attempt %d%s)",
-					req.Username, clientIP(r), attempts,
-					map[bool]string{true: ", locked", false: ""}[nowLocked])
+				logging.FromContext(r.Context()).LogAttrs(r.Context(), slog.LevelWarn, "auth_bad_mfa",
+					slog.String("username", req.Username),
+					slog.String("client_ip", clientIP(r)),
+					slog.Int("attempts", attempts),
+					slog.Bool("now_locked", nowLocked),
+					slog.String("reason", reason),
+				)
 				http.Error(w, "invalid credentials", http.StatusUnauthorized)
 				return
 			}

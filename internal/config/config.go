@@ -15,6 +15,11 @@ type Config struct {
 	// Server
 	ServerPort string
 
+	// Logging — slog level filter. Valid: debug, info (default), warn, error.
+	// P1-C-01: env-driven knob so operators can crank verbosity in an
+	// incident without redeploying. Unknown values fall through to info.
+	LogLevel string
+
 	// Database
 	DatabaseURL string
 
@@ -177,6 +182,7 @@ type Config struct {
 func Load() *Config {
 	cfg := &Config{
 		ServerPort:          getEnv("SERVER_PORT", "8080"),
+		LogLevel:            getEnv("LOG_LEVEL", "info"),
 		DatabaseURL:         getEnv("DATABASE_URL", "postgres://onvif:onvif_dev_password@localhost:5432/onvif_tool?sslmode=disable"),
 		StoragePath:         getEnv("STORAGE_PATH", "./storage/recordings"),
 		HLSPath:             getEnv("HLS_PATH", "./storage/hls"),

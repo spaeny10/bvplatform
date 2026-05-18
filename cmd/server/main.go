@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +26,7 @@ import (
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
 	"ironsight/internal/export"
+	"ironsight/internal/logging"
 	msdriver "ironsight/internal/milesight"
 	"ironsight/internal/notify"
 	"ironsight/internal/onvif"
@@ -35,13 +37,23 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Println("============================================")
-	log.Println("  ONVIF Tool - Starting Server")
-	log.Println("============================================")
-
-	// Load configuration
+	// Load configuration first so the log level is available before
+	// any log lines fire. Pre-config startup messages go to stderr via
+	// the stdlib log defaults; once InstallAsDefault runs, every
+	// subsequent log.Printf and slog call emits JSON.
 	cfg := config.Load()
+
+	// P1-C-01: structured logging. JSON to stderr, level from
+	// LOG_LEVEL env (info default). Also bridges the stdlib log
+	// package so the 300+ legacy log.Printf call sites emit
+	// structured lines too, migrate-as-touched.
+	logger := logging.New(cfg.LogLevel)
+	logging.InstallAsDefault(logger)
+	logger.Info("server_starting",
+		slog.String("product", cfg.ProductName),
+		slog.String("port", cfg.ServerPort),
+		slog.String("log_level", cfg.LogLevel),
+	)
 
 	// Ensure storage directories exist
 	for _, dir := range []string{cfg.StoragePath, cfg.HLSPath, cfg.ExportPath, cfg.ThumbnailPath} {

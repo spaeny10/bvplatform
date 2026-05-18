@@ -13,6 +13,7 @@ import (
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
+	"ironsight/internal/logging"
 	"ironsight/internal/notify"
 	"ironsight/internal/onvif"
 	"ironsight/internal/recording"
@@ -37,8 +38,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// same ffmpeg job in parallel for a popular segment.
 	transcoder := newTranscodeRegistry()
 
-	// Middleware
-	r.Use(middleware.Logger)
+	// Middleware. P1-C-01 swap: chi's middleware.Logger writes
+	// human-readable lines to stdlib log; we now emit structured JSON
+	// via internal/logging and tag every request with a UUIDv7 request
+	// id. RequestID must come BEFORE RequestLogger so the logger
+	// middleware can pre-bind the id into the per-request slog.Logger.
+	r.Use(logging.RequestID)
+	r.Use(logging.RequestLogger(nil)) // nil → process default set in cmd/server
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	// Origins come from cfg.AllowedOrigins which is populated by the
