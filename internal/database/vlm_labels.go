@@ -14,19 +14,19 @@ import (
 // Created passively whenever Qwen produces a description for an alarm frame;
 // drained by internal annotators via /admin/labeling (never by SOC operators).
 type VLMLabelJob struct {
-	ID             int64     `json:"id"`
-	AlarmID        string    `json:"alarm_id"`
-	CameraID       string    `json:"camera_id"`
-	SiteID         string    `json:"site_id"`
-	SnapshotURL    string    `json:"snapshot_url"`
-	VLMDescription string    `json:"vlm_description"`
-	VLMThreat      string    `json:"vlm_threat"`
-	VLMModel       string    `json:"vlm_model"`
-	YOLODetections []byte    `json:"yolo_detections"`
-	Status         string    `json:"status"` // pending | claimed | labeled | skipped
+	ID             int64      `json:"id"`
+	AlarmID        string     `json:"alarm_id"`
+	CameraID       string     `json:"camera_id"`
+	SiteID         string     `json:"site_id"`
+	SnapshotURL    string     `json:"snapshot_url"`
+	VLMDescription string     `json:"vlm_description"`
+	VLMThreat      string     `json:"vlm_threat"`
+	VLMModel       string     `json:"vlm_model"`
+	YOLODetections []byte     `json:"yolo_detections"`
+	Status         string     `json:"status"` // pending | claimed | labeled | skipped
 	ClaimedBy      *uuid.UUID `json:"claimed_by,omitempty"`
 	ClaimedAt      *time.Time `json:"claimed_at,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // VLMLabel is a ground-truth label submitted by an internal annotator.
@@ -44,15 +44,15 @@ type VLMLabel struct {
 
 // LabelingStats is a summary of the labeling queue health.
 type LabelingStats struct {
-	Pending  int `json:"pending"`
-	Claimed  int `json:"claimed"`
-	Labeled  int `json:"labeled"`
-	Skipped  int `json:"skipped"`
-	Total    int `json:"total"`
+	Pending int `json:"pending"`
+	Claimed int `json:"claimed"`
+	Labeled int `json:"labeled"`
+	Skipped int `json:"skipped"`
+	Total   int `json:"total"`
 	// label breakdown
-	Correct          int `json:"correct"`
-	Incorrect        int `json:"incorrect"`
-	NeedsCorrection  int `json:"needs_correction"`
+	Correct         int `json:"correct"`
+	Incorrect       int `json:"incorrect"`
+	NeedsCorrection int `json:"needs_correction"`
 }
 
 // EnqueueLabelJob inserts a new pending job into the labeling queue.

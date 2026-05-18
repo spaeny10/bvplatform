@@ -723,7 +723,7 @@ func isInformationalDisposition(code string) bool {
 
 // dispatchAlarmNotifications resolves recipients and hands off to the
 // channel mailers. Runs on its own goroutine with a fresh context — the
-// request context is already cancelled by the time we get here.
+// request context is already canceled by the time we get here.
 // Informational dispositions are suppressed; they only appear in the
 // customer's history and digest, never in real-time pushes.
 func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev *database.SecurityEvent, input *database.SecurityEventCreate) {

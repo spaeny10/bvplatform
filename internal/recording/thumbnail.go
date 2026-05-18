@@ -136,12 +136,12 @@ func ExtractClipFromSegment(ffmpegPath, segmentPath, destPath string, startOffse
 		"-ss", fmt.Sprintf("%.3f", startOffsetSec),
 		"-i", segmentPath,
 		"-t", fmt.Sprintf("%.3f", durationSec),
-		"-an",                 // strip audio — Qwen only needs vision
-		"-c:v", "libx264",     // re-encode for frame-accurate start
+		"-an",             // strip audio — Qwen only needs vision
+		"-c:v", "libx264", // re-encode for frame-accurate start
 		"-preset", "ultrafast",
-		"-crf", "28",          // modest quality: the VLM downsamples anyway
+		"-crf", "28", // modest quality: the VLM downsamples anyway
 		"-pix_fmt", "yuv420p",
-		"-r", "10",            // force constant 10 fps so qwen-vl-utils can read video_fps
+		"-r", "10", // force constant 10 fps so qwen-vl-utils can read video_fps
 		"-movflags", "+faststart",
 		"-y",
 		destPath,

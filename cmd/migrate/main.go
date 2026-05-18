@@ -151,7 +151,7 @@ func run() error {
 
 // cmdCreate scaffolds a new migration file on disk. We bypass goose.Create
 // for type=sql because goose's built-in template doesn't include the
-// StatementBegin/StatementEnd markers we standardised on (every Ironsight
+// StatementBegin/StatementEnd markers we standardized on (every Ironsight
 // migration uses StatementBegin/End so a future DO/BEGIN block can't break
 // the parser). For type=go we delegate to goose.Create which has a sane
 // Go-source template.

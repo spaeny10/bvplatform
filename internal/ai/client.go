@@ -28,10 +28,10 @@ type Config struct {
 
 // Detection is a single YOLO detection result.
 type Detection struct {
-	Class         string  `json:"class"`
-	Confidence    float64 `json:"confidence"`
-	BBox          BBox    `json:"bbox"`
-	BBoxNorm      BBox    `json:"bbox_normalized"`
+	Class      string  `json:"class"`
+	Confidence float64 `json:"confidence"`
+	BBox       BBox    `json:"bbox"`
+	BBoxNorm   BBox    `json:"bbox_normalized"`
 }
 
 // BBox is a bounding box in pixel or normalized coordinates.
@@ -44,32 +44,32 @@ type BBox struct {
 
 // YOLOResult is the response from the YOLO detection service.
 type YOLOResult struct {
-	Detections     []Detection `json:"detections"`
-	PPEDetections  []Detection `json:"ppe_detections"`
-	PPEViolations  []Detection `json:"ppe_violations"`
-	InferenceMs    float64     `json:"inference_ms"`
-	SecurityMs     float64     `json:"security_ms"`
-	PPEMs          float64     `json:"ppe_ms"`
-	Model          string      `json:"model"`
-	PPEModel       string      `json:"ppe_model"`
-	Device         string      `json:"device"`
+	Detections    []Detection `json:"detections"`
+	PPEDetections []Detection `json:"ppe_detections"`
+	PPEViolations []Detection `json:"ppe_violations"`
+	InferenceMs   float64     `json:"inference_ms"`
+	SecurityMs    float64     `json:"security_ms"`
+	PPEMs         float64     `json:"ppe_ms"`
+	Model         string      `json:"model"`
+	PPEModel      string      `json:"ppe_model"`
+	Device        string      `json:"device"`
 }
 
 // QwenResult is the response from the Qwen vLM reasoning service.
 type QwenResult struct {
-	ThreatLevel          string       `json:"threat_level"`
-	Description          string       `json:"description"`
-	RecommendedAction    string       `json:"recommended_action"`
-	FalsePositivePct     float64      `json:"false_positive_likelihood"`
-	Objects              []QwenObject `json:"objects"`
-	InferenceMs          float64      `json:"inference_ms"`
-	Model                string       `json:"model"`
-	Degraded             bool         `json:"degraded"` // true when server fell back to mock_analysis
+	ThreatLevel       string       `json:"threat_level"`
+	Description       string       `json:"description"`
+	RecommendedAction string       `json:"recommended_action"`
+	FalsePositivePct  float64      `json:"false_positive_likelihood"`
+	Objects           []QwenObject `json:"objects"`
+	InferenceMs       float64      `json:"inference_ms"`
+	Model             string       `json:"model"`
+	Degraded          bool         `json:"degraded"` // true when server fell back to mock_analysis
 }
 
 // QwenObject is a detected object with attributes from the vLM.
 type QwenObject struct {
-	Type       string            `json:"type"`
+	Type       string                 `json:"type"`
 	Attributes map[string]interface{} `json:"attributes"`
 }
 
@@ -136,15 +136,15 @@ type siteCounters struct {
 
 // SiteAIStats is the per-site row in a usage breakdown.
 type SiteAIStats struct {
-	SiteID         string `json:"site_id"`
-	YOLOCalls      int64  `json:"yolo_calls"`
-	YOLOConfirmed  int64  `json:"yolo_confirmed"`
-	YOLOFiltered   int64  `json:"yolo_filtered"`
-	YOLOAvgMs      int64  `json:"yolo_avg_ms"`
-	QwenCalls      int64  `json:"qwen_calls"`
-	QwenConfirmed  int64  `json:"qwen_confirmed"`
-	QwenFiltered   int64  `json:"qwen_filtered"`
-	QwenAvgMs      int64  `json:"qwen_avg_ms"`
+	SiteID        string `json:"site_id"`
+	YOLOCalls     int64  `json:"yolo_calls"`
+	YOLOConfirmed int64  `json:"yolo_confirmed"`
+	YOLOFiltered  int64  `json:"yolo_filtered"`
+	YOLOAvgMs     int64  `json:"yolo_avg_ms"`
+	QwenCalls     int64  `json:"qwen_calls"`
+	QwenConfirmed int64  `json:"qwen_confirmed"`
+	QwenFiltered  int64  `json:"qwen_filtered"`
+	QwenAvgMs     int64  `json:"qwen_avg_ms"`
 }
 
 // SiteStatsSnapshot returns one entry per site that has ever fired an
@@ -204,15 +204,15 @@ func (c *Client) counterFor(siteID string) *siteCounters {
 // AIStats is the snapshot of the runtime counters returned to the UI.
 // All counts are cumulative since process start.
 type AIStats struct {
-	YOLOCalls       int64 `json:"yolo_calls"`
-	YOLOConfirmed   int64 `json:"yolo_confirmed"`
-	YOLOFiltered    int64 `json:"yolo_filtered"`
-	YOLOAvgMs       int64 `json:"yolo_avg_ms"`
+	YOLOCalls     int64 `json:"yolo_calls"`
+	YOLOConfirmed int64 `json:"yolo_confirmed"`
+	YOLOFiltered  int64 `json:"yolo_filtered"`
+	YOLOAvgMs     int64 `json:"yolo_avg_ms"`
 
-	QwenCalls       int64 `json:"qwen_calls"`
-	QwenConfirmed   int64 `json:"qwen_confirmed"`
-	QwenFiltered    int64 `json:"qwen_filtered"`
-	QwenAvgMs       int64 `json:"qwen_avg_ms"`
+	QwenCalls     int64 `json:"qwen_calls"`
+	QwenConfirmed int64 `json:"qwen_confirmed"`
+	QwenFiltered  int64 `json:"qwen_filtered"`
+	QwenAvgMs     int64 `json:"qwen_avg_ms"`
 }
 
 // Stats returns a snapshot of the runtime counters. Safe for concurrent
@@ -248,7 +248,7 @@ func (c *Client) Stats() AIStats {
 // NewClient creates an AI pipeline client.
 func NewClient(cfg Config) *Client {
 	return &Client{
-		cfg: cfg,
+		cfg:  cfg,
 		http: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -392,13 +392,13 @@ func (c *Client) Analyze(ctx context.Context, jpegFrame []byte, siteID, siteCont
 // a clip for later FTS/tag search, with no threat assessment. Lives alongside
 // QwenResult because most fields differ.
 type DescribeResult struct {
-	Description   string                 `json:"description"`
-	Tags          []string               `json:"tags"`
-	ActivityLevel string                 `json:"activity_level"`
-	Entities      []QwenObject           `json:"entities"`
-	InferenceMs   float64                `json:"inference_ms"`
-	Model         string                 `json:"model"`
-	Degraded      bool                   `json:"degraded"`
+	Description   string       `json:"description"`
+	Tags          []string     `json:"tags"`
+	ActivityLevel string       `json:"activity_level"`
+	Entities      []QwenObject `json:"entities"`
+	InferenceMs   float64      `json:"inference_ms"`
+	Model         string       `json:"model"`
+	Degraded      bool         `json:"degraded"`
 	// Raw is kept so unexpected fields survive a future prompt change.
 	Raw map[string]interface{} `json:"-"`
 }

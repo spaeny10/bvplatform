@@ -21,7 +21,7 @@ package api
 // What we *can* test cheaply in pure Go: token-validation rejection
 // paths (expired, wrong sig, wrong issuer, tampered), path-traversal
 // allow-list, the m3u8 rewriter, and the audit ring buffer's batching
-// behaviour.
+// behavior.
 
 import (
 	"net/http"
@@ -335,7 +335,7 @@ func TestResolveMediaPath_RejectsCrossKindEscape(t *testing.T) {
 
 // We don't have a live DB in unit tests, so the auditor's flushBatch
 // would panic on a nil pool. The Start/Stop loop also runs forever
-// until Stop. Just verify the channel-buffer + drop-on-full behaviour
+// until Stop. Just verify the channel-buffer + drop-on-full behavior
 // — the only logic with branches.
 func TestMediaAuditor_DropsOnFullRing(t *testing.T) {
 	a := &mediaAuditor{rows: make(chan mediaAuditRow, 2)}

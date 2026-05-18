@@ -164,17 +164,37 @@ func (c *Client) discoverServices(ctx context.Context) error {
 		Body    struct {
 			Response struct {
 				Capabilities struct {
-					Analytics struct{ XAddr string `xml:"XAddr"` } `xml:"Analytics"`
-					Device    struct{ XAddr string `xml:"XAddr"` } `xml:"Device"`
-					Events    struct{ XAddr string `xml:"XAddr"` } `xml:"Events"`
-					Imaging   struct{ XAddr string `xml:"XAddr"` } `xml:"Imaging"`
-					Media     struct{ XAddr string `xml:"XAddr"` } `xml:"Media"`
-					PTZ       struct{ XAddr string `xml:"XAddr"` } `xml:"PTZ"`
+					Analytics struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"Analytics"`
+					Device struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"Device"`
+					Events struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"Events"`
+					Imaging struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"Imaging"`
+					Media struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"Media"`
+					PTZ struct {
+						XAddr string `xml:"XAddr"`
+					} `xml:"PTZ"`
 					Extension struct {
-						DeviceIO  struct{ XAddr string `xml:"XAddr"` } `xml:"DeviceIO"`
-						Recording struct{ XAddr string `xml:"XAddr"` } `xml:"Recording"`
-						Search    struct{ XAddr string `xml:"XAddr"` } `xml:"Search"`
-						Replay    struct{ XAddr string `xml:"XAddr"` } `xml:"Replay"`
+						DeviceIO struct {
+							XAddr string `xml:"XAddr"`
+						} `xml:"DeviceIO"`
+						Recording struct {
+							XAddr string `xml:"XAddr"`
+						} `xml:"Recording"`
+						Search struct {
+							XAddr string `xml:"XAddr"`
+						} `xml:"Search"`
+						Replay struct {
+							XAddr string `xml:"XAddr"`
+						} `xml:"Replay"`
 					} `xml:"Extension"`
 				} `xml:"Capabilities"`
 			} `xml:"GetCapabilitiesResponse"`
@@ -221,7 +241,7 @@ func (c *Client) discoverServices(ctx context.Context) error {
 // serviceURL returns the discovered URL for `service` if we have one,
 // otherwise falls back to the hard-coded path convention. The fallback
 // covers cameras whose GetCapabilities didn't return that service —
-// behaviour matches what the code did before discovery was added.
+// behavior matches what the code did before discovery was added.
 func (c *Client) serviceURL(service, fallbackPath string) string {
 	switch service {
 	case "media":
@@ -1090,7 +1110,7 @@ func (c *Client) TriggerAlarmOut(ctx context.Context) error {
 
 // escapeXML replaces characters that break SOAP bodies. Relay tokens
 // contain spaces ("Warning Light") but rarely anything exotic; this is
-// defence against future token names that include & < > " '.
+// defense against future token names that include & < > " '.
 func escapeXML(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;", "'", "&apos;")
 	return r.Replace(s)

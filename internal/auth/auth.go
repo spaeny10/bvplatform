@@ -94,7 +94,7 @@ func ParseToken(tokenStr, secret string) (*Claims, error) {
 // ──────────────────── Media tokens (P1-A-03) ────────────────────
 //
 // Media tokens are a SEPARATE class of JWT from the session tokens above.
-// They authorise read-access to a single file (one segment, one snapshot,
+// They authorize read-access to a single file (one segment, one snapshot,
 // or one HLS playlist) for a short window — default 5 min, capped at 1 h.
 // The split is enforced by the `iss` (issuer) claim: session tokens use
 // the default issuer (i.e. empty / not set by SignToken); media tokens
@@ -126,7 +126,7 @@ const (
 	MediaKindSnapshot MediaKind = "snapshot" // alarm-time JPEG in snapshots dir
 )
 
-// IsValid reports whether k is one of the recognised media kinds. Anything
+// IsValid reports whether k is one of the recognized media kinds. Anything
 // else must be rejected at parse time so a forged-but-typo'd token can't
 // silently fall through to a "default" code path.
 func (k MediaKind) IsValid() bool {
@@ -145,7 +145,7 @@ func (k MediaKind) IsValid() bool {
 //
 // `Path` is the leaf filename only — no directory components, no `..`,
 // no slashes. SignMediaToken enforces this at mint time so a tampered
-// token also fails at parse time (path-traversal defence in depth).
+// token also fails at parse time (path-traversal defense in depth).
 type MediaClaims struct {
 	UserID   string    `json:"sub"`  // user_id of the caller who minted
 	CameraID string    `json:"cam"`  // camera UUID the file belongs to
@@ -157,9 +157,9 @@ type MediaClaims struct {
 // validMediaPath enforces a strict allow-list on the leaf filename.
 // Reject anything containing path separators (`/`, `\`), parent
 // references (`..`), or characters outside [a-zA-Z0-9._-]. Empty is
-// rejected too. Mirror this check on the serve side as defence in
+// rejected too. Mirror this check on the serve side as defense in
 // depth — a forged token that survives signature verification would
-// otherwise be the only line of defence against traversal.
+// otherwise be the only line of defense against traversal.
 func validMediaPath(p string) bool {
 	if p == "" || len(p) > 255 {
 		return false
@@ -190,7 +190,7 @@ func validMediaPath(p string) bool {
 // SignMediaToken mints a short-lived media-access JWT. The caller is
 // responsible for having already verified that `userID` may access
 // `cameraID` (e.g. via api.CanAccessCamera) — this function does not
-// re-check authorisation, it only signs. The serve handler also
+// re-check authorization, it only signs. The serve handler also
 // re-checks at every request to defend against role changes between
 // mint and serve.
 //

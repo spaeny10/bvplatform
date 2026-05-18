@@ -1,0 +1,190 @@
+# Ironsight CI — runs on every PR to main and on direct pushes to main.
+# See docs/ci.md for the local-reproduction recipe + failure-mode triage.
+#
+# Acceptance gates: this workflow must complete cleanly before a PR can
+# merge. Branch protection is configured on the upstream repo
+# (spaeny10/bvplatform) to require: backend, frontend, migrations,
+# gitleaks — all four — green.
+#
+# Performance target: <10 minutes wall-clock for a typical PR. The
+# jobs run in parallel; the longest pole is the frontend build
+# (next build is ~3 min on the GitHub runner) so total is bounded by
+# that plus the migration container spin-up time.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch when a new push lands —
+# saves runner minutes when a developer force-pushes a fix while a
+# previous CI run is still in flight.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Backend (Go) ────────────────────────────────────────────────────
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # v1.64.8 is the last v1 release that builds cleanly under
+          # Go 1.25 (older versions fail at x/tools/internal/tokeninternal
+          # constant-overflow). v2.x has a different config schema that
+          # would require rewriting .golangci.yml — pin v1 until we
+          # batch a v2 migration.
+          version: v1.64.8
+          # Use the repo-local .golangci.yml — sets the actual linter
+          # set + per-rule tuning so we don't drown in false positives
+          # the first time CI runs.
+          args: --timeout=5m
+
+      - name: go build (all binaries)
+        run: go build ./cmd/server ./cmd/worker ./cmd/migrate ./cmd/seed
+
+      - name: go test -race
+        run: go test ./... -race -count=1
+        # Suppress the data-race warnings emitted by third-party libs
+        # we don't control. Add real fixes to the codebase rather than
+        # widening this allowlist.
+        env:
+          GORACE: halt_on_error=0
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: TypeScript type-check
+        # tsc --noEmit is the strongest static-check we have for the
+        # frontend short of running the actual app. Catches every
+        # `any`-laundered prop drift, mis-typed API response, etc.
+        # Faster than next build and surfaces errors closer to the line.
+        run: npx tsc --noEmit -p .
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Production build
+        # next build runs its own type-check + ESLint pass too, but
+        # those are downstream of the dedicated `tsc --noEmit` and
+        # `npm run lint` steps above — keeping them separate produces
+        # better failure isolation (a tsc error doesn't get hidden
+        # inside the build log).
+        run: npm run build
+
+  # ── Migrations (Postgres + TimescaleDB) ─────────────────────────────
+  migrations:
+    name: Migrations (up/down/up round-trip)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        # GitHub's service-container health-check default polls every
+        # 10s but a TimescaleDB container is ready in ~3s on the
+        # standard runner. Override to keep the job start fast.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/testdb?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U postgres; then
+              echo "db ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "db never came up"
+          exit 1
+
+      - name: Migrations up
+        run: goose -dir migrations postgres "$DATABASE_URL" up
+
+      - name: Migrations down (to baseline-1)
+        # Roll all the way back to test every Down section. On a fresh
+        # DB this drops everything 0001 created. If any Down section
+        # is broken, the goose-applied-version table will be left in a
+        # partial state and this step will fail.
+        run: goose -dir migrations postgres "$DATABASE_URL" reset
+
+      - name: Migrations up again (idempotency check)
+        # After a full reset, applying up again should produce the
+        # same schema. Any Down step that doesn't fully reverse its
+        # Up step will surface here as a duplicate-object error or a
+        # missing-precondition failure.
+        run: goose -dir migrations postgres "$DATABASE_URL" up
+
+  # ── Security: secret scanning ───────────────────────────────────────
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs full history to detect secrets in older
+          # commits; shallow clone (the actions/checkout default)
+          # would miss anything past HEAD~1.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Allowlist for known-safe patterns lives in .gitleaks.toml.
+        # Edit that file when you need to ignore a false positive —
+        # don't widen the action's own ignore-rules.

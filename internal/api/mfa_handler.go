@@ -85,12 +85,12 @@ func HandleMFAEnroll(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			issuer = "Ironsight"
 		}
 		writeJSON(w, map[string]interface{}{
-			"secret":            secret,
-			"provisioning_url":  auth.ProvisioningURL(secret, issuer, claims.Username),
-			"recovery_codes":    recoveryCodes,
-			"recovery_count":    len(recoveryCodes),
-			"requires_confirm":  true,
-			"confirm_endpoint":  "/api/auth/mfa/confirm",
+			"secret":           secret,
+			"provisioning_url": auth.ProvisioningURL(secret, issuer, claims.Username),
+			"recovery_codes":   recoveryCodes,
+			"recovery_count":   len(recoveryCodes),
+			"requires_confirm": true,
+			"confirm_endpoint": "/api/auth/mfa/confirm",
 		})
 	}
 }

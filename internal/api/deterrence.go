@@ -41,14 +41,14 @@ type DeterrenceRequest struct {
 // DeterrenceResponse is returned on success so the frontend can show a
 // confirmation toast ("Strobe fired for 10 s").
 type DeterrenceResponse struct {
-	OK           bool   `json:"ok"`
-	Action       string `json:"action"`
-	CameraID     string `json:"camera_id"`
-	CameraName   string `json:"camera_name"`
-	DurationSec  int    `json:"duration_sec"`
-	FiredAt      int64  `json:"fired_at"` // unix millis
-	RelayTokens  []string `json:"relay_tokens"`
-	Message      string `json:"message,omitempty"`
+	OK          bool     `json:"ok"`
+	Action      string   `json:"action"`
+	CameraID    string   `json:"camera_id"`
+	CameraName  string   `json:"camera_name"`
+	DurationSec int      `json:"duration_sec"`
+	FiredAt     int64    `json:"fired_at"` // unix millis
+	RelayTokens []string `json:"relay_tokens"`
+	Message     string   `json:"message,omitempty"`
 }
 
 // HandleDeterrence fires one of the camera's relay outputs (strobe / siren /

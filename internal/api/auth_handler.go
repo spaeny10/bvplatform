@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"

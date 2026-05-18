@@ -94,9 +94,10 @@ func (d *MilesightDriver) PushVCARules(ctx context.Context, cameraIP, username, 
 // Milesight uses 0-10000 integer coordinates (we store 0.0-1.0 normalized).
 //
 // Example output for intrusion region 1:
-//   vca/intrusion.enable=1&vca/intrusion.region1.enable=1&vca/intrusion.region1.name=Zone+1
-//   &vca/intrusion.region1.sensitivity=50&vca/intrusion.region1.pointnum=4
-//   &vca/intrusion.region1.point1x=1000&vca/intrusion.region1.point1y=2000&...
+//
+//	vca/intrusion.enable=1&vca/intrusion.region1.enable=1&vca/intrusion.region1.name=Zone+1
+//	&vca/intrusion.region1.sensitivity=50&vca/intrusion.region1.pointnum=4
+//	&vca/intrusion.region1.point1x=1000&vca/intrusion.region1.point1y=2000&...
 func buildMilesightFormBody(configKey, ruleType string, rules []VCARuleCompact) string {
 	var params []string
 	params = append(params, configKey+".enable=1")

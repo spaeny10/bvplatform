@@ -14,20 +14,20 @@ type MonthlySummary struct {
 	PeriodStart      time.Time
 	PeriodEnd        time.Time
 
-	SiteCount         int
-	CameraCount       int
-	IncidentCount     int
-	AlarmCount        int
-	DispositionCount  int
-	VerifiedThreats   int
-	FalsePositives    int
+	SiteCount        int
+	CameraCount      int
+	IncidentCount    int
+	AlarmCount       int
+	DispositionCount int
+	VerifiedThreats  int
+	FalsePositives   int
 
 	// Response-time metrics for alarms generated at this org's sites,
 	// pulled from the same SLA logic as the supervisor dashboard.
-	AvgAckSec   float64
-	P95AckSec   float64
-	WithinSLA   int
-	OverSLA     int
+	AvgAckSec float64
+	P95AckSec float64
+	WithinSLA int
+	OverSLA   int
 
 	// Top events: at most 5, surfaced in the email body so the
 	// customer reads concrete examples instead of just abstract

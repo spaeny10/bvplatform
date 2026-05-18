@@ -18,7 +18,7 @@
 //   3. The frontend uses that URL directly in <video src=...>, <img
 //      src=...>, etc. Browser → /media/v1/<token> hits HandleMediaServe.
 //   4. HandleMediaServe parses + validates the token, re-runs
-//      CanAccessCamera (defence against role changes between mint &
+//      CanAccessCamera (defense against role changes between mint &
 //      serve), resolves the kind to a base directory, and streams the
 //      file. For .m3u8 playlists it rewrites every segment-URI line
 //      to its own freshly-minted /media/v1/<sub-token>.
@@ -95,13 +95,13 @@ const (
 // response writer is touched so even an aborted connection still gets
 // logged.
 type mediaAuditRow struct {
-	when       time.Time
-	userID     uuid.UUID
-	username   string
-	cameraID   string
-	path       string
-	kind       string
-	ip         string
+	when     time.Time
+	userID   uuid.UUID
+	username string
+	cameraID string
+	path     string
+	kind     string
+	ip       string
 }
 
 // mediaAuditor is the goroutine-safe queue that batches serve events
@@ -109,10 +109,10 @@ type mediaAuditRow struct {
 // any handler can call enqueue(...) and is guaranteed not to block on
 // the DB. Start() must be called exactly once; Stop() drains and exits.
 type mediaAuditor struct {
-	db    *database.DB
-	rows  chan mediaAuditRow
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	db   *database.DB
+	rows chan mediaAuditRow
+	stop chan struct{}
+	wg   sync.WaitGroup
 }
 
 func newMediaAuditor(db *database.DB) *mediaAuditor {
@@ -359,7 +359,7 @@ func HandleMediaMint(cfg *config.Config, db *database.DB) http.HandlerFunc {
 
 // HandleMediaServe validates the token in the URL, re-checks tenant
 // scope, and streams the file. Public (no auth middleware) — the token
-// IS the authorisation.
+// IS the authorization.
 //
 // Failure modes:
 //
@@ -384,7 +384,7 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		// Tokens have a 5-min TTL but role changes (admin demotes a
 		// customer mid-session, customer is removed from a site) must
 		// take effect immediately — we can't trust the mint-time
-		// authorisation alone. Cost: one indexed point lookup.
+		// authorization alone. Cost: one indexed point lookup.
 		camUUID, err := uuid.Parse(claims.CameraID)
 		if err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -406,7 +406,7 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		// Resolve kind → on-disk path. The path inside the token is
 		// already proven leaf-only by ParseMediaToken's validMediaPath
 		// check; we still pass it through filepath.Base as
-		// defence-in-depth so a future bug in the validator can't
+		// defense-in-depth so a future bug in the validator can't
 		// escape the camera directory.
 		absPath, ok := resolveMediaPath(cfg, claims)
 		if !ok {
@@ -437,7 +437,7 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 
 		// HLS playlists require rewriting — every segment URI in the
 		// playlist needs its own signed token so the browser's
-		// follow-up GETs are authorised. Anything else streams
+		// follow-up GETs are authorized. Anything else streams
 		// straight off disk.
 		if claims.Kind == auth.MediaKindHLS && strings.HasSuffix(strings.ToLower(claims.Path), ".m3u8") {
 			serveRewrittenM3U8(w, r, cfg, claims, absPath)
@@ -489,7 +489,7 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		// caches the response could leak data after the token expires.
 		w.Header().Set("Cache-Control", "no-store, private")
 
-		// ServeContent honours Range requests, which the HTML5 video
+		// ServeContent honors Range requests, which the HTML5 video
 		// element relies on for scrubbing. The displayed filename is the
 		// leaf-only Path so downloads land with a useful name.
 		http.ServeContent(w, r, claims.Path, info.ModTime(), mustOpen(absPath))
@@ -500,7 +500,7 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 // path. Returns ok=false if the kind is unhandled or the configured
 // base path is empty (storage not configured).
 func resolveMediaPath(cfg *config.Config, c *auth.MediaClaims) (string, bool) {
-	// filepath.Base is the second-line defence. ParseMediaToken's
+	// filepath.Base is the second-line defense. ParseMediaToken's
 	// validMediaPath already rejected `/`, `\`, and `..` — but we run
 	// Base anyway so a regression in the validator can't reach disk.
 	leaf := filepath.Base(c.Path)
@@ -641,7 +641,7 @@ func rewriteM3U8Line(line string, cfg *config.Config, parent *auth.MediaClaims, 
 
 // rewriteAttributeURI rewrites the URI="..." attribute embedded in an
 // HLS tag line. Returns the line unchanged if the attribute can't be
-// parsed (defence against malformed playlists — better to pass through
+// parsed (defense against malformed playlists — better to pass through
 // than to corrupt).
 func rewriteAttributeURI(line string, cfg *config.Config, parent *auth.MediaClaims, ttl time.Duration) string {
 	const marker = `URI="`
@@ -727,7 +727,7 @@ func MintSegmentPlaybackURL(cfg *config.Config, userID, cameraID, segFilePath st
 	offset := eventTime.Sub(segStart).Seconds()
 	if offset > 0 && offset < 7200 {
 		// Match the original buildPlaybackURL format: append a fragment
-		// that the HTML5 video element honours as an initial-seek hint.
+		// that the HTML5 video element honors as an initial-seek hint.
 		var sb strings.Builder
 		sb.Grow(len(url) + 16)
 		sb.WriteString(url)

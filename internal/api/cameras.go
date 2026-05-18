@@ -461,7 +461,7 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 							"description": alarm.Description, "ts": now,
 							"acknowledged": false, "escalation_level": 0,
 							"sla_deadline_ms": alarm.SlaDeadlineMs,
-							"snapshot_url": snapshotURL, "clip_url": "",
+							"snapshot_url":    snapshotURL, "clip_url": "",
 						},
 					})
 					hub.Broadcast(alertMsg)

@@ -172,8 +172,7 @@ func (es *EventStream) parseMessage(data []byte) {
 	// Debug: log messages with non-empty trackList or objAttrList
 	count := int(debugMsgCount)
 	debugMsgCount++
-	hasContent := len(data) > 50 && (
-		!strings.Contains(string(data[:min(len(data), 200)]), `"trackList":[]`) ||
+	hasContent := len(data) > 50 && (!strings.Contains(string(data[:min(len(data), 200)]), `"trackList":[]`) ||
 		!strings.Contains(string(data[:min(len(data), 200)]), `"objAttrList":[]`))
 	if count < 3 || hasContent {
 		log.Printf("[MILESIGHT] %s: msg #%d len=%d sample=%s", es.label, count, len(data), string(data[:min(len(data), 500)]))
@@ -203,25 +202,25 @@ type msTrackFrame struct {
 		TimeUsec  int64 `json:"timeUsec"`
 		TimeHd    int64 `json:"timeHd"`
 		TrackList []struct {
-			TrackID              int `json:"trackID"`
-			X                    int `json:"x"`
-			Y                    int `json:"y"`
-			W                    int `json:"w"`
-			H                    int `json:"h"`
-			Class                int `json:"Class"` // 1=human, 2=vehicle
+			TrackID               int `json:"trackID"`
+			X                     int `json:"x"`
+			Y                     int `json:"y"`
+			W                     int `json:"w"`
+			H                     int `json:"h"`
+			Class                 int `json:"Class"` // 1=human, 2=vehicle
 			VcaIntrusionDetection int `json:"vcaIntrusionDetection"`
-			VcaIntrusionEnter    int `json:"vcaIntrusionEnter"`
-			VcaIntrusionExit     int `json:"vcaIntrusionExit"`
-			LineCrossing         int `json:"lineCrossing"`
-			ObjectLoitering      int `json:"objectLoitering"`
-			HumanDetection       int `json:"humanDetection"`
-			VcaAdvancedMotion    int `json:"vcaAdvancedMotion"`
-			AiMotion             int `json:"aiMotion"`
-			ObjectLeftRemoved    int `json:"objectLeftRemoved"`
-			TamperDefocus        int `json:"tamperDefocus"`
-			ObjectCounting       int `json:"objectCounting"`
-			PeopleCountRgn       int `json:"peopleCountRgn"`
-			VehicleCountLine     int `json:"vehicleCountLine"`
+			VcaIntrusionEnter     int `json:"vcaIntrusionEnter"`
+			VcaIntrusionExit      int `json:"vcaIntrusionExit"`
+			LineCrossing          int `json:"lineCrossing"`
+			ObjectLoitering       int `json:"objectLoitering"`
+			HumanDetection        int `json:"humanDetection"`
+			VcaAdvancedMotion     int `json:"vcaAdvancedMotion"`
+			AiMotion              int `json:"aiMotion"`
+			ObjectLeftRemoved     int `json:"objectLeftRemoved"`
+			TamperDefocus         int `json:"tamperDefocus"`
+			ObjectCounting        int `json:"objectCounting"`
+			PeopleCountRgn        int `json:"peopleCountRgn"`
+			VehicleCountLine      int `json:"vehicleCountLine"`
 		} `json:"trackList"`
 	} `json:"trackData"`
 }

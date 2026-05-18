@@ -157,18 +157,18 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 			alertMsg, _ := json.Marshal(map[string]interface{}{
 				"type": "alarm",
 				"data": map[string]interface{}{
-					"id":              alarm.ID,
-					"site_id":         alarm.SiteID,
-					"site_name":       alarm.SiteName,
-					"camera_id":       alarm.CameraID,
-					"camera_name":     alarm.CameraName,
-					"severity":        alarm.Severity,
-					"type":            alarm.Type,
-					"description":     alarm.Description,
-					"ts":              alarm.Ts,
-					"acknowledged":    alarm.Acknowledged,
+					"id":               alarm.ID,
+					"site_id":          alarm.SiteID,
+					"site_name":        alarm.SiteName,
+					"camera_id":        alarm.CameraID,
+					"camera_name":      alarm.CameraName,
+					"severity":         alarm.Severity,
+					"type":             alarm.Type,
+					"description":      alarm.Description,
+					"ts":               alarm.Ts,
+					"acknowledged":     alarm.Acknowledged,
 					"escalation_level": 0,
-					"snapshot_url":    alarm.SnapshotURL,
+					"snapshot_url":     alarm.SnapshotURL,
 				},
 			})
 			hub.Broadcast(alertMsg)
@@ -330,7 +330,7 @@ func base64Decode(s string) ([]byte, error) {
 // mapSenseEventType normalises the camera's raw event_type label into
 // the platform's existing event taxonomy (the same strings ONVIF
 // events produce, so downstream alarm-rules and AI prompts treat
-// pushed events identically). Anything we don't recognise falls
+// pushed events identically). Anything we don't recognize falls
 // through as the raw label, which the operator UI still renders.
 func mapSenseEventType(raw string) string {
 	r := strings.ToLower(raw)

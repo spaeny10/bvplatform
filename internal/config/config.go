@@ -51,9 +51,9 @@ type Config struct {
 	// so a freshly-deployed system can be administered without a DB seed step.
 	// SSODefaultRole is what every other SSO-provisioned user gets ("viewer"
 	// is the least-privilege role, recommended).
-	SSOTrustHeader  string
-	SSOAdminEmails  []string
-	SSODefaultRole  string
+	SSOTrustHeader string
+	SSOAdminEmails []string
+	SSODefaultRole string
 
 	// CORS allowlist for the API. Comma-separated origins in the env;
 	// the helper splits on commas and trims whitespace. UL 827B
@@ -109,9 +109,9 @@ type Config struct {
 	// on any replica; a shared Redis channel delivers that fanout. Empty
 	// string = in-memory only (single-replica deployments don't need Redis
 	// and shouldn't have to run it).
-	RedisURL         string // full Redis DSN, e.g. redis://redis:6379/0
-	RedisWSChannel   string // pub/sub channel name; all replicas in a
-	                        // deployment must share this value
+	RedisURL       string // full Redis DSN, e.g. redis://redis:6379/0
+	RedisWSChannel string // pub/sub channel name; all replicas in a
+	// deployment must share this value
 
 	// RunWorkers controls whether the api binary also runs the batch
 	// workloads (retention, VLM indexer, export worker). Default: true.
@@ -131,7 +131,7 @@ type Config struct {
 	MediaMTXWebRTCAddr string // host[:port] that hosts the WHEP endpoint the Go API reverse-proxies to
 	MediaMTXRTSPAddr   string // host[:port] the local RTSP relay listens on (recording engine pulls from this)
 	MediaMTXAPIAddr    string // host[:port] of MediaMTX's HTTP control API — runtime path adds/removes go here
-	                          // so we stop round-tripping YAML config through a shared volume.
+	// so we stop round-tripping YAML config through a shared volume.
 
 	// WebRTCAdditionalHosts is a list of hostnames or IPs MediaMTX advertises
 	// in WebRTC ICE candidates in addition to its own bound interface(s). In
@@ -207,7 +207,7 @@ func Load() *Config {
 		TwilioFrom:          getEnv("TWILIO_FROM", ""),
 		ProductName:         getEnv("PRODUCT_NAME", "Ironsight"),
 
-		// MediaMTX: embedded spawn is the historical behaviour, still the
+		// MediaMTX: embedded spawn is the historical behavior, still the
 		// default for single-binary dev. Set EMBEDDED_MEDIAMTX=0 to opt out —
 		// the Go process then assumes MediaMTX is already running at the
 		// addresses below (docker-compose sibling container, K8s sidecar).
@@ -236,9 +236,9 @@ func Load() *Config {
 		// + NPM in the BigView deployment) that strips inbound copies
 		// of X-Forwarded-Email; otherwise any client could impersonate
 		// any user.
-		SSOTrustHeader:  getEnv("SSO_TRUST_HEADER", ""),
-		SSOAdminEmails:  parseAllowedOrigins(getEnv("SSO_ADMIN_EMAILS", "")),
-		SSODefaultRole:  getEnv("SSO_DEFAULT_ROLE", "viewer"),
+		SSOTrustHeader: getEnv("SSO_TRUST_HEADER", ""),
+		SSOAdminEmails: parseAllowedOrigins(getEnv("SSO_ADMIN_EMAILS", "")),
+		SSODefaultRole: getEnv("SSO_DEFAULT_ROLE", "viewer"),
 
 		// AI pipeline endpoints. Defaults match the in-host loopback ports
 		// the docker-compose layout publishes; sibling-container deployments
@@ -255,10 +255,10 @@ func Load() *Config {
 
 		// Indexer settings — see internal/indexer/indexer.go for the worker
 		// loop. Concurrency outside 1..16 falls back to default 1 (matches
-		// the historical clamping behaviour). INDEXER_ENABLED uses the
+		// the historical clamping behavior). INDEXER_ENABLED uses the
 		// narrower "0 or case-insensitive false disables" rule that the
 		// indexer's original inline parser used — wider getEnvBool ("no" /
-		// "off" / etc) would silently flip behaviour on existing
+		// "off" / etc) would silently flip behavior on existing
 		// deployments using those strings.
 		IndexerConcurrency: clampIndexerConcurrency(getEnvInt("INDEXER_CONCURRENCY", 1)),
 		IndexerEnabled:     indexerEnabledFromEnv(),
@@ -273,7 +273,7 @@ func Load() *Config {
 }
 
 // clampIndexerConcurrency mirrors the historical inline check in
-// internal/indexer/indexer.go: only positive values in [1,16] are honoured;
+// internal/indexer/indexer.go: only positive values in [1,16] are honored;
 // everything else falls back to the default 1.
 func clampIndexerConcurrency(n int) int {
 	if n < 1 || n > 16 {
@@ -286,7 +286,7 @@ func clampIndexerConcurrency(n int) int {
 // default true; INDEXER_ENABLED=0 or INDEXER_ENABLED=false (case-insensitive)
 // disables. Other values keep it on. This is intentionally narrower than the
 // shared getEnvBool helper so a value of "no" / "off" doesn't silently flip
-// behaviour on a deployment that previously left those untreated.
+// behavior on a deployment that previously left those untreated.
 func indexerEnabledFromEnv() bool {
 	v := os.Getenv("INDEXER_ENABLED")
 	if v == "" {

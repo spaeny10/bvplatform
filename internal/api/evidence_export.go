@@ -64,11 +64,11 @@ type EvidenceManifest struct {
 // score travels with the bundle for any downstream consumer; covered
 // by SIGNATURE.txt's HMAC like the rest of the manifest.
 type EvidenceAVSSection struct {
-	Score          int         `json:"score"`
-	Label          string      `json:"label"`
-	RubricVersion  string      `json:"rubric_version"`
-	Factors        avs.Factors `json:"factors"`
-	DispatchEligible bool      `json:"dispatch_eligible"`
+	Score            int         `json:"score"`
+	Label            string      `json:"label"`
+	RubricVersion    string      `json:"rubric_version"`
+	Factors          avs.Factors `json:"factors"`
+	DispatchEligible bool        `json:"dispatch_eligible"`
 }
 
 type EvidenceAISection struct {
@@ -515,4 +515,3 @@ func parseFloatParam(r *http.Request, key string, def, max float64) float64 {
 	}
 	return f
 }
-

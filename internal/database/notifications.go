@@ -16,10 +16,10 @@ import (
 type NotificationSubscription struct {
 	ID          int64     `json:"id"`
 	UserID      uuid.UUID `json:"user_id"`
-	Channel     string    `json:"channel"`     // "email" | "sms"
-	EventType   string    `json:"event_type"`  // "alarm_disposition" | "monthly_summary"
-	SeverityMin string    `json:"severity_min"` // "low" | "medium" | "high" | "critical"
-	SiteIDs     []string  `json:"site_ids,omitempty"` // nil = all visible sites
+	Channel     string    `json:"channel"`               // "email" | "sms"
+	EventType   string    `json:"event_type"`            // "alarm_disposition" | "monthly_summary"
+	SeverityMin string    `json:"severity_min"`          // "low" | "medium" | "high" | "critical"
+	SiteIDs     []string  `json:"site_ids,omitempty"`    // nil = all visible sites
 	QuietStart  string    `json:"quiet_start,omitempty"` // "HH:MM" UTC; "" = no quiet hours
 	QuietEnd    string    `json:"quiet_end,omitempty"`
 	Enabled     bool      `json:"enabled"`

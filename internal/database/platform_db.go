@@ -111,12 +111,12 @@ func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
 // notification_subscriptions; this flag drives the to-be-built
 // "non-account contact" SMS path).
 type CustomerContact struct {
-	Name           string `json:"name"`
-	Role           string `json:"role"`
-	Phone          string `json:"phone"`
-	Email          string `json:"email"`
-	NotifyOnAlarm  bool   `json:"notify_on_alarm"`
-	Notes          string `json:"notes,omitempty"`
+	Name          string `json:"name"`
+	Role          string `json:"role"`
+	Phone         string `json:"phone"`
+	Email         string `json:"email"`
+	NotifyOnAlarm bool   `json:"notify_on_alarm"`
+	Notes         string `json:"notes,omitempty"`
 }
 
 // GetCustomerContacts returns the contact list stored on the site
@@ -406,8 +406,12 @@ func (db *DB) ListSiteSOPs(ctx context.Context, siteID string) ([]SiteSOP, error
 		}
 		json.Unmarshal(stepsJSON, &s.Steps)
 		json.Unmarshal(contactsJSON, &s.Contacts)
-		if s.Steps == nil { s.Steps = []string{} }
-		if s.Contacts == nil { s.Contacts = []map[string]interface{}{} }
+		if s.Steps == nil {
+			s.Steps = []string{}
+		}
+		if s.Contacts == nil {
+			s.Contacts = []map[string]interface{}{}
+		}
 		sops = append(sops, s)
 	}
 	if sops == nil {
@@ -464,7 +468,9 @@ func (db *DB) ListCompanyUsers(ctx context.Context, orgID string) ([]CompanyUser
 			return nil, err
 		}
 		json.Unmarshal(siteIDsJSON, &u.AssignedSiteIDs)
-		if u.AssignedSiteIDs == nil { u.AssignedSiteIDs = []string{} }
+		if u.AssignedSiteIDs == nil {
+			u.AssignedSiteIDs = []string{}
+		}
 		users = append(users, u)
 	}
 	if users == nil {
@@ -1069,14 +1075,14 @@ func nullableUUID(id uuid.UUID) interface{} {
 // per-operator or per-day, depending on the grouping. Counts split by
 // whether the alarm was ack'd within the SLA deadline.
 type SLAReportRow struct {
-	Bucket          string  `json:"bucket"` // operator callsign or YYYY-MM-DD
-	TotalAlarms     int     `json:"total_alarms"`
-	AckedAlarms     int     `json:"acked_alarms"`
-	WithinSLA       int     `json:"within_sla"`
-	OverSLA         int     `json:"over_sla"`
-	AvgAckSec       float64 `json:"avg_ack_sec"`
-	P50AckSec       float64 `json:"p50_ack_sec"`
-	P95AckSec       float64 `json:"p95_ack_sec"`
+	Bucket      string  `json:"bucket"` // operator callsign or YYYY-MM-DD
+	TotalAlarms int     `json:"total_alarms"`
+	AckedAlarms int     `json:"acked_alarms"`
+	WithinSLA   int     `json:"within_sla"`
+	OverSLA     int     `json:"over_sla"`
+	AvgAckSec   float64 `json:"avg_ack_sec"`
+	P50AckSec   float64 `json:"p50_ack_sec"`
+	P95AckSec   float64 `json:"p95_ack_sec"`
 }
 
 // GetSLAReport aggregates response-time stats for alarms acknowledged
@@ -1212,9 +1218,10 @@ func (db *DB) SetAlarmAIFeedback(ctx context.Context, alarmID string, agreed boo
 // ComputeAICorrectness compares the AI threat assessment against the operator's
 // disposition and stores the result. Called when the alarm is resolved.
 // Logic: AI said high/critical + disposition is verified_* → AI was correct
-//        AI said high/critical + disposition is false_positive_* → AI was wrong
-//        AI said low/none + disposition is verified_* → AI was wrong (missed threat)
-//        AI said low/none + disposition is false_positive_* → AI was correct
+//
+//	AI said high/critical + disposition is false_positive_* → AI was wrong
+//	AI said low/none + disposition is verified_* → AI was wrong (missed threat)
+//	AI said low/none + disposition is false_positive_* → AI was correct
 func (db *DB) ComputeAICorrectness(ctx context.Context, alarmID, dispositionCode string) error {
 	var aiThreatLevel string
 	err := db.Pool.QueryRow(ctx,
@@ -1244,13 +1251,13 @@ func (db *DB) EscalateActiveAlarm(ctx context.Context, alarmID string, level int
 // GetSecurityEventByID fetches one security_event by ID and maps it to IncidentDetail.
 func (db *DB) GetSecurityEventByID(ctx context.Context, id string) (*IncidentDetail, error) {
 	var (
-		evtID, alarmID, siteID, cameraID                        string
-		severity, evtType, description                          string
-		dispositionCode, dispositionLabel                       string
-		operatorCallsign, operatorNotes                         string
-		actionLogJSON                                           []byte
-		clipURL                                                 string
-		ts, resolvedAt                                          int64
+		evtID, alarmID, siteID, cameraID  string
+		severity, evtType, description    string
+		dispositionCode, dispositionLabel string
+		operatorCallsign, operatorNotes   string
+		actionLogJSON                     []byte
+		clipURL                           string
+		ts, resolvedAt                    int64
 	)
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, COALESCE(alarm_id,''), site_id, COALESCE(camera_id,''),
