@@ -39,6 +39,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -52,6 +53,7 @@ import (
 	"ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	"ironsight/internal/logging"
 )
 
 // ──────────────────── Constants ────────────────────
@@ -449,7 +451,11 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		if transcoder != nil {
 			servePath, terr := transcoder.maybeTranscodeForBrowser(cfg, claims, absPath)
 			if terr != nil {
-				log.Printf("[MEDIA] transcode failed for cam=%s path=%s: %v", claims.CameraID, claims.Path, terr)
+				logging.FromContext(r.Context()).LogAttrs(r.Context(), slog.LevelError, "media_transcode_failed",
+					slog.String("camera_id", claims.CameraID),
+					slog.String("path", claims.Path),
+					slog.String("error", terr.Error()),
+				)
 				http.Error(w, "media unavailable", http.StatusInternalServerError)
 				return
 			}
