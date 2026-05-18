@@ -524,6 +524,19 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		}
 	}
 
+	// LOCAL-09: probe the source codec once so we can conditionally rewrite
+	// the codec_tag from `hev1` (what Milesight emits) to `hvc1` (what Safari
+	// recognises) for HEVC sources. MUST NOT pass `-tag:v hvc1` on H.264
+	// streams — the mp4 box would say hvc1 over actual H.264 bytes, which
+	// breaks playback in every browser. Empty/unknown codec → no override
+	// (fail-safe: keep whatever ffmpeg picks by default, which is correct
+	// for the source codec).
+	hvc1Tag := []string{}
+	switch probeStreamVideoCodec(r.ffmpegPath, r.rtspURI) {
+	case "hevc", "h265":
+		hvc1Tag = []string{"-tag:v", "hvc1"}
+	}
+
 	// 1) HLS live stream output
 	if r.subStreamURI != "" {
 		// Dual stream HLS
@@ -531,6 +544,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0", // Main stream video
 			"-map", "1:v:0", // Sub stream video
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-f", "hls",
 			"-hls_time", "1",
 			"-hls_list_size", "5",
@@ -545,6 +561,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		args = append(args,
 			"-map", "0:v:0",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-f", "hls",
 			"-hls_time", "1",
 			"-hls_list_size", "5",
@@ -579,6 +598,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-c:a", audioCodec,
 			"-f", "segment",
 			"-segment_time", "2",
@@ -599,6 +621,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-c:a", audioCodec,
 			"-f", "segment",
 			"-segment_time", fmt.Sprintf("%d", r.segmentDur),
@@ -886,6 +911,62 @@ func (r *Recorder) ringBufferCleanup(ctx context.Context) {
 			r.clipWriter.CleanRingBuffer()
 		}
 	}
+}
+
+// probeStreamVideoCodec runs ffprobe on the RTSP URI and returns the
+// lowercase codec_name of the first video stream ("h264", "hevc", etc.).
+// Empty string on any error (network timeout, missing video stream,
+// ffprobe not available). Called once per FFmpeg run before constructing
+// args so we can conditionally apply `-tag:v hvc1` for HEVC sources only
+// — that tag MUST NOT be applied to H.264 streams (would write an mp4
+// with codec_tag=hvc1 over actual H.264 data, breaking the file).
+//
+// LOCAL-09: Milesight cameras emit HEVC with codec_tag `hev1` in the
+// RTSP stream, which `-c:v copy` carries through to the recorded mp4.
+// Safari only renders HEVC mp4s tagged `hvc1`. This probe lets us
+// rewrite the tag for HEVC sources without touching H.264 ones.
+func probeStreamVideoCodec(ffmpegPath, rtspURI string) string {
+	if rtspURI == "" {
+		return ""
+	}
+
+	ffprobePath := "ffprobe"
+	if ffmpegPath != "" && ffmpegPath != "ffmpeg" {
+		dir := filepath.Dir(ffmpegPath)
+		ffprobePath = filepath.Join(dir, "ffprobe")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// `-show_entries stream=codec_name` keeps the output tiny + parse-free:
+	// the entire stdout is the codec name (one per line if multiple video
+	// streams; we take the first non-empty line). Pinning `-select_streams v:0`
+	// to the first video stream matches what the recorder consumes via
+	// `-map 0:v:0`.
+	cmd := exec.CommandContext(ctx, ffprobePath,
+		"-v", "quiet",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		"-rtsp_transport", "tcp",
+		"-timeout", "5000000", // 5s in microseconds
+		rtspURI)
+
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// Output is the codec name (possibly with trailing newline). Lower-case
+	// for stable comparison; ffprobe emits lowercase by convention but the
+	// docs don't strictly guarantee it.
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(strings.ToLower(line))
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // probeHasAudio runs ffprobe on the RTSP URI to detect whether an audio stream is present.
