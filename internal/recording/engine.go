@@ -613,6 +613,15 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	}
 
 	r.cmd = exec.CommandContext(ctx, r.ffmpegPath, args...)
+	// P1-C-05: force the ffmpeg subprocess to interpret strftime in UTC
+	// so segment filenames (`seg_%Y%m%d_%H%M%S.mp4`, `ring_*` etc.) are
+	// always in UTC regardless of the host timezone. Without TZ=UTC, a
+	// host in CDT writes filenames in CDT, and parseSegmentTimestamp
+	// (which now parses in UTC, also P1-C-05) would shift the segment
+	// boundaries by 5 hours every spring/fall on DST flips. Existing
+	// pre-fix filenames stay accessible because parseSegmentTimestamp's
+	// behaviour for already-recorded files isn't going to be re-run.
+	r.cmd.Env = append(os.Environ(), "TZ=UTC")
 	r.cmd.Stdout = nil
 	// Capture FFmpeg stderr to a per-camera file (truncated each run) so we can
 	// surface the full startup output on crash. This replaces the discarded
@@ -854,6 +863,23 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 }
 
 // parseSegmentTimestamp extracts time from filename like seg_20260219_140530.mp4
+//
+// P1-C-05: parses in UTC. The ffmpeg subprocess that wrote the
+// filename has `TZ=UTC` set in its env (see runFFmpeg), so the
+// strftime fields are UTC. Parsing the same string in time.Local
+// would silently shift segment boundaries by the host's UTC offset
+// — fine on UTC hosts, broken on US/Central, ambiguous across DST
+// boundaries. UTC everywhere removes the whole class of bugs.
+//
+// Filename-format change is intentionally only forward-looking:
+// pre-P1-C-05 segments were written in the host's local timezone,
+// so their filenames don't carry a TZ marker and a local-parse
+// would have produced their original wall-clock time. Operators
+// reviewing OLD segments by filename see a 5-hour offset until the
+// segments age out of retention (typically 14-30 days). That's
+// acceptable — the database stores start_time/end_time as
+// timestamptz which preserves the absolute instant regardless of
+// what timezone the filename was parsed in.
 func parseSegmentTimestamp(filename string) time.Time {
 	// Expected format: seg_YYYYMMDD_HHMMSS.mp4 (19 chars before the extension)
 	name := filepath.Base(filename)
@@ -862,8 +888,7 @@ func parseSegmentTimestamp(filename string) time.Time {
 	if len(stem) < 19 {
 		return time.Time{}
 	}
-	// Extract date/time parts using the system's local timezone (since FFmpeg strftime uses local time)
-	t, err := time.ParseInLocation("seg_20060102_150405", stem[:19], time.Local)
+	t, err := time.ParseInLocation("seg_20060102_150405", stem[:19], time.UTC)
 	if err != nil {
 		return time.Time{}
 	}
