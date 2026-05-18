@@ -34,10 +34,10 @@ func CaptureEventClip(ffmpegPath, storagePath, cameraID, rtspURI string, duratio
 		"-rtsp_transport", "tcp",
 		"-i", rtspURI,
 		"-t", fmt.Sprintf("%d", durationSec),
-		"-c:v", "copy",      // no re-encoding — fast
-		"-an",                // skip audio for speed
+		"-c:v", "copy", // no re-encoding — fast
+		"-an",                     // skip audio for speed
 		"-movflags", "+faststart", // web-playable MP4
-		"-y",                 // overwrite
+		"-y", // overwrite
 		outputPath,
 	)
 	cmd.Stderr = nil

@@ -84,9 +84,9 @@ type AlarmDispositionContext struct {
 	// AI-generated narrative + assessment from the Qwen VLM pipeline.
 	// All fields are best-effort — empty when the indexer hasn't
 	// produced output yet for this incident.
-	AIDescription       string  // 1–2 sentence factual scene description
-	AIThreatLevel       string  // "low" | "medium" | "high" | "critical"
-	AIRecommendedAction string  // operator-facing recommendation, fine for customers too
+	AIDescription       string // 1–2 sentence factual scene description
+	AIThreatLevel       string // "low" | "medium" | "high" | "critical"
+	AIRecommendedAction string // operator-facing recommendation, fine for customers too
 }
 
 // AlarmDispositioned sends the disposition-summary notification to

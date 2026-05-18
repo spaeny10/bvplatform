@@ -84,14 +84,14 @@ type Config struct {
 // work across N concurrent workers, each picking a different segment_id via
 // a SKIP LOCKED postgres advisory to avoid duplicate work.
 type Indexer struct {
-	db       *database.DB
-	ai       *ai.Client
-	cfg      *config.Config
-	icfg     Config
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	running  bool
-	mu       sync.Mutex
+	db      *database.DB
+	ai      *ai.Client
+	cfg     *config.Config
+	icfg    Config
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	running bool
+	mu      sync.Mutex
 }
 
 // New constructs an Indexer using values from the application-wide

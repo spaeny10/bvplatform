@@ -80,7 +80,7 @@ func NewMediaMTXServer(cfg *config.Config) *MediaMTXServer {
 	// Reverse proxy to MediaMTX's WHEP endpoint — target host is whatever
 	// docker-compose / the operator configured (defaults to 127.0.0.1:8889
 	// for single-process dev).
-	targetURL := "http://" + cfg.MediaMTXWebRTCAddr
+	var targetURL string
 	if !strings.HasPrefix(cfg.MediaMTXWebRTCAddr, "http") {
 		targetURL = "http://" + cfg.MediaMTXWebRTCAddr
 	} else {
@@ -336,7 +336,7 @@ func (m *MediaMTXServer) Start(ctx context.Context) error {
 // HTTP API — this is the durability side of the same story.
 //
 // Prefer PersistConfig over Restart in the camera CRUD path: the old
-// behaviour was to fully restart the mediamtx process after every
+// behavior was to fully restart the mediamtx process after every
 // AddStream, which dropped every live WebRTC session on the floor for
 // no good reason now that paths register via API.
 func (m *MediaMTXServer) PersistConfig() error {

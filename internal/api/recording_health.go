@@ -19,7 +19,7 @@ type RecordingHealth struct {
 	CameraName     string     `json:"camera_name"`
 	SiteID         string     `json:"site_id,omitempty"`
 	Recording      bool       `json:"recording"`
-	RecorderType   string     `json:"recorder_type"`   // "ffmpeg" | "gort" | "off"
+	RecorderType   string     `json:"recorder_type"` // "ffmpeg" | "gort" | "off"
 	Segments24h    int        `json:"segments_24h"`
 	Bytes24h       int64      `json:"bytes_24h"`
 	LastSegmentAt  *time.Time `json:"last_segment_at,omitempty"`
@@ -97,10 +97,10 @@ func HandleRecordingHealth(cfg *config.Config, db *database.DB) http.HandlerFunc
 			// Aggregate segments in the last 24h for this camera in one round
 			// trip. COALESCE the SUM to avoid NULL when there are no rows.
 			var (
-				count       int
-				bytes       int64
-				lastEnd     *time.Time
-				longestGap  float64
+				count      int
+				bytes      int64
+				lastEnd    *time.Time
+				longestGap float64
 			)
 			err := db.Pool.QueryRow(r.Context(), `
 				WITH seg AS (

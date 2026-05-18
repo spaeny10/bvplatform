@@ -45,7 +45,7 @@ type SemanticSearchResponse struct {
 // HandleSemanticSearch runs a full-text query against segment_descriptions
 // populated by the background indexer. Supports:
 //   - q      : free-text query (required). Uses websearch_to_tsquery so users
-//              can type natural phrases like "person with red jacket".
+//     can type natural phrases like "person with red jacket".
 //   - start, end : optional ISO8601 time bounds.
 //   - camera_id  : optional single camera filter.
 //   - activity   : optional min activity level (low|moderate|high).

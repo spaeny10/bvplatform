@@ -257,7 +257,7 @@ func searchVLMSegments(
 	if restricted {
 		where = append(where, fmt.Sprintf("d.camera_id = ANY($%d)", argN))
 		args = append(args, allowed)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	query := fmt.Sprintf(`
@@ -407,7 +407,7 @@ func searchAlarms(
 		// camera_id is stored as TEXT in active_alarms, so cast to match.
 		where = append(where, fmt.Sprintf("camera_id::uuid = ANY($%d)", argN))
 		args = append(args, allowed)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	query := fmt.Sprintf(`
@@ -432,11 +432,11 @@ func searchAlarms(
 	for rows.Next() {
 		var (
 			id, cameraID, cameraName, siteID, siteName string
-			ts                                          int64
-			alarmType, description, aiDesc              string
-			ppeJSON, detJSON                            []byte
-			snapshotURL, clipURL                        string
-			fpPct                                       float64
+			ts                                         int64
+			alarmType, description, aiDesc             string
+			ppeJSON, detJSON                           []byte
+			snapshotURL, clipURL                       string
+			fpPct                                      float64
 		)
 		if err := rows.Scan(&id, &cameraID, &cameraName, &siteID, &siteName,
 			&ts, &alarmType, &description, &aiDesc, &ppeJSON, &detJSON,

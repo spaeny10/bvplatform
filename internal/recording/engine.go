@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
-	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,11 +21,11 @@ import (
 
 // Engine manages FFmpeg recording processes for all cameras
 type Engine struct {
-	cfg            *config.Config
-	db             *database.DB
-	recorders      map[uuid.UUID]*Recorder
-	gortRecorders  map[uuid.UUID]*GortRecorder // pure-Go recorders (opt-in per camera)
-	mu             sync.RWMutex
+	cfg           *config.Config
+	db            *database.DB
+	recorders     map[uuid.UUID]*Recorder
+	gortRecorders map[uuid.UUID]*GortRecorder // pure-Go recorders (opt-in per camera)
+	mu            sync.RWMutex
 }
 
 // Recorder manages a single camera's FFmpeg recording process
@@ -325,7 +325,7 @@ func (r *Recorder) recordLoop(ctx context.Context) {
 		err := r.runFFmpeg(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return // context cancelled, expected shutdown
+				return // context canceled, expected shutdown
 			}
 			// Detect fast crashes (< 5s) — likely bandwidth/connection errors.
 			// After 3 fast crashes, drop sub stream to reduce RTSP connections.
@@ -624,7 +624,7 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		// Close the file when FFmpeg exits OR when we leave this function
 		// for any other reason (Wait returns, stall watchdog kills FFmpeg,
 		// panic). The previous fire-and-forget goroutine could leak the FD
-		// across many crash/restart cycles before runCtx finally cancelled.
+		// across many crash/restart cycles before runCtx finally canceled.
 		// sync.Once-style: defer and Done channel — whichever fires first.
 		stderrFile := f
 		defer func() {

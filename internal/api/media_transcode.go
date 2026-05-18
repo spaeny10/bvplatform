@@ -33,7 +33,7 @@ import (
 //     for a cached transcode at <camera-dir>/.h264-cache/<leaf>. Hit → swap
 //     the served path to the cache; miss → run ffmpeg synchronously into
 //     the cache, then serve.
-//   * Concurrent requests for the same source path are serialised through
+//   * Concurrent requests for the same source path are serialized through
 //     a per-path channel so we never spawn parallel ffmpeg processes for
 //     the same segment.
 //   * The cache file is written atomically: ffmpeg writes to a sibling
@@ -66,7 +66,7 @@ const transcodeTimeout = 90 * time.Second
 // (recording.H264CacheDir / recording.CachedTranscodePath) so the
 // retention sweeper can clean cache files without circular imports.
 
-// transcodeRegistry serialises concurrent transcode requests for the same
+// transcodeRegistry serializes concurrent transcode requests for the same
 // cache path. Without this, two simultaneous GETs for an un-cached HEVC
 // segment would both spawn ffmpeg, race on the temp file, and (best case)
 // waste CPU on duplicate work. A second caller waits on a channel until
@@ -96,7 +96,7 @@ func newTranscodeRegistry() *transcodeRegistry {
 // produce a working alternative either). On success the returned path is
 // guaranteed to exist and be complete on disk.
 //
-// Concurrent calls for the same source serialise on a per-path channel
+// Concurrent calls for the same source serialize on a per-path channel
 // inside the registry so parallel ffmpeg invocations don't burn fred CPU
 // on duplicate work.
 func (reg *transcodeRegistry) maybeTranscodeForBrowser(cfg *config.Config, claims *auth.MediaClaims, srcPath string) (string, error) {
@@ -127,7 +127,7 @@ func (reg *transcodeRegistry) maybeTranscodeForBrowser(cfg *config.Config, claim
 		return cachePath, nil
 	}
 
-	// Cache miss — serialise concurrent transcodes for the same target.
+	// Cache miss — serialize concurrent transcodes for the same target.
 	reg.mu.Lock()
 	if waitCh, busy := reg.inflight[cachePath]; busy {
 		reg.mu.Unlock()
@@ -158,16 +158,16 @@ func (reg *transcodeRegistry) maybeTranscodeForBrowser(cfg *config.Config, claim
 // transcodeToH264 produces a browser-playable mp4 at destPath from
 // srcPath. Strategy:
 //
-//   * libx264 video at CRF 23 with the veryfast preset / fastdecode tune.
+//   - libx264 video at CRF 23 with the veryfast preset / fastdecode tune.
 //     Roughly 1.5-2× the H.265 file size at equivalent visual quality.
 //     CPU budget: ~3 s for a 60 s 5K segment on a fred core.
-//   * Audio re-encoded to AAC. Cheap and side-steps codec compatibility
+//   - Audio re-encoded to AAC. Cheap and side-steps codec compatibility
 //     gotchas — `-c:a copy` would propagate PCM mulaw from some Milesight
 //     models, which mp4 muxers refuse.
-//   * +faststart relocates the moov atom to the head of the file so the
+//   - +faststart relocates the moov atom to the head of the file so the
 //     browser can begin playback / range-seek before the full file
 //     downloads. Essential for the <video> scrub UX.
-//   * Output goes to a sibling .tmp file and is renamed into place only
+//   - Output goes to a sibling .tmp file and is renamed into place only
 //     on full success. A torn temp file is removed in the deferred
 //     cleanup so a future call retries cleanly rather than serving
 //     half-bytes.

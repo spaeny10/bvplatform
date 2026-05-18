@@ -58,7 +58,7 @@ func NewWorker(cfg *config.Config, db *database.DB) *Worker {
 	return &Worker{cfg: cfg, db: db}
 }
 
-// Start spawns the poll loop. Call Wait() after cancelling the context
+// Start spawns the poll loop. Call Wait() after canceling the context
 // to block until the current job (if any) finishes and the worker exits.
 func (w *Worker) Start(ctx context.Context) {
 	// Recover from a previous crash: any exports still in 'processing'
@@ -76,7 +76,7 @@ func (w *Worker) Start(ctx context.Context) {
 	go w.runLoop(ctx)
 }
 
-// runLoop polls the DB for pending jobs until the context is cancelled.
+// runLoop polls the DB for pending jobs until the context is canceled.
 // Separate from Start so the tick cadence can be tested independently.
 func (w *Worker) runLoop(ctx context.Context) {
 	defer w.wg.Done()
@@ -186,7 +186,7 @@ func (w *Worker) processExport(ctx context.Context, job *database.Export) {
 	log.Printf("[EXPORT] Completed: %s (%.2f MB)", outputFile, float64(info.Size())/1024/1024)
 }
 
-// markFailed is a small helper to centralise the status update + log for
+// markFailed is a small helper to centralize the status update + log for
 // every error branch in processExport. Keeps the hot path readable.
 func (w *Worker) markFailed(ctx context.Context, id uuid.UUID, reason string) {
 	if err := w.db.UpdateExportStatus(ctx, id, "failed", "", 0, reason); err != nil {

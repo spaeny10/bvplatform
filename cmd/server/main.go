@@ -18,13 +18,13 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"ironsight/internal/ai"
-	"ironsight/internal/indexer"
 	"ironsight/internal/api"
 	authpkg "ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
 	"ironsight/internal/export"
+	"ironsight/internal/indexer"
 	msdriver "ironsight/internal/milesight"
 	"ironsight/internal/notify"
 	"ironsight/internal/onvif"
@@ -721,7 +721,7 @@ func main() {
 		ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 		-- ── VLM Active-Learning Labeling Queue ─────────────────────────
-		-- Passive capture: every time Qwen successfully analyses an alarm
+		-- Passive capture: every time Qwen successfully analyzes an alarm
 		-- frame, a row lands here so internal annotators can review the
 		-- VLM output and submit ground-truth labels for fine-tuning.
 		-- Operators never see this table; it is drained off-hours by
@@ -811,7 +811,7 @@ func main() {
 		-- indexes to tables that originally only had site_id. Until the
 		-- column is populated, queries still scope correctly via
 		-- site→org joins; the new column is for direct-filter perf and
-		-- defence-in-depth (a buggy join can't cross tenants if the
+		-- defense-in-depth (a buggy join can't cross tenants if the
 		-- handler also filters by organization_id directly).
 		ALTER TABLE incidents       ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
 		ALTER TABLE active_alarms   ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
@@ -1011,7 +1011,7 @@ func main() {
 	// variants) explicitly against a staging database when they need
 	// demo content. See internal/seed/ and cmd/seed/main.go.
 
-	// Root context for all background goroutines. Cancelled on SIGINT /
+	// Root context for all background goroutines. Canceled on SIGINT /
 	// SIGTERM so the WS hub, recording engine, retention manager, and
 	// other long-runners exit cleanly. Defined here (before hub.Run)
 	// rather than down by the signal-wait so every spawn point can use it.
@@ -1232,7 +1232,18 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if err := http.ListenAndServe(addr, router); err != nil {
+	// Use an explicit *http.Server with ReadHeaderTimeout to defeat slowloris
+	// attacks (gosec G114 — http.ListenAndServe has no timeouts at all).
+	// Deliberately leaving WriteTimeout and IdleTimeout unset because the
+	// router serves WebSockets (/ws, /ws/alerts) and an HLS segment stream
+	// path whose write deadlines need to be open-ended; a global WriteTimeout
+	// would silently sever those long-lived connections after N seconds.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("[FATAL] Server failed: %v", err)
 	}
 }
@@ -1553,12 +1564,12 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 								"description": alarm.Description, "ts": now,
 								"acknowledged": false, "escalation_level": 0,
 								"sla_deadline_ms": alarm.SlaDeadlineMs,
-								"snapshot_url": "",
-								"clip_url":     clipURL,
-								"ai_score":       aiScore,
-								"obj_type":       objType,
-								"rule_name":      ruleName,
-								"bounding_boxes": details["bounding_boxes"],
+								"snapshot_url":    "",
+								"clip_url":        clipURL,
+								"ai_score":        aiScore,
+								"obj_type":        objType,
+								"rule_name":       ruleName,
+								"bounding_boxes":  details["bounding_boxes"],
 							},
 						})
 						hub.Broadcast(alertMsg)
@@ -1671,20 +1682,20 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										aiMsg, _ := json.Marshal(map[string]interface{}{
 											"type": "alarm_ai",
 											"data": map[string]interface{}{
-												"alarm_id":             snapAlarmID,
-												"incident_id":          snapIncidentID,
-												"ai_description":       aiResult.Description,
-												"ai_threat_level":      aiResult.ThreatLevel,
+												"alarm_id":              snapAlarmID,
+												"incident_id":           snapIncidentID,
+												"ai_description":        aiResult.Description,
+												"ai_threat_level":       aiResult.ThreatLevel,
 												"ai_recommended_action": aiResult.RecommendedAction,
 												"ai_false_positive_pct": aiResult.FalsePositivePct,
-												"ai_objects":           aiResult.AIObjects,
-												"ai_detections":        aiResult.Detections,
-												"ai_ppe_detections":    aiResult.PPEDetections,
-												"ai_ppe_violations":    aiResult.PPEViolations,
-												"ai_yolo_model":        aiResult.YOLOModel,
-												"ai_ppe_model":         aiResult.PPEModel,
-												"ai_qwen_model":        aiResult.QwenModel,
-												"ai_total_ms":          aiResult.TotalMs,
+												"ai_objects":            aiResult.AIObjects,
+												"ai_detections":         aiResult.Detections,
+												"ai_ppe_detections":     aiResult.PPEDetections,
+												"ai_ppe_violations":     aiResult.PPEViolations,
+												"ai_yolo_model":         aiResult.YOLOModel,
+												"ai_ppe_model":          aiResult.PPEModel,
+												"ai_qwen_model":         aiResult.QwenModel,
+												"ai_total_ms":           aiResult.TotalMs,
 											},
 										})
 										hub.Broadcast(aiMsg)
@@ -1692,9 +1703,9 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										// Persist AI results to DB for REST polling
 										detectionsJSON, _ := json.Marshal(aiResult.Detections)
 										ppeViolationsJSON, _ := json.Marshal(aiResult.PPEViolations)
-									_ = db.UpdateAlarmAI(context.Background(),
-										snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
-										aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
+										_ = db.UpdateAlarmAI(context.Background(),
+											snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
+											aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
 
 										// ── Passive labeling capture ──
 										// Enqueue the frame + VLM output for off-SOC annotation.

@@ -318,11 +318,11 @@ func pullLineCross(ctx context.Context, client *onvif.Client, camID uuid.UUID) (
 		vcaEnvelope
 		LineCrossingSens  int `json:"lineCrossingSens"`
 		DetectionInfoList []struct {
-			LineIndex           int    `json:"lineIndex"`
-			LineCrossingEnable  int    `json:"lineCrossingEnable"`
-			Direction           int    `json:"direction"`
-			PolygonX            string `json:"polygonX"`
-			PolygonY            string `json:"polygonY"`
+			LineIndex          int    `json:"lineIndex"`
+			LineCrossingEnable int    `json:"lineCrossingEnable"`
+			Direction          int    `json:"direction"`
+			PolygonX           string `json:"polygonX"`
+			PolygonY           string `json:"polygonY"`
 		} `json:"detectionInfoList"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {

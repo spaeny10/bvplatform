@@ -29,14 +29,14 @@ type EventEnricherFunc func(topic string, rawXML string) map[string]interface{}
 
 // EventSubscriber manages ONVIF event subscriptions for a camera
 type EventSubscriber struct {
-	client    *Client
-	cameraID  uuid.UUID
-	callback  EventCallback
-	stopCh    chan struct{}
-	running   bool
-	mu        sync.Mutex
-	Classify  EventClassifierFunc // optional: vendor-specific topic classifier
-	Enrich    EventEnricherFunc   // optional: vendor-specific metadata extractor
+	client   *Client
+	cameraID uuid.UUID
+	callback EventCallback
+	stopCh   chan struct{}
+	running  bool
+	mu       sync.Mutex
+	Classify EventClassifierFunc // optional: vendor-specific topic classifier
+	Enrich   EventEnricherFunc   // optional: vendor-specific metadata extractor
 }
 
 // InjectEvent allows external event sources (e.g. Milesight WebSocket) to fire
@@ -101,7 +101,7 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		return addr, time.Now().Add(subscriptionTTL), nil
 	}
 
-	// Initial subscription — retry until success or context cancelled.
+	// Initial subscription — retry until success or context canceled.
 	// When the camera reports its subscription cap is exhausted (typical
 	// on Milesight/Hikvision after stale subs leak across restarts) we
 	// back off much harder: retrying every 60s would just keep leaking

@@ -224,7 +224,7 @@ func (r *GortRecorder) runOnce(ctx context.Context) error {
 		return fmt.Errorf("play: %w", err)
 	}
 
-	// Wait until the connection ends or we're cancelled.
+	// Wait until the connection ends or we're canceled.
 	waitErrCh := make(chan error, 1)
 	go func() { waitErrCh <- c.Wait() }()
 

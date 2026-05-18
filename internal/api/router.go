@@ -32,7 +32,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	mediaAuditor := newMediaAuditor(db)
 	mediaAuditor.Start()
 
-	// LOCAL-11: registry that serialises concurrent transcode requests
+	// LOCAL-11: registry that serializes concurrent transcode requests
 	// for the same HEVC segment so we don't burn fred CPU running the
 	// same ffmpeg job in parallel for a popular segment.
 	transcoder := newTranscodeRegistry()
@@ -171,11 +171,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// for the Profile G fallback playback path.
 		r.Get("/cameras/{id}/sd/status", HandleSDStatus(db))
 
-			// ONVIF-driven reboot (admin / supervisor only). Useful when
-			// the camera gets into a bad state — stuck event-subscription
-			// pool, wedged RTSP, stale driver state. Camera goes offline
-			// for ~30-90s while it restarts.
-			r.Post("/cameras/{id}/reboot", HandleRebootCamera(db))
+		// ONVIF-driven reboot (admin / supervisor only). Useful when
+		// the camera gets into a bad state — stuck event-subscription
+		// pool, wedged RTSP, stale driver state. Camera goes offline
+		// for ~30-90s while it restarts.
+		r.Post("/cameras/{id}/reboot", HandleRebootCamera(db))
 
 		// Unified historical search: events (filtered by RBAC) with playback
 		// URLs resolved in one round trip. Frontend uses this to render a
@@ -269,11 +269,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// reply so neither side has to babysit the UI.
 		// Mounted under the existing /api group, so the actual
 		// paths are /api/support/tickets/* — short and clean.
-		r.Post("/support/tickets",                  HandleCreateSupportTicket(db, notifier))
-		r.Get("/support/tickets",                   HandleListSupportTickets(db))
-		r.Get("/support/tickets/{id}",              HandleGetSupportTicket(db))
-		r.Post("/support/tickets/{id}/messages",    HandleSupportTicketReply(db, notifier))
-		r.Patch("/support/tickets/{id}",            HandleUpdateSupportTicket(db))
+		r.Post("/support/tickets", HandleCreateSupportTicket(db, notifier))
+		r.Get("/support/tickets", HandleListSupportTickets(db))
+		r.Get("/support/tickets/{id}", HandleGetSupportTicket(db))
+		r.Post("/support/tickets/{id}/messages", HandleSupportTicketReply(db, notifier))
+		r.Patch("/support/tickets/{id}", HandleUpdateSupportTicket(db))
 
 		// ════════════════════════════════════════
 		// Ironsight Platform Routes (/api/v1/*)
@@ -419,15 +419,15 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 		// ── ML Labeling (internal staff / admin only) ──────────────────
 		// Off-SOC active-learning queue. Passively populated when Qwen
-		// analyses an alarm frame; drained by internal annotators at
+		// analyzes an alarm frame; drained by internal annotators at
 		// /admin/labeling. SOC operators never see or interact with this.
 		r.Route("/admin/labeling", func(r chi.Router) {
-			r.Get("/stats",           HandleLabelingStats(db))
-			r.Get("/jobs",            HandleListLabelJobs(db))
-			r.Post("/jobs/next",      HandleClaimNextLabelJob(db))
+			r.Get("/stats", HandleLabelingStats(db))
+			r.Get("/jobs", HandleListLabelJobs(db))
+			r.Post("/jobs/next", HandleClaimNextLabelJob(db))
 			r.Post("/jobs/{id}/claim", HandleClaimLabelJob(db))
 			r.Post("/jobs/{id}/label", HandleSubmitLabel(db))
-			r.Get("/export",          HandleExportLabeledDataset(db))
+			r.Get("/export", HandleExportLabeledDataset(db))
 		})
 
 		// Bookmarks / Incident markers

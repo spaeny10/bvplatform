@@ -70,7 +70,7 @@ func (h *LeaderHandle) Release() {
 
 // AcquireLeader attempts to become the worker leader by acquiring a
 // Postgres session-scoped advisory lock. Polls every pollInterval
-// until the lock is obtained or ctx is cancelled. Once acquired,
+// until the lock is obtained or ctx is canceled. Once acquired,
 // spawns a heartbeat goroutine that pings the connection every 10s;
 // if the ping fails, leadership is lost and the returned handle's
 // Lost() channel closes.
@@ -87,10 +87,9 @@ func AcquireLeader(ctx context.Context, dsn, key string, pollInterval time.Durat
 	if pollInterval <= 0 {
 		pollInterval = 30 * time.Second
 	}
-	keyInt := int64(fnv.New64a().Sum64())
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(key))
-	keyInt = int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // drop sign bit so int8 conversion is well-defined
+	keyInt := int64(h.Sum64() & 0x7FFFFFFFFFFFFFFF) // drop sign bit so int8 conversion is well-defined
 
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {

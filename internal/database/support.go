@@ -13,18 +13,18 @@ import (
 // transitions follow the simple state machine documented in the
 // schema migration.
 type SupportTicket struct {
-	ID              int64     `json:"id"`
-	OrganizationID  string    `json:"organization_id"`
-	SiteID          string    `json:"site_id,omitempty"`
-	CreatedBy       uuid.UUID `json:"created_by"`
-	CreatedByName   string    `json:"created_by_name"`
-	Subject         string    `json:"subject"`
-	Status          string    `json:"status"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	LastMessageAt   time.Time `json:"last_message_at"`
-	LastMessageBy   string    `json:"last_message_by"` // "customer" or "soc"
-	MessageCount    int       `json:"message_count"`
+	ID             int64     `json:"id"`
+	OrganizationID string    `json:"organization_id"`
+	SiteID         string    `json:"site_id,omitempty"`
+	CreatedBy      uuid.UUID `json:"created_by"`
+	CreatedByName  string    `json:"created_by_name"`
+	Subject        string    `json:"subject"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	LastMessageAt  time.Time `json:"last_message_at"`
+	LastMessageBy  string    `json:"last_message_by"` // "customer" or "soc"
+	MessageCount   int       `json:"message_count"`
 }
 
 type SupportMessage struct {

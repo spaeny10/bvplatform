@@ -47,7 +47,7 @@ type hubBridge struct {
 	rdb      *redis.Client
 	channel  string // pub/sub channel name — one per deployment
 	senderID string // opaque random ID assigned at startup; drops our own
-	                // echoes when subscribing to the channel we publish on
+	// echoes when subscribing to the channel we publish on
 }
 
 // pubsubEnvelope wraps every message sent through Redis with the
@@ -186,7 +186,7 @@ func (h *Hub) writeToClients(msg []byte) {
 func (h *Hub) Broadcast(msg []byte) {
 	// Local delivery via the existing channel. We never block on this;
 	// if the buffered channel is full the message is dropped — that's
-	// the same behaviour as before, and preserves the "WS events are
+	// the same behavior as before, and preserves the "WS events are
 	// best-effort, not durable" contract.
 	select {
 	case h.broadcast <- msg:

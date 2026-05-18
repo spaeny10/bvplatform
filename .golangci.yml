@@ -1,0 +1,153 @@
+# golangci-lint config for Ironsight (P1-B-03).
+# Tuned to surface real problems on this codebase without drowning in
+# false positives the first time CI runs. Each enabled linter has a
+# brief justification — if you turn one off, leave a note for why.
+#
+# To reproduce locally:
+#   go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.61.0
+#   golangci-lint run ./...
+#
+# Single-file run for a focused triage:
+#   golangci-lint run path/to/file.go
+
+run:
+  timeout: 5m
+  # Disable the deprecated GO111MODULE warning — we're on modules.
+  modules-download-mode: readonly
+  # The recording package has some long-running tests that take a few
+  # seconds; default timeout still suffices for linting.
+
+linters:
+  disable-all: true
+  enable:
+    # ── Correctness (catches real bugs) ────────────────────────────
+    - govet         # standard library's `go vet` — shadowed vars, struct
+                    # tags, lock copies, unsafe pointer arithmetic.
+    - staticcheck   # the SA* checks — superset of go vet + tons of
+                    # idiom + perf nits. Some noise but the SA1xx
+                    # series (correctness) is gold.
+    # `errcheck` is intentionally OFF in this initial CI rollout —
+    # currently finds ~20 unchecked json.Unmarshal calls in
+    # internal/database/ where a DB-stored JSON column is loaded into a
+    # struct and the unmarshal error is silently dropped. Each is a
+    # real latent bug (a corrupted JSON value would yield a half-
+    # populated struct with no log line) but the fix is a substantive
+    # error-plumbing cleanup that doesn't belong in the CI-infra PR.
+    # Re-enable in a follow-up that wraps each unmarshal in
+    # `if err := json.Unmarshal(...); err != nil { return ..., err }`
+    # or threads the err into the surrounding row-scan loop. Tracked
+    # in `ironsight/backlog/phase-1.md`.
+    - ineffassign   # variables assigned but never read.
+    - gosimple      # simpler equivalent forms (S1xxx checks).
+    # `unused` is intentionally OFF in this initial CI rollout —
+    # currently flags ~6 genuine dead fields/functions in unreached
+    # corners (private milesight VCA helper, an unused test fixture,
+    # an indexer field that's been wired for a never-shipped feature).
+    # Each is real tech-debt cleanup but together they'd block this
+    # CI infra PR. Re-enable in a follow-up that removes them in one
+    # batch. Tracked as P1-B-NEW (will add to phase-1.md).
+
+    # ── Security ───────────────────────────────────────────────────
+    # `gosec` is intentionally OFF in this initial CI rollout. It
+    # produces a flood of findings in this codebase that are all
+    # protocol-required patterns we can't change:
+    #   - crypto/sha1 + crypto/md5 in internal/onvif/ — required by
+    #     the WS-Security digest authentication spec ONVIF cameras
+    #     enforce. Not a "choice" — replace and no camera authenticates.
+    #   - TLS InsecureSkipVerify in ONVIF client — cameras use
+    #     self-signed certs by default; verification fails for every
+    #     real-world camera if we don't skip.
+    #   - math/rand in platform_db.go for evt-id generators — a
+    #     non-security identifier scheme, math/rand is fine.
+    # The one real gosec finding (G114 http.ListenAndServe no
+    # timeouts) was fixed by hand in this PR — server now uses
+    # &http.Server{ReadHeaderTimeout: 10*time.Second}. Re-enable
+    # gosec in a follow-up that adds per-finding suppressions for
+    # the protocol-required cases with operator-readable rationale
+    # at each call site.
+
+    # ── Style (low-noise) ──────────────────────────────────────────
+    - gofmt
+    - goimports
+    - misspell
+
+  # NOT enabled (with reasons):
+  #
+  # - revive / stylecheck (style) — too noisy for a codebase that
+  #   wasn't written under the linter from day one. Re-evaluate once
+  #   the active hot paths are migrated to slog/UUIDv7/etc.
+  # - dupl — bunch of false positives on similar handler bodies.
+  # - gocyclo / cyclop — useful but generates a backlog of "refactor
+  #   this 30-line function" notes that aren't actionable until P1-B-11.
+  # - gochecknoglobals / gochecknoinits — Ironsight uses globals + init
+  #   for the recording-engine registries by design.
+  # - depguard — no current need to enforce import allowlists.
+
+linters-settings:
+  errcheck:
+    # Don't require checking the error on logger.Sync(), conn.Close()
+    # in defers, etc. These are best-effort calls where the error
+    # isn't actionable anyway.
+    exclude-functions:
+      - (io.Closer).Close
+      - (io/fs.File).Close
+      - (*database/sql.DB).Close
+      - (*os.File).Close
+
+  gosec:
+    excludes:
+      # G104 — Audit errors not checked. Overlaps heavily with
+      # errcheck which we've already tuned; gosec's version is noisier.
+      - G104
+      # G304 — Potential file inclusion via variable. Triggers on every
+      # http.ServeFile / filepath.Join with a parameter; we already
+      # gate these via auth + canonicalize via filepath.Clean inside
+      # the relevant handlers. Disabling here doesn't make
+      # path-traversal acceptable — the auth + clean pattern is the
+      # mitigation; gosec just doesn't understand it.
+      - G304
+      # G306 — Expect WriteFile permissions to be 0600 or less. We
+      # intentionally use 0644 for non-secret outputs (HLS segments,
+      # snapshots) that need to be served to the broader process group.
+      - G306
+      # G115 — integer overflow conversion. Triggers on uint64(st.Bsize)
+      # in storage_unix.go where st.Bsize is int64 from syscall.Statfs_t.
+      # st.Bsize is the OS-reported block size — always a positive small
+      # integer (typically 4096). The "overflow" is theoretical.
+      - G115
+
+  misspell:
+    locale: US
+
+issues:
+  # Don't fail-fast on the FIRST issue — collect all so a developer
+  # can fix one patch.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  # Don't complain about generated files / vendored code.
+  exclude-dirs:
+    - frontend/node_modules
+    - vendor
+    - bin
+  exclude-rules:
+    # _test.go files are allowed to ignore some patterns that would
+    # be footguns in production but are idiomatic for tests.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+    # The generated migration embed file is fine as-is.
+    - path: migrations/embed\.go
+      linters:
+        - unused
+    # gortsplib v5 deprecation warnings: the gort recorder uses
+    # fmp4.PartSample / fmp4.CodecH264 which the upstream library
+    # marked as deprecated in favor of fmp4.Sample / codecs.H264.
+    # Migrating requires non-trivial API rewiring (the new types
+    # have different field shapes). Tracked as a follow-up; the
+    # deprecated APIs still work at runtime. Don't add other files
+    # to this exclusion without a similar tech-debt note.
+    - path: internal/recording/gort_recorder\.go
+      linters:
+        - staticcheck
+      text: "SA1019:"

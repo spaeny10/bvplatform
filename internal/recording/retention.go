@@ -95,7 +95,7 @@ func (rm *RetentionManager) Start(ctx context.Context) {
 			log.Println("[RETENTION] Stopped")
 			return
 		case <-ctx.Done():
-			log.Println("[RETENTION] Context cancelled, stopping")
+			log.Println("[RETENTION] Context canceled, stopping")
 			return
 		case <-ticker.C:
 			rm.cleanup(ctx)
@@ -320,9 +320,9 @@ func (rm *RetentionManager) enforceStorageCaps(ctx context.Context) (int, int64)
 //
 // Retention resolution order (first non-zero wins):
 //
-//   1. Site policy: sites.retention_days for the camera's assigned site.
-//   2. Storage location default: first enabled recordings-purpose location.
-//   3. 0 → skip this camera (no policy; keep everything).
+//  1. Site policy: sites.retention_days for the camera's assigned site.
+//  2. Storage location default: first enabled recordings-purpose location.
+//  3. 0 → skip this camera (no policy; keep everything).
 //
 // Sites are cached for the duration of one pass so we don't query the DB
 // N times for the common case of many cameras sharing a site.
@@ -430,4 +430,3 @@ func (rm *RetentionManager) pruneSupportTickets(ctx context.Context) {
 			deleted, supportTicketRetentionDays)
 	}
 }
-

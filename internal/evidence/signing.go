@@ -81,9 +81,9 @@ func KeyFingerprint(key []byte) string {
 // finalizes by calling Sign — which adds event.json and SIGNATURE.txt
 // and closes the underlying writer.
 type SignedZipWriter struct {
-	zw      *zip.Writer
-	hashes  map[string]string
-	closed  bool
+	zw     *zip.Writer
+	hashes map[string]string
+	closed bool
 }
 
 // NewSignedZipWriter wraps an open zip.Writer. The caller retains

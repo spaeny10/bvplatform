@@ -18,7 +18,7 @@
 //   - HLS server        (same reason)
 //   - MediaMTX control  (colocated with recording)
 //   - ONVIF event subs  (tightly coupled to the event-mode recording
-//                        trigger path; split is Phase 3)
+//     trigger path; split is Phase 3)
 //
 // The worker does NOT serve HTTP. Health can be observed via its logs
 // and via the DB rows it writes (e.g., export status transitions).
@@ -56,7 +56,7 @@ func main() {
 	defer db.Close()
 
 	// AI client — same wiring as api. Indexer needs it; retention and
-	// exports don't. Cheap to initialise either way; skipping keeps the
+	// exports don't. Cheap to initialize either way; skipping keeps the
 	// worker dependent on AI service availability only at indexing time.
 	aiClient := ai.NewClient(ai.Config{
 		YOLOEndpoint: cfg.DetectionServiceURL, // repurposed; kept non-critical
@@ -149,7 +149,7 @@ func main() {
 	case sig := <-sigCh:
 		log.Printf("[WORKER] Signal %v received, shutting down...", sig)
 	case <-ctx.Done():
-		log.Println("[WORKER] Context cancelled (likely lost leadership), shutting down...")
+		log.Println("[WORKER] Context canceled (likely lost leadership), shutting down...")
 	}
 
 	cancel()

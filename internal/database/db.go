@@ -663,7 +663,7 @@ func (db *DB) QueryEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 		}
 		where = append(where, fmt.Sprintf("e.camera_id = ANY($%d)", argN))
 		args = append(args, q.CameraIDs)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	limit := q.Limit
@@ -728,7 +728,7 @@ func (db *DB) GetTimelineBuckets(ctx context.Context, cameraIDs []uuid.UUID, sta
 	if len(cameraIDs) == 1 {
 		where = append(where, fmt.Sprintf("camera_id = $%d", argN))
 		args = append(args, cameraIDs[0])
-		argN++
+		// argN not incremented: no further placeholders in this branch.
 	} else if len(cameraIDs) > 1 {
 		placeholders := make([]string, len(cameraIDs))
 		for i, id := range cameraIDs {
@@ -826,7 +826,7 @@ func (db *DB) UpdateExportStatus(ctx context.Context, id uuid.UUID, status, file
 // The claim uses UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)
 // so multiple workers (today: one; post-Phase-2: N) can poll concurrently
 // without collisions. Each row is visible to exactly one SELECT at a time;
-// losers skip that row and move on. Portable Postgres 9.5+ behaviour.
+// losers skip that row and move on. Portable Postgres 9.5+ behavior.
 //
 // started_at is set to NOW() so RequeueStuckExports can later identify
 // jobs that a crashed worker left in processing.

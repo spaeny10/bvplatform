@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+
+	"github.com/google/uuid"
 )
 
 // ── Login ─────────────────────────────────────────────────────────────────

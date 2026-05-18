@@ -46,16 +46,16 @@ type SiteSnooze struct {
 
 // Site represents a monitored construction site
 type Site struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Address         string    `json:"address"`
-	OrganizationID  string    `json:"company_id"` // frontend expects company_id
-	Latitude        *float64  `json:"latitude,omitempty"`
-	Longitude       *float64  `json:"longitude,omitempty"`
-	Status          string    `json:"status"`
-	MonitoringStart string    `json:"monitoring_start"`
-	MonitoringEnd   string    `json:"monitoring_end"`
-	SiteNotes       []string  `json:"site_notes"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Address         string   `json:"address"`
+	OrganizationID  string   `json:"company_id"` // frontend expects company_id
+	Latitude        *float64 `json:"latitude,omitempty"`
+	Longitude       *float64 `json:"longitude,omitempty"`
+	Status          string   `json:"status"`
+	MonitoringStart string   `json:"monitoring_start"`
+	MonitoringEnd   string   `json:"monitoring_end"`
+	SiteNotes       []string `json:"site_notes"`
 	// FeatureMode controls which product tier is active for this site.
 	// "security_only"       → cameras, recordings, SOC events, security reports
 	// "security_and_safety" → all of the above + PPE compliance, OSHA, vLM safety engine
@@ -67,21 +67,21 @@ type Site struct {
 	// the 2026-04 migration so a single retention/schedule change applies
 	// uniformly across the site's fleet. Cameras inherit at read time —
 	// there's no per-camera override.
-	RetentionDays      int                `json:"retention_days"`
-	RecordingMode      string             `json:"recording_mode"`     // "continuous" | "event"
-	PreBufferSec       int                `json:"pre_buffer_sec"`     // event-mode pre-roll
-	PostBufferSec      int                `json:"post_buffer_sec"`    // event-mode tail
-	RecordingTriggers  string             `json:"recording_triggers"` // comma-separated: "motion,object"
-	RecordingSchedule  string             `json:"recording_schedule"` // JSON {"days":[0-6],"start":"HH:MM","end":"HH:MM"}
-	CreatedAt          time.Time          `json:"created_at"`
-	CamerasOnline      int                `json:"cameras_online"`
-	CamerasTotal       int                `json:"cameras_total"`
+	RetentionDays     int       `json:"retention_days"`
+	RecordingMode     string    `json:"recording_mode"`     // "continuous" | "event"
+	PreBufferSec      int       `json:"pre_buffer_sec"`     // event-mode pre-roll
+	PostBufferSec     int       `json:"post_buffer_sec"`    // event-mode tail
+	RecordingTriggers string    `json:"recording_triggers"` // comma-separated: "motion,object"
+	RecordingSchedule string    `json:"recording_schedule"` // JSON {"days":[0-6],"start":"HH:MM","end":"HH:MM"}
+	CreatedAt         time.Time `json:"created_at"`
+	CamerasOnline     int       `json:"cameras_online"`
+	CamerasTotal      int       `json:"cameras_total"`
 	// Frontend SiteSummary fields — populated with defaults
-	ComplianceScore  int    `json:"compliance_score"`
-	OpenIncidents    int    `json:"open_incidents"`
-	WorkersOnSite    int    `json:"workers_on_site"`
-	LastActivity     string `json:"last_activity"`
-	Trend            string `json:"trend"`
+	ComplianceScore int    `json:"compliance_score"`
+	OpenIncidents   int    `json:"open_incidents"`
+	WorkersOnSite   int    `json:"workers_on_site"`
+	LastActivity    string `json:"last_activity"`
+	Trend           string `json:"trend"`
 }
 
 // SiteSOP represents a Standard Operating Procedure for a site
@@ -198,7 +198,7 @@ type PlatformCamera struct {
 	Model        string `json:"model"`
 	Status       string `json:"status"`
 	SiteID       string `json:"site_id,omitempty"`
-	Location     string `json:"location"`  // site-scoped alias shown to operators/customers
+	Location     string `json:"location"` // site-scoped alias shown to operators/customers
 	Recording    bool   `json:"recording"`
 }
 
@@ -236,16 +236,16 @@ type Incident struct {
 	ID            string   `json:"id"`
 	SiteID        string   `json:"site_id"`
 	SiteName      string   `json:"site_name"`
-	Severity      string   `json:"severity"`       // max severity across child alarms
-	Status        string   `json:"status"`          // active | acknowledged
+	Severity      string   `json:"severity"` // max severity across child alarms
+	Status        string   `json:"status"`   // active | acknowledged
 	AlarmCount    int      `json:"alarm_count"`
-	CameraIDs     []string `json:"camera_ids"`      // unique cameras involved
-	CameraNames   []string `json:"camera_names"`    // display names, parallel to CameraIDs
-	Types         []string `json:"types"`           // unique event types (intrusion, face, …)
-	LatestType    string   `json:"latest_type"`     // most recent alarm type
-	Description   string   `json:"description"`     // human-readable summary
-	SnapshotURL   string   `json:"snapshot_url"`    // latest snapshot
-	ClipURL       string   `json:"clip_url"`        // latest clip
+	CameraIDs     []string `json:"camera_ids"`   // unique cameras involved
+	CameraNames   []string `json:"camera_names"` // display names, parallel to CameraIDs
+	Types         []string `json:"types"`        // unique event types (intrusion, face, …)
+	LatestType    string   `json:"latest_type"`  // most recent alarm type
+	Description   string   `json:"description"`  // human-readable summary
+	SnapshotURL   string   `json:"snapshot_url"` // latest snapshot
+	ClipURL       string   `json:"clip_url"`     // latest clip
 	FirstAlarmTs  int64    `json:"first_alarm_ts"`
 	LastAlarmTs   int64    `json:"last_alarm_ts"`
 	SlaDeadlineMs int64    `json:"sla_deadline_ms"` // resets on each new alarm
@@ -255,29 +255,29 @@ type Incident struct {
 // ActiveAlarm is a live, unacknowledged alarm generated by the NVR detection pipeline.
 // Created when a high-confidence detection fires; closed when the operator dispositions it.
 type ActiveAlarm struct {
-	ID              string `json:"id"`
+	ID string `json:"id"`
 	// AlarmCode is the phoneticizable short code (ALM-YYMMDD-NNNN) used
 	// on radios and phone bridges; the ID stays as the URL/API key.
-	AlarmCode       string `json:"alarm_code,omitempty"`
+	AlarmCode string `json:"alarm_code,omitempty"`
 	// TriggeringEventID pins the alarm to the specific detection-pipeline
 	// event that produced it, so forensic replay is one SELECT instead of
 	// a lossy (camera_id, ts) join.
-	TriggeringEventID *int64 `json:"triggering_event_id,omitempty"`
-	IncidentID      string `json:"incident_id,omitempty"` // parent incident grouping
-	SiteID          string `json:"site_id"`
-	SiteName        string `json:"site_name"`
-	CameraID        string `json:"camera_id"`
-	CameraName      string `json:"camera_name"`
-	Severity        string `json:"severity"`
-	Type            string `json:"type"`
-	Description     string `json:"description"`
-	SnapshotURL     string `json:"snapshot_url"`
-	ClipURL         string `json:"clip_url"`
-	Ts              int64  `json:"ts"`
-	Acknowledged    bool   `json:"acknowledged"`
-	ClaimedBy       string `json:"claimed_by,omitempty"`
-	EscalationLevel     int     `json:"escalation_level"`
-	SlaDeadlineMs       int64   `json:"sla_deadline_ms"`
+	TriggeringEventID   *int64                   `json:"triggering_event_id,omitempty"`
+	IncidentID          string                   `json:"incident_id,omitempty"` // parent incident grouping
+	SiteID              string                   `json:"site_id"`
+	SiteName            string                   `json:"site_name"`
+	CameraID            string                   `json:"camera_id"`
+	CameraName          string                   `json:"camera_name"`
+	Severity            string                   `json:"severity"`
+	Type                string                   `json:"type"`
+	Description         string                   `json:"description"`
+	SnapshotURL         string                   `json:"snapshot_url"`
+	ClipURL             string                   `json:"clip_url"`
+	Ts                  int64                    `json:"ts"`
+	Acknowledged        bool                     `json:"acknowledged"`
+	ClaimedBy           string                   `json:"claimed_by,omitempty"`
+	EscalationLevel     int                      `json:"escalation_level"`
+	SlaDeadlineMs       int64                    `json:"sla_deadline_ms"`
 	AIDescription       string                   `json:"ai_description,omitempty"`
 	AIThreatLevel       string                   `json:"ai_threat_level,omitempty"`
 	AIRecommendedAction string                   `json:"ai_recommended_action,omitempty"`

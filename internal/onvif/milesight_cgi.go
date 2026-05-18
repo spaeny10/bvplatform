@@ -36,7 +36,7 @@ func (c *Client) MilesightGet(ctx context.Context, action string) ([]byte, error
 	return c.digestGet(ctx, target)
 }
 
-// MilesightPost issues a JSON POST to admin.cgi. Body is marshalled from
+// MilesightPost issues a JSON POST to admin.cgi. Body is marshaled from
 // `body`. Returns the camera's raw response (typically `{"setState":"succeed"}`
 // or `{"setState":"failed", ...}`) so the caller can decide whether to
 // treat "failed" as an error.
