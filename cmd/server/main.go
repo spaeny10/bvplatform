@@ -1028,6 +1028,15 @@ func main() {
 	}
 	go hub.Run(rootCtx)
 
+	// LOCAL-02: backfill any cameras whose profile_token was never
+	// populated (typical for SQL-seeded cameras that bypassed the
+	// /api/cameras create flow). Each empty-profile camera gets one
+	// ONVIF discovery round-trip up to profileBackfillPerCameraTimeout
+	// long, capped at profileBackfillConcurrency in parallel. Runs in
+	// a goroutine so a slow camera-fleet doesn't delay HTTP serving;
+	// PTZ remains broken for un-backfilled cameras only.
+	go api.BackfillProfileTokens(rootCtx, db)
+
 	recEngine := recording.NewEngine(cfg, db)
 	hlsServer := streaming.NewHLSServer(cfg, db)
 	mtxServer := streaming.NewMediaMTXServer(cfg)
