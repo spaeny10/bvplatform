@@ -58,6 +58,24 @@ export default function VideoPlayer({
     const [resolution, setResolution] = useState<{ w: number, h: number } | null>(null);
     const [paused, setPaused] = useState(false);
 
+    // LOCAL-11 follow-up: wall-clock timestamp overlay (Option A of
+    // ironsight/feature-requests/multi-camera-sync-indicator.md). Each tile
+    // shows the wall-clock of the *currently playing* frame so an operator
+    // running a multi-tile review can spot per-tile drift visually (e.g.
+    // "front says 12:03:07, back says 12:03:11 — they're 4s out of sync").
+    //
+    // Format: HH:MM:SS.cc (centiseconds is enough — millisecond precision
+    // would jitter visibly each timeupdate tick).
+    //
+    // Timezone v0 uses the browser's local zone. The spec calls for
+    // site-local (cameras.site_id -> sites.timezone) but the SiteCamera
+    // type doesn't carry that yet. Since BigView's current fleet is all at
+    // HQ HW54 and operators are in the same zone, browser-local matches
+    // site-local in practice. Wire up site timezone once the API exposes it.
+    const [overlayTime, setOverlayTime] = useState<string>('--:--:--.--');
+    const [overlayFilename, setOverlayFilename] = useState<string>('');
+    const [showOverlay, setShowOverlay] = useState<boolean>(true);
+
     // Per-cell quality override: 'auto' uses prop, 'high'/'low' override it
     const [cellQuality, setCellQuality] = useState<'auto' | 'high' | 'low'>('auto');
     // Bump this to force WebRTC reconnect when quality changes
@@ -91,6 +109,48 @@ export default function VideoPlayer({
         setScale(1);
         setPan({ x: 0, y: 0 });
     }, [cameraId]);
+
+    // Overlay visibility: read localStorage on mount, listen for the global
+    // toggle event so clicking any tile's overlay flips visibility on every
+    // tile at once. CustomEvent is cheaper than a React Context for one bool.
+    useEffect(() => {
+        const saved = typeof window !== 'undefined'
+            ? localStorage.getItem('ironsight-tile-timestamp-overlay')
+            : null;
+        if (saved !== null) setShowOverlay(saved === 'on');
+        const onToggle = (e: Event) => {
+            setShowOverlay((e as CustomEvent<boolean>).detail);
+        };
+        window.addEventListener('ironsight:timestamp-overlay-toggle', onToggle);
+        return () => window.removeEventListener('ironsight:timestamp-overlay-toggle', onToggle);
+    }, []);
+
+    const toggleOverlay = useCallback(() => {
+        setShowOverlay(prev => {
+            const next = !prev;
+            localStorage.setItem('ironsight-tile-timestamp-overlay', next ? 'on' : 'off');
+            window.dispatchEvent(new CustomEvent('ironsight:timestamp-overlay-toggle', { detail: next }));
+            return next;
+        });
+    }, []);
+
+    // While the segment is loading (cache miss → transcode in flight, or
+    // network fetch), reset the overlay to the placeholder so the operator
+    // never sees a stale time from the previous segment. The timeupdate
+    // handler below will replace it once playback resumes.
+    useEffect(() => {
+        if (loading) setOverlayTime('--:--:--.--');
+    }, [loading]);
+
+    // Wall-clock formatter: hh:mm:ss.cc in the browser's local zone.
+    const formatWallClock = (segStartMs: number, offsetSec: number): string => {
+        const d = new Date(segStartMs + offsetSec * 1000);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        const ss = String(d.getSeconds()).padStart(2, '0');
+        const cs = String(Math.floor(d.getMilliseconds() / 10)).padStart(2, '0');
+        return `${hh}:${mm}:${ss}.${cs}`;
+    };
 
     // --- Inline name editing state ---
     const [editingName, setEditingName] = useState(false);
@@ -458,6 +518,26 @@ export default function VideoPlayer({
         const targetMs = playbackTime?.getTime() || Date.now();
         loadSegmentForTime(targetMs, video, false);
 
+        // Wall-clock overlay updater. Subscribe once when the playback
+        // effect mounts; the handler reads playlistStartRef.current (which
+        // the segment loader updates) so it always reflects the *currently
+        // playing* segment without needing to re-attach the listener.
+        const onTime = () => {
+            const segStartMs = playlistStartRef.current;
+            if (segStartMs <= 0) {
+                setOverlayTime('--:--:--.--');
+                return;
+            }
+            setOverlayTime(formatWallClock(segStartMs, video.currentTime));
+            const url = currentSegUrlRef.current;
+            if (url) {
+                // Strip query/hash, take last path segment as the filename.
+                const last = url.split('?')[0].split('#')[0].split('/').pop();
+                if (last) setOverlayFilename(last);
+            }
+        };
+        video.addEventListener('timeupdate', onTime);
+
         // Auto-advance to next segment when current one ends
         const onEnded = () => {
             const curIdx = segmentsRef.current.findIndex((s: any) => s.url === currentSegUrlRef.current);
@@ -484,6 +564,7 @@ export default function VideoPlayer({
         video.addEventListener('loadedmetadata', updateRes);
 
         return () => {
+            video.removeEventListener('timeupdate', onTime);
             video.removeEventListener('ended', onEnded);
             video.removeEventListener('resize', updateRes);
             video.removeEventListener('loadedmetadata', updateRes);
@@ -739,6 +820,35 @@ export default function VideoPlayer({
                     <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                         {cameraName}
                     </span>
+                </div>
+            )}
+
+            {/* Wall-clock overlay (playback mode only). Click to toggle
+                visibility across every tile (custom event broadcasts the new
+                state, every VideoPlayer's useEffect listener receives it).
+                Hover shows the underlying mp4 filename — debug aid for ops. */}
+            {!isLive && !error && showOverlay && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        top: 8,
+                        left: 8,
+                        background: 'rgba(0, 0, 0, 0.65)',
+                        color: '#fff',
+                        padding: '3px 7px',
+                        borderRadius: 4,
+                        fontFamily: "'JetBrains Mono', monospace",
+                        fontSize: 14,
+                        lineHeight: 1,
+                        letterSpacing: 0.3,
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        zIndex: 11,
+                    }}
+                    onClick={(e) => { e.stopPropagation(); toggleOverlay(); }}
+                    title={overlayFilename || 'click to hide on all tiles'}
+                >
+                    {overlayTime}
                 </div>
             )}
 
