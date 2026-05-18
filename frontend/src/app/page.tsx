@@ -288,8 +288,19 @@ function HomeInner() {
     // Load timeline data when time range changes
     const loadTimeline = useCallback(async () => {
         try {
+            // Timeline-density window is anchored at currentTime and looks
+            // backward 1 hour (operators are reviewing past activity).
             const end = isLive ? new Date() : playbackTime;
             const start = new Date(end.getTime() - 60 * 60 * 1000); // 1 hour window
+
+            // LOCAL-04: events query needs to look FORWARD as well as
+            // backward — otherwise Timeline's `skipToNextEvent` button
+            // never finds anything to seek to (`events` only ever has
+            // points <= currentTime, so every "next event" click falls
+            // through to the +60s jumpForward fallback). Live mode skips
+            // the forward half (the future has no events).
+            const eventsStart = start;
+            const eventsEnd = isLive ? end : new Date(end.getTime() + 60 * 60 * 1000);
 
             const activeFilters = Object.entries(filters)
                 .filter(([_, active]) => active)
@@ -308,11 +319,11 @@ function HomeInner() {
                     interval: 1,
                 }),
                 queryEvents({
-                    start: start.toISOString(),
-                    end: end.toISOString(),
+                    start: eventsStart.toISOString(),
+                    end: eventsEnd.toISOString(),
                     camera_id: isolatedCamera || selectedCamera || undefined,
                     types: activeFilters.join(','),
-                    limit: 100,
+                    limit: 200, // doubled for the wider window
                 }),
             ]);
 
