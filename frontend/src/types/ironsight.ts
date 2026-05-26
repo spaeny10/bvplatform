@@ -117,6 +117,53 @@ export interface PPEBreakdown {
   gloves: number;
 }
 
+// ── Compliance Dashboard (P2-C-06) ──
+
+export type CompliancePeriod = 'today' | 'week' | 'month' | '90days' | 'custom';
+
+export interface ComplianceTimeBucket {
+  bucket: string;   // ISO timestamp
+  count: number;
+}
+
+export interface ComplianceCameraSummary {
+  camera_id: string;
+  camera_name: string;
+  violation_count: number;
+  pct_of_total: number;
+}
+
+export interface ComplianceFinding {
+  id: string;
+  camera_id: string;
+  camera_name: string;
+  site_id?: string;
+  site_name?: string;
+  detection_class: string;
+  missing_label: string;
+  confidence: number;
+  status: string;
+  created_at: string;
+}
+
+export interface ComplianceSummary {
+  period: {
+    label: string;
+    start: string;
+    end: string;
+  };
+  site_id: string | null;
+  total_violations: number;
+  total_reviewed: number;
+  pending_count: number;
+  compliance_rate: number | null;
+  person_hours: number | null;
+  person_hours_available: boolean;
+  violations_over_time: ComplianceTimeBucket[];
+  top_cameras: ComplianceCameraSummary[];
+  recent_findings: ComplianceFinding[];
+}
+
 // ── Alerts ──
 
 export interface AlertEvent {

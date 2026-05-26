@@ -406,6 +406,12 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// CSRF-exempt: GET endpoint. Auth-scoped to claims.OrganizationID.
 			r.Get("/portal/person-tracks", HandleGetPersonTracks(db))
 
+			// Compliance dashboard + PDF reports (P2-C-06)
+			// Both are GET endpoints — CSRFMiddleware exempts GET/HEAD/OPTIONS.
+			// Tenant-scoped from JWT claims; SOC roles may spectate via ?org=.
+			r.Get("/portal/compliance/summary", HandleComplianceSummary(db))
+			r.Get("/portal/compliance/report.pdf", HandleComplianceReportPDF(db))
+
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))
 			r.Post("/alarms/{alarmId}/ai-feedback", func(w http.ResponseWriter, req *http.Request) {

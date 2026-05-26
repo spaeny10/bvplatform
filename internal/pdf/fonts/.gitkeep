@@ -1,0 +1,4 @@
+# Liberation Sans TTF files are placed here at Docker build time.
+# See Dockerfile build stage: apt-get install fonts-liberation + cp commands.
+# For local development, run scripts/fetch-fonts.sh to download them.
+# These files are NOT committed to git (binary files; see .gitignore).

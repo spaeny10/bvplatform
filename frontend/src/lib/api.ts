@@ -1200,3 +1200,53 @@ export async function fetchPlaybackSegments(cameraId: string, time: string, sign
     return res.json();
 }
 
+// ── Compliance Dashboard (P2-C-06) ───────────────────────────────────────────
+
+import type { ComplianceSummary } from '@/types/ironsight';
+
+export interface ComplianceSummaryParams {
+    site_id?: string;
+    period: 'today' | 'week' | 'month' | '90days' | 'custom';
+    start_date?: string;
+    end_date?: string;
+    org?: string;
+}
+
+export async function getComplianceSummary(params: ComplianceSummaryParams): Promise<ComplianceSummary> {
+    const qs = new URLSearchParams();
+    qs.set('period', params.period);
+    if (params.site_id) qs.set('site_id', params.site_id);
+    if (params.start_date) qs.set('start_date', params.start_date);
+    if (params.end_date) qs.set('end_date', params.end_date);
+    if (params.org) qs.set('org', params.org);
+
+    const res = await authFetch(`${API_BASE}/v1/portal/compliance/summary?${qs.toString()}`);
+    if (!res.ok) throw new Error(`compliance summary: ${res.status}`);
+    return res.json();
+}
+
+export async function downloadComplianceReport(
+    params: ComplianceSummaryParams & { include_findings?: boolean }
+): Promise<void> {
+    const qs = new URLSearchParams();
+    qs.set('period', params.period);
+    if (params.site_id) qs.set('site_id', params.site_id);
+    if (params.start_date) qs.set('start_date', params.start_date);
+    if (params.end_date) qs.set('end_date', params.end_date);
+    if (params.org) qs.set('org', params.org);
+    if (params.include_findings === false) qs.set('include_findings', 'false');
+
+    const res = await authFetch(`${API_BASE}/v1/portal/compliance/report.pdf?${qs.toString()}`);
+    if (!res.ok) throw new Error(`compliance PDF: ${res.status}`);
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ironsight-compliance-${params.period}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+

@@ -47,6 +47,22 @@ func scanSiteRows(rows pgx.Rows) ([]Site, error) {
 // Organization CRUD
 // ═══════════════════════════════════════════════════════════════
 
+// GetOrganizationByID fetches a single organization row by ID.
+// Returns (nil, nil) when not found.
+func (db *DB) GetOrganizationByID(ctx context.Context, id string) (*Organization, error) {
+	var o Organization
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, name, plan, contact_name, contact_email, COALESCE(logo_url, '') FROM organizations WHERE id = $1`, id,
+	).Scan(&o.ID, &o.Name, &o.Plan, &o.ContactName, &o.ContactEmail, &o.LogoURL)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("GetOrganizationByID: %w", err)
+	}
+	return &o, nil
+}
+
 func (db *DB) ListOrganizations(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx, `SELECT id, name, plan, contact_name, contact_email, logo_url, created_at FROM organizations ORDER BY name`)
 	if err != nil {
