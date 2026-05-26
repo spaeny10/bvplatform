@@ -14,6 +14,15 @@ RUN go mod download
 
 COPY . .
 
+# P2-C-06: Fetch Liberation Sans TTF files for the PDF report package (go:embed).
+# Liberation Sans is metric-compatible with Helvetica, SIL Open Font License.
+# These are fetched at build time so go:embed can include them; the build stage
+# image (golang:1.25-bookworm) has apt available.
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberation \
+    && cp /usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf ./internal/pdf/fonts/ \
+    && cp /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf    ./internal/pdf/fonts/ \
+    && rm -rf /var/lib/apt/lists/*
+
 # CGO is off by default for a static binary. The pgx driver is pure Go,
 # websocket and chi are pure Go, ONVIF/SOAP is pure Go — nothing in this
 # tree needs cgo. If you ever add SQLite or libmagic, drop CGO_ENABLED=1
