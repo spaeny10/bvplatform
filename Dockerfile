@@ -23,6 +23,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends fonts-liberatio
     && cp /usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf    ./internal/pdf/fonts/ \
     && rm -rf /var/lib/apt/lists/*
 
+# P2-C-06: go mod tidy resolves go.sum for the new signintech/gopdf dependency.
+# This runs after COPY . . so the full module graph is visible. GONOSUMCHECK is
+# not needed — gopdf is a public module. The go.sum file in the build context
+# may be stale if the developer ran tidy locally without Go installed.
+RUN go mod tidy
+
 # CGO is off by default for a static binary. The pgx driver is pure Go,
 # websocket and chi are pure Go, ONVIF/SOAP is pure Go — nothing in this
 # tree needs cgo. If you ever add SQLite or libmagic, drop CGO_ENABLED=1
