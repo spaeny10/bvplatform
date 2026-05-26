@@ -156,13 +156,45 @@ func TestReviewEntry_WrongRole(t *testing.T) {
 
 // ── TestReviewEntry_NotFound ──────────────────────────────────────────────────
 
+// Validates that a review request for a non-existent ID passes all the
+// validation gates (role, status, UUID parse) and then reaches the DB layer.
+// We use a nil DB so the DB call panics; recover() catches it and confirms
+// the DB-lookup branch was entered (rather than a 4xx short-circuit earlier
+// in the pipeline). Same pattern as TestSSO_TrustHeaderPathWithoutDB in
+// cookie_csrf_test.go.
 func TestReviewEntry_NotFound(t *testing.T) {
-	// This test validates that a review request for a non-existent ID does not
-	// return 200. It requires passing all validation gates (role, status, UUID)
-	// and then reaching the DB lookup. Since we're using a nil DB for unit
-	// tests, the DB call panics — we recover and treat it as the expected
-	// non-200 path. Integration tests with a real DB are in ppe_queue_test.go.
-	t.Skip("skipped: requires real DB; covered by database integration tests")
+	cfg := ppeTestCfg(t)
+	handler := HandleReviewPendingEntry(cfg, nil) // nil DB on purpose
+
+	orgID := uuid.NewString()
+	claims := ppeClaimsFor(orgID, uuid.NewString(), "site_manager")
+	body := []byte(`{"status":"reviewed_compliant","notes":"ok"}`)
+	target := "/api/portal/pending-review/00000000-0000-0000-0000-000000000000/review"
+	r := ppeRequestWithClaims(http.MethodPost, target, body, claims)
+
+	// Wire chi URLParam("id") since the handler reads it from chi context.
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "00000000-0000-0000-0000-000000000000")
+	r = r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+
+	dbBranchReached := false
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				dbBranchReached = true
+			}
+		}()
+		handler(w, r)
+	}()
+
+	// Expect to reach the DB layer (and panic on nil DB), NOT to short-circuit
+	// with a 4xx from the upstream validators. A 4xx code with no panic means a
+	// validator ran too eagerly and the test premise is no longer valid.
+	if !dbBranchReached {
+		t.Fatalf("expected DB-lookup branch (nil-DB panic) for a valid POST with non-existent UUID; got %d without panic", w.Code)
+	}
 }
 
 // mustOpenTestDB returns a nil *database.DB placeholder for handler unit tests
