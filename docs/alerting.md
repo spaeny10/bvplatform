@@ -2,7 +2,8 @@
 
 Alerting pipeline: `Prometheus` → `Alertmanager` → `ntfy` → phone.
 
-Decision context: D-03 (2026-05-26) — alertmanager + ntfy.  
+Decision context: D-03 (2026-05-26) — alertmanager + ntfy. Runbook home D-05 (2026-05-26) — canonical tree at `bigview-platform/docs/runbooks/` (outside this repo). The alertmanager LXC mounts that tree at `/etc/runbooks/`; `runbook_url` in alerts.yml uses `file:///etc/runbooks/<name>.md`.
+
 Config files: [`deploy/monitoring/alerts.yml`](../deploy/monitoring/alerts.yml),
 [`deploy/monitoring/alertmanager.yml`](../deploy/monitoring/alertmanager.yml).  
 LXC provisioning guide: [`deploy/monitoring/DEPLOY.md`](../deploy/monitoring/DEPLOY.md).

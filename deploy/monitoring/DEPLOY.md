@@ -77,6 +77,14 @@ rsync -av --checksum \
   deploy/monitoring/alertmanager.yml \
   deploy/monitoring/ntfy-template.tpl \
   root@${MON_LXC_IP}:/etc/alertmanager/
+
+# Runbooks live in the canonical D-05 tree at bigview-platform/docs/runbooks/.
+# alerts.yml references them via file:///etc/runbooks/<name>.md, so rsync them
+# into /etc/runbooks/ on the monitoring LXC.
+ssh root@${MON_LXC_IP} 'mkdir -p /etc/runbooks'
+rsync -av --checksum \
+  docs/runbooks/ \
+  root@${MON_LXC_IP}:/etc/runbooks/
 ```
 
 ## Step 4 — Replace the ntfy topic placeholder
