@@ -72,7 +72,10 @@ type RetentionManager struct {
 	db            *database.DB
 	ppeFramesDir  string
 	ppeRetainDays int
-	stopCh        chan struct{}
+	// P2-C-02 tracking retention (belt-and-suspenders for TimescaleDB policy).
+	trackingRawRetainDays    int
+	trackingBucketRetainDays int
+	stopCh                   chan struct{}
 }
 
 // NewRetentionManager creates a new retention manager.
@@ -91,6 +94,15 @@ func NewRetentionManager(db *database.DB) *RetentionManager {
 func (rm *RetentionManager) SetPPERetention(framesDir string, retainDays int) {
 	rm.ppeFramesDir = framesDir
 	rm.ppeRetainDays = retainDays
+}
+
+// SetTrackingRetention configures the P2-C-02 tracking sweep parameters.
+// rawRetainDays is the belt-and-suspenders fallback for the TimescaleDB policy
+// on person_track_frames. bucketRetainDays governs person_track_buckets (no TS policy).
+// Passing 0 for either skips that sweep.
+func (rm *RetentionManager) SetTrackingRetention(rawRetainDays, bucketRetainDays int) {
+	rm.trackingRawRetainDays = rawRetainDays
+	rm.trackingBucketRetainDays = bucketRetainDays
 }
 
 // Start begins the retention cleanup loop (runs every hour)
@@ -158,6 +170,11 @@ func (rm *RetentionManager) cleanup(ctx context.Context) {
 	// Pass 5: PPE evidence frames (P2-C-01). Sweeps reviewed/dismissed
 	// queue rows and removes their on-disk JPEG files.
 	rm.sweepPPEFrames(ctx)
+
+	// Pass 6: Person-tracking retention (P2-C-02).
+	// person_track_frames: Go-side fallback for the TimescaleDB retention policy.
+	// person_track_buckets: regular table, no TS policy — Go sweep only.
+	rm.sweepTrackingData(ctx)
 
 	if totalDeleted > 0 {
 		log.Printf("[RETENTION] Cleanup complete: %d segment(s) deleted, %.2f MB freed",
@@ -480,4 +497,28 @@ func (rm *RetentionManager) sweepPPEFrames(ctx context.Context) {
 		deleted++
 	}
 	log.Printf("[RETENTION] PPE sweep: %d frame(s) removed (%.2f MB freed)", deleted, float64(freed)/1024/1024)
+}
+
+// sweepTrackingData is the P2-C-02 retention pass for person-tracking tables.
+// person_track_frames: belt-and-suspenders fallback for the TimescaleDB
+// add_retention_policy set in migration 0023. The TS policy handles the fast
+// path; this sweep is the safety net (R2 mitigation).
+// person_track_buckets: regular table with no TS policy — Go sweep only.
+func (rm *RetentionManager) sweepTrackingData(ctx context.Context) {
+	if rm.trackingRawRetainDays > 0 {
+		n, err := rm.db.SweepTrackFrames(ctx, rm.trackingRawRetainDays)
+		if err != nil {
+			log.Printf("[RETENTION] tracking frames sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("[RETENTION] tracking frames sweep: %d row(s) deleted (>%dd)", n, rm.trackingRawRetainDays)
+		}
+	}
+	if rm.trackingBucketRetainDays > 0 {
+		n, err := rm.db.SweepTrackBuckets(ctx, rm.trackingBucketRetainDays)
+		if err != nil {
+			log.Printf("[RETENTION] tracking buckets sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("[RETENTION] tracking buckets sweep: %d row(s) deleted (>%dd)", n, rm.trackingBucketRetainDays)
+		}
+	}
 }

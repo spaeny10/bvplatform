@@ -393,3 +393,58 @@ type BookmarkCreate struct {
 	Notes     string    `json:"notes"`
 	Severity  string    `json:"severity"`
 }
+
+// ── Person-tracking models (P2-C-02) ─────────────────────────────────────────
+
+// PersonTrackFrame is a raw per-frame occupancy row stored in the
+// person_track_frames hypertable. One row per PPE-worker poll cycle per camera.
+type PersonTrackFrame struct {
+	Time           time.Time  `json:"time"`
+	CameraID       uuid.UUID  `json:"camera_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	OrganizationID string     `json:"organization_id"`
+	PersonCount    int        `json:"person_count"`
+	FrameSource    string     `json:"frame_source"`
+}
+
+// PersonTrackFrameInsert carries the data the tracking worker provides
+// when persisting a new raw frame row. OrganizationID is required.
+type PersonTrackFrameInsert struct {
+	Time           time.Time
+	CameraID       uuid.UUID
+	SiteID         *string
+	OrganizationID string
+	PersonCount    int
+	FrameSource    string
+}
+
+// PersonTrackBucket is a pre-aggregated 5-minute occupancy window.
+// Stored in the person_track_buckets regular table (90-day retention).
+type PersonTrackBucket struct {
+	CameraID         uuid.UUID `json:"camera_id"`
+	SiteID           *string   `json:"site_id,omitempty"`
+	OrganizationID   string    `json:"organization_id"`
+	BucketStart      time.Time `json:"bucket_start"`
+	BucketMinutes    int       `json:"bucket_minutes"`
+	PersonMinutes    float64   `json:"person_minutes"`
+	PeakPersonCount  int       `json:"peak_person_count"`
+	FrameCount       int       `json:"frame_count"`
+	ViolationCount   int       `json:"violation_count"`
+	RolledUpAt       time.Time `json:"rolled_up_at"`
+
+	// Joined fields — populated by ListTrackBuckets, not stored.
+	CameraName string `json:"camera_name,omitempty"`
+	SiteName   string `json:"site_name,omitempty"`
+}
+
+// TrackBucketFilter is the query filter for ListTrackBuckets.
+// OrganizationID is mandatory; all other fields are optional.
+type TrackBucketFilter struct {
+	OrganizationID string
+	CameraID       *uuid.UUID
+	SiteID         *string
+	Start          time.Time
+	End            time.Time
+	BucketMinutes  int
+	Limit          int
+}

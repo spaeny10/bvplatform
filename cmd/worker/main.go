@@ -7,6 +7,8 @@
 //   - VLM Indexer       — enriches recording segments with AI descriptions
 //   - Export Worker     — processes queued video-export jobs
 //   - PPE Worker        — polls cameras on PPE-enabled sites, feeds violations into pending_review_queue (P2-C-01)
+//   - Tracking Worker   — aggregates person counts from PPE worker frames (P2-C-02)
+//   - Tracking Aggregator — 5-min bucket roll-up (P2-C-02)
 //
 // Designed for docker-compose / K8s deployments where the api service
 // runs with RUN_WORKERS=false and this binary runs as a single-replica
@@ -34,15 +36,16 @@ import (
 	"time"
 
 	"ironsight/internal/ai"
-	"ironsight/internal/logging"
 	"ironsight/internal/config"
 	"ironsight/internal/crypto"
 	"ironsight/internal/database"
 	"ironsight/internal/export"
 	"ironsight/internal/indexer"
+	"ironsight/internal/logging"
 	"ironsight/internal/notify"
 	"ironsight/internal/ppe"
 	"ironsight/internal/recording"
+	"ironsight/internal/tracking"
 )
 
 func main() {
@@ -130,6 +133,8 @@ func main() {
 	retentionMgr := recording.NewRetentionManager(db)
 	// P2-C-01: configure PPE frame sweep alongside recording retention.
 	retentionMgr.SetPPERetention(cfg.PPEFramesDir, cfg.PPEFrameRetentionDays)
+	// P2-C-02: tracking data retention (raw frames + buckets).
+	retentionMgr.SetTrackingRetention(cfg.TrackingRawRetentionDays, cfg.TrackingBucketRetentionDays)
 	go retentionMgr.Start(ctx)
 	log.Println("[WORKER] Retention manager started")
 
@@ -149,6 +154,27 @@ func main() {
 	// broadcast fires on the API side when the frontend polls. If a
 	// Redis pub/sub bridge is needed later, wire the hub here.
 	ppeWorker := ppe.New(cfg, db, aiClient, nil /* no hub in worker binary */)
+
+	// ── Tracking worker + aggregator — P2-C-02 ────────────────────
+	// The tracking worker subscribes to CameraFrameResult values produced
+	// by the PPE worker. Channel buffer = 32; the PPE worker uses a
+	// non-blocking send so tracking backpressure cannot stall PPE.
+	if cfg.TrackingEnabled {
+		const trackingChannelBuf = 32
+		trackingCh := make(chan ppe.CameraFrameResult, trackingChannelBuf)
+		ppeWorker.TrackingCh = trackingCh
+
+		trackingWorker := tracking.New(db, trackingCh)
+		trackingWorker.Start(ctx)
+		log.Println("[WORKER] Tracking worker started")
+
+		trackingAggregator := tracking.NewAggregator(db, cfg.TrackingBucketMinutes)
+		trackingAggregator.Start(ctx)
+		log.Println("[WORKER] Tracking aggregator started")
+	} else {
+		log.Println("[WORKER] Tracking disabled (TRACKING_ENABLED=false)")
+	}
+
 	ppeWorker.Start(ctx)
 	log.Println("[WORKER] PPE worker started")
 

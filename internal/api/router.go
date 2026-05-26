@@ -401,6 +401,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Post("/portal/pending-review/{id}/review", HandleReviewPendingEntry(cfg, db))
 			r.Get("/portal/pending-review/{id}/frame", HandleServePPEFrame(cfg, db))
 
+			// Person-tracking aggregation (P2-C-02)
+			// GET /api/v1/portal/person-tracks — pre-aggregated bucket rows for the C-06 dashboard.
+			// CSRF-exempt: GET endpoint. Auth-scoped to claims.OrganizationID.
+			r.Get("/portal/person-tracks", HandleGetPersonTracks(db))
+
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))
 			r.Post("/alarms/{alarmId}/ai-feedback", func(w http.ResponseWriter, req *http.Request) {

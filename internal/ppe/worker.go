@@ -12,6 +12,10 @@
 // This worker runs inside the ironsight-worker container alongside the
 // existing retention, VLM indexer, and export workers. It participates
 // in the same leader-election lock so it runs on exactly one replica.
+//
+// P2-C-02: Each camera poll result is published as a CameraFrameResult
+// on the optional TrackingCh channel so the sibling tracking worker can
+// consume person counts without issuing a second YOLO call.
 package ppe
 
 import (
@@ -42,6 +46,19 @@ type Broadcaster interface {
 	Broadcast(msg []byte)
 }
 
+// CameraFrameResult is the output of one PPE worker camera poll.
+// It is published to TrackingCh (P2-C-02) so the tracking worker can
+// consume YOLO results without a second inference call.
+// R1: Detections contains security-model COCO detections (including
+// "person" class). PPEViolations contains PPE-model violation detections.
+// Person counting MUST read from YOLO.Detections, not YOLO.PPEViolations.
+type CameraFrameResult struct {
+	Camera     database.PPECamera
+	FrameBytes []byte
+	YOLO       *ai.YOLOResult // nil when YOLO call failed
+	FetchedAt  time.Time
+}
+
 // Worker polls PPE-enabled cameras and feeds violations into the queue.
 type Worker struct {
 	cfg      *config.Config
@@ -49,6 +66,13 @@ type Worker struct {
 	aiClient *ai.Client
 	hub      Broadcaster
 	stopCh   chan struct{}
+	// TrackingCh is the channel the PPE worker publishes CameraFrameResult
+	// values to after each successful poll. The tracking worker subscribes
+	// on the other end. The PPE worker uses a non-blocking send — if the
+	// tracking worker is slow and the channel is full, the frame is dropped
+	// silently (person-tracking can have gaps, but PPE violation detection
+	// must not block). Set to nil to disable fan-out entirely.
+	TrackingCh chan<- CameraFrameResult
 }
 
 // New creates a PPE worker. hub may be nil if WS broadcast is not available
@@ -127,6 +151,8 @@ func (w *Worker) poll(ctx context.Context) {
 var consecutiveFailures = map[uuid.UUID]int{}
 
 func (w *Worker) processCamera(ctx context.Context, cam database.PPECamera) {
+	fetchedAt := time.Now().UTC()
+
 	// Fetch snapshot: Milesight CGI first, ONVIF fallback.
 	frameBytes, source, err := w.fetchSnapshot(ctx, cam)
 	if err != nil {
@@ -144,6 +170,14 @@ func (w *Worker) processCamera(ctx context.Context, cam database.PPECamera) {
 
 	// YOLO inference.
 	if !w.cfg.AIEnabled {
+		// Still fan out a nil-YOLO result so tracking knows the camera
+		// was polled (tracking worker handles nil YOLO gracefully).
+		w.fanOutToTracking(CameraFrameResult{
+			Camera:     cam,
+			FrameBytes: frameBytes,
+			YOLO:       nil,
+			FetchedAt:  fetchedAt,
+		})
 		return
 	}
 	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -154,8 +188,26 @@ func (w *Worker) processCamera(ctx context.Context, cam database.PPECamera) {
 		log.Printf("[PPE] YOLO call failed for camera %s: %v", cam.CameraID, err)
 		appmetrics.SetCustomAlert("ppe_yolo_call_failure", "warning",
 			fmt.Sprintf("camera %s: %v", cam.CameraID, err))
+		// Still fan out — tracking worker handles nil YOLO.
+		w.fanOutToTracking(CameraFrameResult{
+			Camera:     cam,
+			FrameBytes: frameBytes,
+			YOLO:       nil,
+			FetchedAt:  fetchedAt,
+		})
 		return
 	}
+
+	// Fan out to tracking worker BEFORE the PPE early-return on zero
+	// violations — tracking wants all-frames, not just violation frames.
+	// R1: pass the full YOLOResult; tracking reads .Detections filtered
+	// to class=="person"; PPE reads .PPEViolations below.
+	w.fanOutToTracking(CameraFrameResult{
+		Camera:     cam,
+		FrameBytes: frameBytes,
+		YOLO:       yolo,
+		FetchedAt:  fetchedAt,
+	})
 
 	if len(yolo.PPEViolations) == 0 {
 		return
@@ -176,6 +228,22 @@ func (w *Worker) processCamera(ctx context.Context, cam database.PPECamera) {
 		if err := w.persistViolation(ctx, cam, v, yolo, frameBytes, source); err != nil {
 			log.Printf("[PPE] persist violation for camera %s: %v", cam.CameraID, err)
 		}
+	}
+}
+
+// fanOutToTracking publishes result to TrackingCh using a non-blocking send.
+// If the channel is full (tracking worker is slow), the frame is dropped
+// and an alert is set — PPE violation detection must not block.
+func (w *Worker) fanOutToTracking(result CameraFrameResult) {
+	if w.TrackingCh == nil {
+		return
+	}
+	select {
+	case w.TrackingCh <- result:
+	default:
+		appmetrics.SetCustomAlert("ppe_tracking_channel_full", "info",
+			fmt.Sprintf("tracking channel full, dropped frame for camera %s", result.Camera.CameraID))
+		log.Printf("[PPE] tracking channel full, dropped frame for camera %s", result.Camera.CameraID)
 	}
 }
 

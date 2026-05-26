@@ -237,6 +237,25 @@ type Config struct {
 	PPEConfidenceThreshold  float64
 	PPEFramesDir            string
 	PPEFrameRetentionDays   int
+
+	// Person-tracking worker (P2-C-02). TrackingEnabled gates the whole
+	// subsystem; false skips the tracking worker and aggregator loops.
+	// TrackingBucketMinutes is the bucket granularity written by the
+	// aggregator (only 5 is currently stored; reserved for future use).
+	// TrackingRawRetentionDays is how many days person_track_frames rows
+	// are kept (TimescaleDB policy + Go sweep fallback).
+	// TrackingBucketRetentionDays is how many days person_track_buckets
+	// rows are kept (Go sweep only — regular table, no TS policy).
+	//
+	// Env vars:
+	//   TRACKING_ENABLED                  default true
+	//   TRACKING_BUCKET_MINUTES           default 5
+	//   TRACKING_RAW_RETENTION_DAYS       default 7
+	//   TRACKING_BUCKET_RETENTION_DAYS    default 90
+	TrackingEnabled             bool
+	TrackingBucketMinutes       int
+	TrackingRawRetentionDays    int
+	TrackingBucketRetentionDays int
 }
 
 // Load reads configuration from environment variables with defaults
@@ -344,6 +363,12 @@ func Load() *Config {
 		PPEConfidenceThreshold: getEnvFloat64("PPE_CONFIDENCE_THRESHOLD", 0.50),
 		PPEFramesDir:           getEnv("PPE_FRAMES_DIR", "/tank/data/ironsight/ppe-frames"),
 		PPEFrameRetentionDays:  getEnvInt("PPE_FRAME_RETENTION_DAYS", 7),
+
+		// Person-tracking worker — P2-C-02.
+		TrackingEnabled:             getEnvBool("TRACKING_ENABLED", true),
+		TrackingBucketMinutes:       getEnvInt("TRACKING_BUCKET_MINUTES", 5),
+		TrackingRawRetentionDays:    getEnvInt("TRACKING_RAW_RETENTION_DAYS", 7),
+		TrackingBucketRetentionDays: getEnvInt("TRACKING_BUCKET_RETENTION_DAYS", 90),
 	}
 	return cfg
 }
