@@ -394,6 +394,73 @@ type BookmarkCreate struct {
 	Severity  string    `json:"severity"`
 }
 
+// ── PPE Zones + Compliance Rules (P2-C-04) ───────────────────────────────────
+
+// PPEZone is a server-side polygon used to spatially filter YOLO violation
+// detections. Never pushed to camera firmware (unlike VCARules).
+// Coordinates: normalized floats 0.0-1.0, matching vca_rules.region convention.
+type PPEZone struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	CameraID       uuid.UUID  `json:"camera_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	ZoneType       string     `json:"zone_type"` // work_area | no_go | ppe_required | ppe_optional
+	Name           string     `json:"name"`
+	Region         []Point    `json:"region"`
+	Enabled        bool       `json:"enabled"`
+	Notes          *string    `json:"notes,omitempty"`
+	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// PPEZoneCreate is the input DTO for creating/updating a PPE zone.
+type PPEZoneCreate struct {
+	ZoneType string   `json:"zone_type"`
+	Name     string   `json:"name"`
+	Region   []Point  `json:"region"`
+	Enabled  bool     `json:"enabled"`
+	Notes    *string  `json:"notes,omitempty"`
+}
+
+// ComplianceRule binds a PPEZone to a PPE-required or no-go rule.
+// camera_id is nullable: NULL means site-wide (applies to all cameras at site_id).
+type ComplianceRule struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	CameraID       *uuid.UUID `json:"camera_id,omitempty"` // nil = site-wide
+	ZoneID         uuid.UUID  `json:"zone_id"`
+	RuleType       string     `json:"rule_type"` // ppe_required | no_go
+	PPEClasses     []string   `json:"ppe_classes"`
+	Enabled        bool       `json:"enabled"`
+	Notes          *string    `json:"notes,omitempty"`
+	SiteWide       bool       `json:"site_wide"` // computed: camera_id IS NULL
+	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	// Joined fields — populated by list queries; not stored.
+	ZoneName string `json:"zone_name,omitempty"`
+	ZoneType string `json:"zone_type,omitempty"`
+}
+
+// ComplianceRuleCreate is the input DTO for creating/updating a compliance rule.
+type ComplianceRuleCreate struct {
+	ZoneID     uuid.UUID `json:"zone_id"`
+	RuleType   string    `json:"rule_type"`
+	PPEClasses []string  `json:"ppe_classes"`
+	Enabled    bool      `json:"enabled"`
+	Notes      *string   `json:"notes,omitempty"`
+	SiteWide   bool      `json:"site_wide"` // when true, camera_id stored as NULL
+}
+
+// ComplianceRuleWithZone is used by the PPE worker: a compliance rule with
+// its zone polygon joined in so the engine can do point-in-polygon without
+// a second query.
+type ComplianceRuleWithZone struct {
+	ComplianceRule
+	Zone PPEZone
+}
+
 // ── Person-tracking models (P2-C-02) ─────────────────────────────────────────
 
 // PersonTrackFrame is a raw per-frame occupancy row stored in the

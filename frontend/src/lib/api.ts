@@ -1200,6 +1200,106 @@ export async function fetchPlaybackSegments(cameraId: string, time: string, sign
     return res.json();
 }
 
+// ── PPE Pending Review Queue (P2-C-01) ───────────────────────────────────────
+
+import type { PendingReviewEntry } from '@/types/ironsight';
+export type { PendingReviewEntry };
+
+export interface PendingReviewFilter {
+    status?: string;
+    camera_id?: string;
+    limit?: number;
+    before?: string;
+}
+
+export async function getPendingReview(filter: PendingReviewFilter = {}): Promise<{ entries: PendingReviewEntry[] }> {
+    const qs = new URLSearchParams();
+    if (filter.status) qs.set('status', filter.status);
+    if (filter.camera_id) qs.set('camera_id', filter.camera_id);
+    if (filter.limit) qs.set('limit', String(filter.limit));
+    if (filter.before) qs.set('before', filter.before);
+    const res = await authFetch(`${API_BASE}/v1/portal/pending-review?${qs.toString()}`);
+    if (!res.ok) throw new Error(`pending review: ${res.status}`);
+    return res.json();
+}
+
+export async function submitReview(
+    id: string,
+    body: { status: string; notes?: string }
+): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/portal/pending-review/${id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`submit review: ${res.status}`);
+}
+
+// ── PPE Zones + Compliance Rules (P2-C-04) ───────────────────────────────────
+
+import type { PPEZone, PPEZoneCreate, ComplianceRule, ComplianceRuleCreate } from '@/types/ironsight';
+export type { PPEZone, PPEZoneCreate, ComplianceRule, ComplianceRuleCreate };
+
+export async function listPPEZones(cameraId: string): Promise<PPEZone[]> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones`);
+    if (!res.ok) return [];
+    return res.json();
+}
+
+export async function createPPEZone(cameraId: string, data: PPEZoneCreate): Promise<PPEZone> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`create PPE zone: ${res.status}`);
+    return res.json();
+}
+
+export async function updatePPEZone(cameraId: string, zoneId: string, data: PPEZoneCreate): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones/${zoneId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`update PPE zone: ${res.status}`);
+}
+
+export async function deletePPEZone(cameraId: string, zoneId: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones/${zoneId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete PPE zone: ${res.status}`);
+}
+
+export async function listComplianceRules(cameraId: string): Promise<ComplianceRule[]> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules`);
+    if (!res.ok) return [];
+    return res.json();
+}
+
+export async function createComplianceRule(cameraId: string, data: ComplianceRuleCreate): Promise<ComplianceRule> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`create compliance rule: ${res.status}`);
+    return res.json();
+}
+
+export async function updateComplianceRule(cameraId: string, ruleId: string, data: ComplianceRuleCreate): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`update compliance rule: ${res.status}`);
+}
+
+export async function deleteComplianceRule(cameraId: string, ruleId: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules/${ruleId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete compliance rule: ${res.status}`);
+}
+
 // ── Compliance Dashboard (P2-C-06) ───────────────────────────────────────────
 
 import type { ComplianceSummary } from '@/types/ironsight';

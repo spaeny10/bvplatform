@@ -36,6 +36,7 @@ import (
 	appmetrics "ironsight/internal/metrics"
 	"ironsight/internal/milesight"
 	"ironsight/internal/onvif"
+	"ironsight/internal/safety"
 )
 
 // Broadcaster is the subset of api.Hub that the worker needs. Using an
@@ -218,17 +219,115 @@ func (w *Worker) processCamera(ctx context.Context, cam database.PPECamera) {
 		threshold = 0.50
 	}
 
-	for _, v := range yolo.PPEViolations {
-		if v.Confidence < threshold {
-			log.Printf("[PPE] violation below threshold (%.2f < %.2f) for camera %s — skipping",
-				v.Confidence, threshold, cam.CameraID)
+	// P2-C-04: Zone-filter pass.
+	// Query active compliance rules for this camera. If no rules are configured
+	// the worker falls back to full-frame behavior (persists any violation above
+	// threshold) so cameras without zones continue to work exactly as before.
+	// R2 (backward-compat) guard from the scope plan.
+	zonesAndRules, err := w.db.ListZonesAndRulesForCamera(ctx, cam.CameraID, cam.SiteID, cam.OrganizationID)
+	if err != nil {
+		// Non-fatal: log and fall back to full-frame.
+		log.Printf("[PPE] ListZonesAndRulesForCamera for camera %s: %v — falling back to full-frame", cam.CameraID, err)
+		zonesAndRules = nil
+	}
+
+	// Collect all person detections (for no_go rules) and PPE violations.
+	// We need both because no_go fires on any person, not just PPE violations.
+	var allDetectionsForRules []ai.Detection
+	if len(zonesAndRules) > 0 {
+		// Merge PPEViolations + Detections where class=="person" for no_go evaluation.
+		// Use a simple combined slice — the safety engine ignores class for no_go.
+		allDetectionsForRules = append(allDetectionsForRules, yolo.PPEViolations...)
+		for _, d := range yolo.Detections {
+			if d.Class == "person" {
+				allDetectionsForRules = append(allDetectionsForRules, d)
+			}
+		}
+	}
+
+	// Flatten zones and rules for the engine call.
+	var zones []database.PPEZone
+	var rules []database.ComplianceRule
+	for _, zr := range zonesAndRules {
+		zones = append(zones, zr.Zone)
+		rules = append(rules, zr.ComplianceRule)
+	}
+
+	if len(rules) == 0 {
+		// No compliance rules configured — run full-frame behavior as before.
+		// Log at debug level so the behavior is observable without being noisy.
+		log.Printf("[PPE] camera %s: no compliance rules configured, running full-frame", cam.CameraID)
+		for _, v := range yolo.PPEViolations {
+			if v.Confidence < threshold {
+				log.Printf("[PPE] violation below threshold (%.2f < %.2f) for camera %s — skipping",
+					v.Confidence, threshold, cam.CameraID)
+				continue
+			}
+			if err := w.persistViolation(ctx, cam, v, yolo, frameBytes, source, ""); err != nil {
+				log.Printf("[PPE] persist violation for camera %s: %v", cam.CameraID, err)
+			}
+		}
+		return
+	}
+
+	// Evaluate compliance: returns only violations that are spatially inside
+	// a zone with a matching rule.
+	violations := safety.EvaluateCompliance(allDetectionsForRules, zones, rules)
+
+	for _, sv := range violations {
+		if sv.Detection.Confidence < threshold {
+			log.Printf("[PPE] zone-filtered violation below threshold (%.2f < %.2f) for camera %s — skipping",
+				sv.Detection.Confidence, threshold, cam.CameraID)
 			continue
 		}
 
-		if err := w.persistViolation(ctx, cam, v, yolo, frameBytes, source); err != nil {
-			log.Printf("[PPE] persist violation for camera %s: %v", cam.CameraID, err)
+		switch sv.RuleType {
+		case "no_go":
+			// No-go violations route to the security alarm pipeline per scope
+			// decision 2 — not the PPE review queue. Emit a security event.
+			if err := w.emitNoGoAlarm(ctx, cam, sv, yolo, frameBytes); err != nil {
+				log.Printf("[PPE] emitNoGoAlarm for camera %s: %v", cam.CameraID, err)
+			}
+		case "ppe_required":
+			if err := w.persistViolation(ctx, cam, sv.Detection, yolo, frameBytes, source, sv.ZoneID); err != nil {
+				log.Printf("[PPE] persist zone-filtered violation for camera %s: %v", cam.CameraID, err)
+			}
 		}
 	}
+}
+
+// emitNoGoAlarm routes a no-go zone intrusion to the security event/alarm
+// pipeline (operator dark-theme console), not the PPE review queue.
+// Per scope plan decision 2: no-go ≠ PPE; keep the semantics clean.
+func (w *Worker) emitNoGoAlarm(_ context.Context, cam database.PPECamera, sv safety.Violation, _ *ai.YOLOResult, _ []byte) error {
+	if w.hub == nil {
+		return nil
+	}
+	// Broadcast a security_event type so the alarm pipeline picks it up.
+	// Top-level camera_id is required by Hub's tenant-scoped fanout.
+	envelope := map[string]interface{}{
+		"type":            "no_go_intrusion",
+		"camera_id":       cam.CameraID.String(),
+		"organization_id": cam.OrganizationID,
+		"data": map[string]interface{}{
+			"zone_id":    sv.ZoneID,
+			"zone_name":  sv.ZoneName,
+			"confidence": sv.Detection.Confidence,
+			"class":      sv.Detection.Class,
+			"bbox_norm": map[string]float64{
+				"x1": sv.Detection.BBoxNorm.X1,
+				"y1": sv.Detection.BBoxNorm.Y1,
+				"x2": sv.Detection.BBoxNorm.X2,
+				"y2": sv.Detection.BBoxNorm.Y2,
+			},
+		},
+	}
+	if msg, err := json.Marshal(envelope); err == nil {
+		w.hub.Broadcast(msg)
+		log.Printf("[PPE] no-go alarm broadcast: zone=%s camera=%s org=%s",
+			sv.ZoneName, cam.CameraID, cam.OrganizationID)
+	}
+	return nil
 }
 
 // fanOutToTracking publishes result to TrackingCh using a non-blocking send.
@@ -286,6 +385,8 @@ func (w *Worker) fetchSnapshot(ctx context.Context, cam database.PPECamera) ([]b
 }
 
 // persistViolation saves the frame, inserts the DB row, and broadcasts the WS event.
+// zoneID is the UUID string of the PPE zone that triggered the violation (empty
+// for full-frame / legacy behavior where no zone filter is active).
 func (w *Worker) persistViolation(
 	ctx context.Context,
 	cam database.PPECamera,
@@ -293,6 +394,7 @@ func (w *Worker) persistViolation(
 	yolo *ai.YOLOResult,
 	frameBytes []byte,
 	frameSource string,
+	zoneID string,
 ) error {
 	now := time.Now().UTC()
 	frameFilename := fmt.Sprintf("%d.jpg", now.UnixMilli())
@@ -368,24 +470,32 @@ func (w *Worker) persistViolation(
 		return fmt.Errorf("InsertPPEQueueEntry: %w", err)
 	}
 
-	log.Printf("[PPE] detected violation %s (%.0f%%) on camera %s org %s — entry %s (source=%s)",
-		v.Class, v.Confidence*100, cam.CameraID, cam.OrganizationID, entryID, frameSource)
+	zoneLabel := ""
+	if zoneID != "" {
+		zoneLabel = fmt.Sprintf(" zone=%s", zoneID)
+	}
+	log.Printf("[PPE] detected violation %s (%.0f%%) on camera %s org %s — entry %s (source=%s%s)",
+		v.Class, v.Confidence*100, cam.CameraID, cam.OrganizationID, entryID, frameSource, zoneLabel)
 
 	// Broadcast WS event. Top-level camera_id is required by the Hub's
 	// tenant-scoped fanout (P1-A-04 writeToClients + routeKeyFromMessage).
 	if w.hub != nil {
+		data := map[string]interface{}{
+			"queue_entry_id":  entryID.String(),
+			"detection_class": v.Class,
+			"missing_label":   missingLabel,
+			"confidence":      v.Confidence,
+			"frame_token":     frameToken,
+			"created_at":      now.Format(time.RFC3339),
+		}
+		if zoneID != "" {
+			data["zone_id"] = zoneID
+		}
 		envelope := map[string]interface{}{
 			"type":            "ppe_detected",
 			"camera_id":       cam.CameraID.String(),
 			"organization_id": cam.OrganizationID,
-			"data": map[string]interface{}{
-				"queue_entry_id":  entryID.String(),
-				"detection_class": v.Class,
-				"missing_label":   missingLabel,
-				"confidence":      v.Confidence,
-				"frame_token":     frameToken,
-				"created_at":      now.Format(time.RFC3339),
-			},
+			"data":            data,
 		}
 		if msg, err := json.Marshal(envelope); err == nil {
 			w.hub.Broadcast(msg)

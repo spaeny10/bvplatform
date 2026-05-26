@@ -30,7 +30,12 @@ const (
 )
 
 // Accent color: warm terracotta (#c84b2f) matching portal --accent.
-var accentR, accentG, accentB uint8 = 200, 75, 47
+// gopdf color functions take uint8 arguments.
+const (
+	accentR uint8 = 200
+	accentG uint8 = 75
+	accentB uint8 = 47
+)
 
 // ComplianceFindingPDF is a single finding row for the PDF findings section.
 type ComplianceFindingPDF struct {
@@ -133,7 +138,7 @@ func RenderComplianceReport(data ComplianceReportData) ([]byte, error) {
 
 func renderHeader(pdf *gopdf.GoPdf, data ComplianceReportData) error {
 	// Accent bar across the top.
-	pdf.SetFillColor(int(accentR), int(accentG), int(accentB))
+	pdf.SetFillColor(accentR, accentG, accentB)
 	pdf.RectFromUpperLeftWithStyle(0, 0, pageWidth, 8, "F")
 	pdf.SetFillColor(0, 0, 0)
 
@@ -144,7 +149,7 @@ func renderHeader(pdf *gopdf.GoPdf, data ComplianceReportData) error {
 		return err
 	}
 	pdf.SetXY(marginL, y)
-	pdf.SetTextColor(int(accentR), int(accentG), int(accentB))
+	pdf.SetTextColor(accentR, accentG, accentB)
 	if err := pdf.Cell(nil, "Ironsight PPE Compliance Report"); err != nil {
 		return err
 	}
@@ -295,7 +300,7 @@ func renderViolationsChart(pdf *gopdf.GoPdf, data ComplianceReportData) error {
 		by := y + chartH - barH
 		bw := barW - gap
 
-		pdf.SetFillColor(int(accentR), int(accentG), int(accentB))
+		pdf.SetFillColor(accentR, accentG, accentB)
 		pdf.RectFromUpperLeftWithStyle(bx, by, bw, barH, "F")
 		pdf.SetFillColor(0, 0, 0)
 
