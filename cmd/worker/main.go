@@ -6,6 +6,7 @@
 //   - RetentionManager  — hourly segment purge per site policy
 //   - VLM Indexer       — enriches recording segments with AI descriptions
 //   - Export Worker     — processes queued video-export jobs
+//   - PPE Worker        — polls cameras on PPE-enabled sites, feeds violations into pending_review_queue (P2-C-01)
 //
 // Designed for docker-compose / K8s deployments where the api service
 // runs with RUN_WORKERS=false and this binary runs as a single-replica
@@ -40,6 +41,7 @@ import (
 	"ironsight/internal/export"
 	"ironsight/internal/indexer"
 	"ironsight/internal/notify"
+	"ironsight/internal/ppe"
 	"ironsight/internal/recording"
 )
 
@@ -126,6 +128,8 @@ func main() {
 
 	// ── Retention — hourly segment purge ─────────────────────────
 	retentionMgr := recording.NewRetentionManager(db)
+	// P2-C-01: configure PPE frame sweep alongside recording retention.
+	retentionMgr.SetPPERetention(cfg.PPEFramesDir, cfg.PPEFrameRetentionDays)
 	go retentionMgr.Start(ctx)
 	log.Println("[WORKER] Retention manager started")
 
@@ -138,6 +142,15 @@ func main() {
 	exportWorker := export.NewWorker(cfg, db)
 	exportWorker.Start(ctx)
 	log.Println("[WORKER] Export worker started")
+
+	// ── PPE worker — P2-C-01 ─────────────────────────────────────
+	// The YOLO AI client reuses the existing ai.Client configured for
+	// the detection service. Hub is nil in the worker binary — WS
+	// broadcast fires on the API side when the frontend polls. If a
+	// Redis pub/sub bridge is needed later, wire the hub here.
+	ppeWorker := ppe.New(cfg, db, aiClient, nil /* no hub in worker binary */)
+	ppeWorker.Start(ctx)
+	log.Println("[WORKER] PPE worker started")
 
 	// ── Monthly summary emailer ──────────────────────────────────
 	// Polls every hour. When the wall clock crosses into the first
@@ -180,6 +193,7 @@ func main() {
 	retentionMgr.Stop()
 	vlmIndexer.Stop()
 	exportWorker.Wait()
+	ppeWorker.Stop()
 
 	log.Println("[WORKER] Clean shutdown complete")
 }

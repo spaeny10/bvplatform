@@ -121,9 +121,13 @@ const MediaTokenIssuer = "ironsight-media-v1"
 type MediaKind string
 
 const (
-	MediaKindSegment  MediaKind = "segment"  // long-form recording MP4 in StoragePath
-	MediaKindHLS      MediaKind = "hls"      // live HLS playlist or .ts segment in HLSPath
-	MediaKindSnapshot MediaKind = "snapshot" // alarm-time JPEG in snapshots dir
+	MediaKindSegment  MediaKind = "segment"   // long-form recording MP4 in StoragePath
+	MediaKindHLS      MediaKind = "hls"       // live HLS playlist or .ts segment in HLSPath
+	MediaKindSnapshot MediaKind = "snapshot"  // alarm-time JPEG in snapshots dir
+	// MediaKindPPEFrame is the audience for PPE violation frame thumbnails
+	// written by the PPE worker (P2-C-01). Distinct from "snapshot" so a
+	// token minted for a recording cannot be replayed against the PPE path.
+	MediaKindPPEFrame MediaKind = "ppe-frame" // PPE evidence JPEG in PPEFramesDir
 )
 
 // IsValid reports whether k is one of the recognized media kinds. Anything
@@ -131,7 +135,7 @@ const (
 // silently fall through to a "default" code path.
 func (k MediaKind) IsValid() bool {
 	switch k {
-	case MediaKindSegment, MediaKindHLS, MediaKindSnapshot:
+	case MediaKindSegment, MediaKindHLS, MediaKindSnapshot, MediaKindPPEFrame:
 		return true
 	}
 	return false
@@ -273,4 +277,132 @@ func ParseMediaToken(tokenStr, secret string) (*MediaClaims, error) {
 		return nil, errors.New("invalid media subject")
 	}
 	return c, nil
+}
+
+// ──────────────────── WebSocket tickets (P1-A-02) ────────────────────
+//
+// WS tickets are a THIRD class of JWT, separate from session tokens and
+// media tokens. They authorize a single WebSocket UPGRADE for a short
+// window (default 5 min). Audience-split by `iss` enforces that:
+//
+//	* A stolen session JWT can't be replayed as a WS ticket.
+//	* A leaked WS ticket can't be replayed as a session token.
+//	* A media token can't be replayed against /ws.
+//
+// Why a separate ticket class at all (vs. just passing the session JWT
+// on the WS upgrade — which is what the connect-time check did before
+// P1-A-02): the session JWT lives 24 h, but browsers can only attach it
+// to a WS upgrade via the query string (no Authorization header on the
+// WebSocket handshake). Logging a 24h-bearer credential in webserver
+// access logs, NPM logs, browser history, etc. is a large blast radius.
+// A 5-min single-purpose ticket reduces that risk to a tiny window.
+//
+// The signing secret is shared with the session-token path on purpose:
+// the audience split via `iss` is what isolates them, mirroring the
+// MediaTokenIssuer design.
+
+// WSTicketIssuer is the `iss` value every WebSocket ticket carries.
+// Any token presented to ParseWSTicket without exactly this issuer is
+// rejected.
+const WSTicketIssuer = "ironsight-ws-v1"
+
+// DefaultWSTicketTTL is the lifetime of a newly-minted ticket. Short
+// enough to make replay attacks impractical, long enough to survive a
+// brief network blip between the mint request and the WS upgrade.
+const DefaultWSTicketTTL = 5 * time.Minute
+
+// WSClaims is the payload of a WS ticket. We carry the same identity
+// fields that ParseToken would have surfaced from the session JWT —
+// the WS upgrade handler doesn't need to re-fetch the user record to
+// build the wsClient, just to apply RBAC.
+type WSClaims struct {
+	UserID         string `json:"sub"`
+	Username       string `json:"username"`
+	Role           string `json:"role"`
+	DisplayName    string `json:"display_name"`
+	OrganizationID string `json:"organization_id,omitempty"`
+	jwt.RegisteredClaims
+}
+
+// SignWSTicket mints a short-lived WebSocket-upgrade ticket for the
+// given session claims. The session JWT is the authority that already
+// validated the caller; this function just re-signs the identity into
+// a different audience for the upgrade path.
+//
+// ttl is clamped: minimum 1 second, maximum 1 hour. Callers should
+// pass DefaultWSTicketTTL; the bounds are defense in depth.
+func SignWSTicket(c *Claims, secret string, ttl time.Duration) (string, error) {
+	if secret == "" {
+		return "", ErrEmptySecret
+	}
+	if c == nil || c.UserID == "" {
+		return "", errors.New("auth: empty session claims")
+	}
+	if ttl < time.Second {
+		ttl = time.Second
+	}
+	if ttl > time.Hour {
+		ttl = time.Hour
+	}
+	ticket := WSClaims{
+		UserID:         c.UserID,
+		Username:       c.Username,
+		Role:           c.Role,
+		DisplayName:    c.DisplayName,
+		OrganizationID: c.OrganizationID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        uuid.NewString(),
+			Issuer:    WSTicketIssuer,
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ttl)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, ticket).SignedString([]byte(secret))
+}
+
+// ParseWSTicket validates a WebSocket ticket and returns its claims.
+// Returns an error if the signature is bad, the token is expired, the
+// issuer is not WSTicketIssuer, or the subject is empty. Callers MUST
+// treat any non-nil error as a hard 401 close on the upgrade.
+//
+// Returns the *Claims shape (not *WSClaims) so the WS upgrade handler
+// can build the wsClient with the same identity model the rest of the
+// API uses — auth.Claims is the project's canonical identity type.
+func ParseWSTicket(tokenStr, secret string) (*Claims, error) {
+	if secret == "" {
+		return nil, ErrEmptySecret
+	}
+	tok, err := jwt.ParseWithClaims(tokenStr, &WSClaims{}, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, errors.New("unexpected signing method")
+		}
+		return []byte(secret), nil
+	})
+	if err != nil || !tok.Valid {
+		return nil, errors.New("invalid or expired ws ticket")
+	}
+	c, ok := tok.Claims.(*WSClaims)
+	if !ok {
+		return nil, errors.New("invalid ws claims")
+	}
+	// Issuer enforcement is what makes this a separate audience from
+	// the session-JWT and media-token paths. The session SignToken does
+	// NOT set Issuer, and SignMediaToken sets MediaTokenIssuer — both
+	// trip this check naturally.
+	if c.Issuer != WSTicketIssuer {
+		return nil, errors.New("invalid ws ticket issuer")
+	}
+	if c.UserID == "" {
+		return nil, errors.New("invalid ws ticket subject")
+	}
+	return &Claims{
+		UserID:         c.UserID,
+		Username:       c.Username,
+		Role:           c.Role,
+		DisplayName:    c.DisplayName,
+		OrganizationID: c.OrganizationID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID: c.ID,
+		},
+	}, nil
 }

@@ -393,6 +393,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 			r.Get("/portal/summary", HandlePortalSummary(db))
 
+			// PPE pending review queue (P2-C-01)
+			// GET  /api/v1/portal/pending-review          — list findings (all tenant roles)
+			// POST /api/v1/portal/pending-review/{id}/review — submit verdict (site_manager+)
+			// GET  /api/v1/portal/pending-review/{id}/frame  — serve JPEG thumbnail (any tenant role)
+			r.Get("/portal/pending-review", HandleListPendingReview(cfg, db))
+			r.Post("/portal/pending-review/{id}/review", HandleReviewPendingEntry(cfg, db))
+			r.Get("/portal/pending-review/{id}/frame", HandleServePPEFrame(cfg, db))
+
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))
 			r.Post("/alarms/{alarmId}/ai-feedback", func(w http.ResponseWriter, req *http.Request) {

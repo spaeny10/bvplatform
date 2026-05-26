@@ -218,6 +218,25 @@ type Config struct {
 	// Default "sso".
 	MetricsEnabled bool
 	MetricsAuth    string // "sso" | "none"
+
+	// PPE worker (P2-C-01). PPEPollIntervalSec is the cadence between
+	// snapshot polls per camera. PPEConfidenceThreshold is the
+	// application-layer gate above the sidecar's own threshold (0.35):
+	// only violations above this value create a pending_review_queue row.
+	// PPEFramesDir is the root directory for PPE evidence JPEGs; frames are
+	// stored as <PPEFramesDir>/<org_id>/<YYYY-MM-DD>/<timestamp_ms>.jpg.
+	// PPEFrameRetentionDays controls how long reviewed/dismissed rows (and
+	// their frames) are kept before the retention sweep removes them.
+	//
+	// Env vars:
+	//   PPE_POLL_INTERVAL_SEC         default 30
+	//   PPE_CONFIDENCE_THRESHOLD      default 0.50
+	//   PPE_FRAMES_DIR                default /tank/data/ironsight/ppe-frames
+	//   PPE_FRAME_RETENTION_DAYS      default 7
+	PPEPollIntervalSec      int
+	PPEConfidenceThreshold  float64
+	PPEFramesDir            string
+	PPEFrameRetentionDays   int
 }
 
 // Load reads configuration from environment variables with defaults
@@ -319,6 +338,12 @@ func Load() *Config {
 		// Metrics — P1-C-03. Default on with SSO gating.
 		MetricsEnabled: getEnvBool("METRICS_ENABLED", true),
 		MetricsAuth:    metricsAuthFromEnv(),
+
+		// PPE worker — P2-C-01.
+		PPEPollIntervalSec:     getEnvInt("PPE_POLL_INTERVAL_SEC", 30),
+		PPEConfidenceThreshold: getEnvFloat64("PPE_CONFIDENCE_THRESHOLD", 0.50),
+		PPEFramesDir:           getEnv("PPE_FRAMES_DIR", "/tank/data/ironsight/ppe-frames"),
+		PPEFrameRetentionDays:  getEnvInt("PPE_FRAME_RETENTION_DAYS", 7),
 	}
 	return cfg
 }
@@ -381,6 +406,15 @@ func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat64(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

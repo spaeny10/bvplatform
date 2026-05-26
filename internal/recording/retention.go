@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -48,6 +49,7 @@ func removeSegmentAndCache(path string) int64 {
 //
 //	cameras, segments, exports, thumbnails, hls, recordings on disk.
 //	support_tickets + support_messages (closed-and-stale only).
+//	pending_review_queue reviewed/dismissed rows + PPE frame files (P2-C-01).
 //
 // It MUST NOT touch:
 //
@@ -67,16 +69,28 @@ func removeSegmentAndCache(path string) int64 {
 // window — never an automated retention purge. See
 // `Documents/USCompliance.md` for the full posture.
 type RetentionManager struct {
-	db     *database.DB
-	stopCh chan struct{}
+	db            *database.DB
+	ppeFramesDir  string
+	ppeRetainDays int
+	stopCh        chan struct{}
 }
 
-// NewRetentionManager creates a new retention manager
+// NewRetentionManager creates a new retention manager.
+// ppeFramesDir and ppeRetainDays configure the PPE frame sweep pass (P2-C-01).
+// Pass empty string / 0 to disable the PPE sweep (safe for deployments
+// where the PPE worker is not running).
 func NewRetentionManager(db *database.DB) *RetentionManager {
 	return &RetentionManager{
 		db:     db,
 		stopCh: make(chan struct{}),
 	}
+}
+
+// SetPPERetention configures the PPE frame sweep parameters.
+// Call before Start. Passing 0 or empty string is safe — the sweep is skipped.
+func (rm *RetentionManager) SetPPERetention(framesDir string, retainDays int) {
+	rm.ppeFramesDir = framesDir
+	rm.ppeRetainDays = retainDays
 }
 
 // Start begins the retention cleanup loop (runs every hour)
@@ -140,6 +154,10 @@ func (rm *RetentionManager) cleanup(ctx context.Context) {
 
 	// Pass 4: closed support tickets older than the support retention window.
 	rm.pruneSupportTickets(ctx)
+
+	// Pass 5: PPE evidence frames (P2-C-01). Sweeps reviewed/dismissed
+	// queue rows and removes their on-disk JPEG files.
+	rm.sweepPPEFrames(ctx)
 
 	if totalDeleted > 0 {
 		log.Printf("[RETENTION] Cleanup complete: %d segment(s) deleted, %.2f MB freed",
@@ -429,4 +447,37 @@ func (rm *RetentionManager) pruneSupportTickets(ctx context.Context) {
 		log.Printf("[RETENTION] Pruned %d closed support ticket(s) older than %d days",
 			deleted, supportTicketRetentionDays)
 	}
+}
+
+// sweepPPEFrames removes reviewed/dismissed pending_review_queue rows older
+// than ppeRetainDays and deletes their on-disk JPEG files.
+// P2-C-01 — only active when ppeFramesDir and ppeRetainDays are configured.
+func (rm *RetentionManager) sweepPPEFrames(ctx context.Context) {
+	if rm.ppeFramesDir == "" || rm.ppeRetainDays <= 0 {
+		return
+	}
+
+	paths, err := rm.db.SweepPPEFrameRows(ctx, rm.ppeRetainDays)
+	if err != nil {
+		log.Printf("[RETENTION] PPE sweep DB: %v", err)
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+
+	var freed int64
+	deleted := 0
+	for _, relPath := range paths {
+		absPath := filepath.Join(rm.ppeFramesDir, relPath)
+		if info, err := os.Stat(absPath); err == nil {
+			freed += info.Size()
+		}
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[RETENTION] PPE frame delete %s: %v", absPath, err)
+			continue
+		}
+		deleted++
+	}
+	log.Printf("[RETENTION] PPE sweep: %d frame(s) removed (%.2f MB freed)", deleted, float64(freed)/1024/1024)
 }
