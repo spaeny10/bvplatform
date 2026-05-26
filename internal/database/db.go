@@ -15,7 +15,15 @@ import (
 
 // DB wraps the PostgreSQL connection pool and provides query methods
 type DB struct {
-	Pool *pgxpool.Pool
+	Pool           *pgxpool.Pool
+	credentialsKey []byte // set via SetCredentialsKey; used for camera credential encrypt/decrypt
+}
+
+// SetCredentialsKey installs the AES-256 key used to encrypt and decrypt
+// camera.password at rest. Call once after New() when CAMERA_CREDENTIALS_KEY
+// is configured. The key is held in memory only — never persisted.
+func (db *DB) SetCredentialsKey(key []byte) {
+	db.credentialsKey = key
 }
 
 // New creates a new database connection pool
