@@ -18,7 +18,7 @@
 --
 -- R5 mitigation: add_retention_policy may not work inside a goose
 -- transaction boundary on some TimescaleDB versions. This file uses
--- -- +goose NO TRANSACTION to run each statement directly. The Go
+-- `NO TRANSACTION` directive to run each statement directly. The Go
 -- retention manager in internal/recording/retention.go also sweeps
 -- person_track_frames as a belt-and-suspenders fallback.
 
