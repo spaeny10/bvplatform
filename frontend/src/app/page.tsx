@@ -217,13 +217,8 @@ function HomeInner() {
         let reconnectDelay = 3000; // Start at 3s, exponential backoff up to 30s
         let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-        function connect() {
-            if (unmounted) return;
-            // Same-origin WebSocket — proto follows page scheme (wss when HTTPS),
-            // host follows current location so reverse-proxy deployments work
-            // without a hardcoded port. Behind NPM/Caddy at /ws.
-            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+        function openWS(url: string) {
+            const ws = new WebSocket(url);
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -273,9 +268,31 @@ function HomeInner() {
             };
         }
 
+        function connect() {
+            if (unmounted) return;
+            // P1-A-04: fetch a short-lived WS ticket then open the socket.
+            // The ticket endpoint is GET (CSRF-exempt) behind RequireAuth
+            // (cookie auto-attached via credentials:include).
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const baseUrl = `${proto}//${window.location.host}/ws`;
+            fetch('/api/auth/ws-ticket', { credentials: 'include' })
+                .then(res => {
+                    if (!res.ok) throw new Error(`ws-ticket: ${res.status}`);
+                    return res.json() as Promise<{ ticket: string }>;
+                })
+                .then(({ ticket }) => {
+                    if (!unmounted) openWS(`${baseUrl}?ticket=${encodeURIComponent(ticket)}`);
+                })
+                .catch(() => {
+                    // Ticket fetch failed (401, network error). Fall back to ticketless
+                    // URL so SSO-path (X-Forwarded-Email) users still get a connection.
+                    if (!unmounted) openWS(baseUrl);
+                });
+        }
+
         connect();
 
-        return () => {
+                return () => {
             unmounted = true;
             if (reconnectTimer) clearTimeout(reconnectTimer);
             if (wsRef.current) wsRef.current.close();

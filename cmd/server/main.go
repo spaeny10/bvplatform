@@ -1060,6 +1060,10 @@ func main() {
 	if err := hub.AttachRedisBridge(rootCtx, cfg.RedisURL, cfg.RedisWSChannel); err != nil {
 		log.Printf("[WS] Redis bridge attach failed: %v — continuing in-memory only", err)
 	}
+	// P1-A-04: supply cfg + db so HandleWebSocket can do auth + RBAC
+	// before the WebSocket upgrade, and so the RBAC refresher can re-query
+	// assignments every 60 s without a reconnect.
+	hub.Configure(cfg, db)
 	go hub.Run(rootCtx)
 
 	// LOCAL-02: backfill any cameras whose profile_token was never
