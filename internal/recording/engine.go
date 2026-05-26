@@ -343,6 +343,12 @@ func (r *Recorder) recordLoop(ctx context.Context) {
 			if ctx.Err() != nil {
 				return // context canceled, expected shutdown
 			}
+			// P1-C-04: emit a discrete app alert for each non-expected FFmpeg
+			// crash so alertmanager can surface recurring subprocess failures
+			// even when the process is auto-restarting. The label is bounded
+			// (alert name is a constant string; camera name is not a label).
+			appmetrics.SetCustomAlert("ffmpeg_subprocess_crash", "warning",
+				"FFmpeg exited for camera "+r.cameraName+": "+err.Error())
 			// Detect fast crashes (< 5s) — likely bandwidth/connection errors.
 			// After 3 fast crashes, drop sub stream to reduce RTSP connections.
 			if time.Since(startTime) < 5*time.Second {

@@ -101,6 +101,10 @@ func main() {
 	}
 	goose.SetBaseFS(migrations.FS)
 	if err := goose.UpContext(context.Background(), gooseDB, "."); err != nil {
+		// P1-C-04: emit a discrete app alert before fatally exiting so that if
+		// the process is being restarted by a supervisor and briefly scrapes
+		// during the boot loop, the metric is visible to alertmanager.
+		appmetrics.SetCustomAlert("goose_migration_failure", "critical", err.Error())
 		gooseDB.Close()
 		log.Fatalf("[FATAL] goose.Up: %v", err)
 	}

@@ -125,9 +125,11 @@ Single-source reference for every environment variable the Go binaries read. Eve
 |---|---|---|---|---|
 | `PRODUCT_NAME` | string | `Ironsight` | no | User-visible product name used in evidence bundles, log headers, and backend-emitted strings that reach customers. Frontend duplicates the value in `frontend/src/lib/branding.ts`. |
 
-## Metrics (P1-C-03)
+## Metrics (P1-C-03) and alerting (P1-C-04)
 
-Prometheus exposition endpoint at `GET /metrics`. See [`docs/metrics.md`](./metrics.md) for the full series catalog.
+Prometheus exposition endpoint at `GET /metrics`. See [`docs/metrics.md`](./metrics.md) for the full series catalog.  
+Alerting config and alert catalog: [`docs/alerting.md`](./alerting.md).  
+Monitoring LXC deploy guide: [`deploy/monitoring/DEPLOY.md`](../deploy/monitoring/DEPLOY.md).
 
 | Name | Type | Default | Required | Description |
 |---|---|---|---|---|
