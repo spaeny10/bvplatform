@@ -4,11 +4,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { IRONSightCamera, CameraAssignment, PlatformSpeaker } from '@/types/ironsight';
 
+// P1-A-02 part 2: authHeaders no longer reads from localStorage.
+// All fetch calls in this hook must set credentials:'include' so the
+// ironsight_session cookie is sent automatically. For POST/PUT/PATCH/DELETE
+// the caller is responsible for setting X-CSRF-Token from the ironsight_csrf
+// cookie. Currently all calls in this file are GETs so only Content-Type
+// is needed here.
 function authHeaders(): Record<string, string> {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
   return {
     'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
@@ -23,7 +27,7 @@ export function useMasterCameras() {
       // 1. Fetch real NVR cameras (discovered + added via settings)
       let nvrCameras: any[] = [];
       try {
-        const res = await fetch('/api/cameras', { headers: authHeaders() });
+        const res = await fetch('/api/cameras', { headers: authHeaders(), credentials: 'include' });
         const data = await res.json();
         nvrCameras = Array.isArray(data) ? data : [];
       } catch { /* NVR offline */ }
@@ -31,7 +35,7 @@ export function useMasterCameras() {
       // 2. Fetch platform camera registry (has site_id assignments)
       let platformCameras: IRONSightCamera[] = [];
       try {
-        const res = await fetch('/api/v1/cameras', { headers: authHeaders() });
+        const res = await fetch('/api/v1/cameras', { headers: authHeaders(), credentials: 'include' });
         const data = await res.json();
         platformCameras = Array.isArray(data) ? data : [];
       } catch { /* platform offline */ }

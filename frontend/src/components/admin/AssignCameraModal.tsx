@@ -31,9 +31,8 @@ export function CameraSection({ siteId }: { siteId: string }) {
   const handleTestCamera = async (camId: string) => {
     setTestingCam(camId);
     try {
-      const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
       const res = await fetch(`/api/cameras/${camId}/vca/snapshot`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: 'include',
       });
       if (res.ok) {
         setTestResults(prev => ({ ...prev, [camId]: { ok: true, msg: 'Stream reachable' } }));

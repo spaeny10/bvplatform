@@ -98,16 +98,43 @@ export class AlertStream {
     };
   }
 
-  /** Start the WebSocket connection. */
+  /** Start the WebSocket connection.
+   *
+   * P1-A-02 part 2: the session JWT is no longer in localStorage.
+   * We fetch a short-lived WS ticket from GET /api/auth/ws-ticket
+   * (cookie auto-attached via credentials:'include') and pass it as
+   * ?ticket=<wsTicket> on the upgrade URL. This matches the P1-A-02-part1
+   * design: the 5-min ticket limits blast radius if the URL leaks.
+   */
   connect(): void {
     if (this.destroyed) return;
     this.setStatus(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
 
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
-    const urlWithToken = token ? `${this.url}?token=${token}` : this.url;
+    // Fetch a WS ticket then open the socket. The ticket endpoint is
+    // GET (CSRF-exempt) behind RequireAuth (cookie accepted).
+    if (typeof window === 'undefined') return;
+    fetch('/api/auth/ws-ticket', { credentials: 'include' })
+      .then(res => {
+        if (!res.ok) throw new Error(`ws-ticket: ${res.status}`);
+        return res.json() as Promise<{ ticket: string }>;
+      })
+      .then(({ ticket }) => {
+        if (this.destroyed) return;
+        const url = `${this.url}?ticket=${encodeURIComponent(ticket)}`;
+        this._openWS(url);
+      })
+      .catch(() => {
+        // Ticket fetch failed (401, network error). Fall back to ticketless URL
+        // so the SSO-path (X-Forwarded-Email) users still get a connection
+        // attempt — the WS handler accepts SSO identity too.
+        if (!this.destroyed) this._openWS(this.url);
+      });
+  }
 
+  /** Open a WebSocket to the given URL and wire up the event handlers. */
+  private _openWS(url: string): void {
     try {
-      this.ws = new WebSocket(urlWithToken);
+      this.ws = new WebSocket(url);
     } catch {
       this.setStatus('disconnected');
       this.scheduleReconnect();

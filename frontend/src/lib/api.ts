@@ -1,13 +1,49 @@
+// getStoredToken import is kept during the PR1+PR2 migration window for
+// any transitive consumers. It is a no-op stub now — delete in PR 3.
 import { getStoredToken } from '@/contexts/AuthContext';
 
 const API_BASE = '/api';
 
-/** Fetch wrapper that injects the JWT Bearer token and redirects on 401 */
+/**
+ * Read the ironsight_csrf cookie value from document.cookie.
+ * Returns an empty string when running server-side (no document) or when
+ * the cookie is absent (e.g. pre-login, SSO-only session).
+ * Never throws — callers treat an empty string as "no CSRF token available".
+ *
+ * P1-A-02 part 2 — double-submit CSRF pattern. The backend CSRFMiddleware
+ * compares this value against the X-CSRF-Token request header.
+ */
+function getCSRFToken(): string {
+    if (typeof document === 'undefined') return '';
+    const pair = document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='));
+    return pair ? pair.split('=')[1] : '';
+}
+
+/**
+ * Fetch wrapper that:
+ *  - attaches credentials:'include' so the ironsight_session HttpOnly cookie
+ *    is sent automatically on every request
+ *  - injects X-CSRF-Token from the ironsight_csrf cookie on non-idempotent
+ *    requests (POST / PUT / PATCH / DELETE)
+ *  - redirects to /login on 401
+ *
+ * The Authorization: Bearer path is intentionally removed post-P1-A-02-part2.
+ * The getStoredToken() import above is a dead stub kept for import compat.
+ *
+ * P1-A-02 part 2 — replaces the localStorage-based token injection.
+ */
 export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
-    const token = getStoredToken();
+    // getStoredToken always returns null now — call kept for import compat only.
+    void getStoredToken;
     const headers = new Headers(init.headers ?? {});
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-    const res = await fetch(input, { ...init, headers });
+    const method = (init.method ?? 'GET').toUpperCase();
+    // Inject CSRF header on state-changing requests. GET / HEAD / OPTIONS
+    // are exempt (mirrors the backend CSRFMiddleware exemption list).
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        const csrf = getCSRFToken();
+        if (csrf) headers.set('X-CSRF-Token', csrf);
+    }
+    const res = await fetch(input, { ...init, headers, credentials: 'include' });
     if (res.status === 401 && typeof window !== 'undefined') {
         window.location.href = '/login';
     }

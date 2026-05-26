@@ -69,9 +69,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// time is the dev-mode localhost pair; production deployments must
 	// override with the actual frontend origin(s).
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.AllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedOrigins: cfg.AllowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		// X-CSRF-Token added for P1-A-02 part 2 double-submit CSRF protection.
+		// AllowCredentials: true is required for the browser to send the
+		// ironsight_session / ironsight_csrf cookies cross-origin. Note:
+		// AllowedOrigins must NOT contain "*" when AllowCredentials is true —
+		// the cors library rejects the combination at startup.
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -115,18 +120,29 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 	// Authenticated auth routes
 	r.With(RequireAuth(cfg, db)).Get("/auth/me", HandleGetMe(db))
-	r.With(RequireAuth(cfg, db)).Post("/auth/logout", HandleLogout(db))
+	// P1-A-02 part 2: logout is behind CSRF because forcing a logout on a
+	// user via CSRF is annoying (session disruption); the CSRF cookie is
+	// always present by the time a session exists, so the cost is negligible.
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/auth/logout", HandleLogout(db, cfg))
 
 	// MFA management routes. All require an authenticated session;
 	// enrollment uses the session token to bind the new secret to the
 	// caller, and disable requires an active MFA code as proof.
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/enroll", HandleMFAEnroll(db, cfg))
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/disable", HandleMFADisable(db))
+	// P1-A-02 part 2: MFA routes are POSTs outside the /api group, so CSRF
+	// middleware must be applied explicitly here.
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/enroll", HandleMFAEnroll(db, cfg))
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/disable", HandleMFADisable(db))
 
 	// API routes (JWT protected)
+	// P1-A-02 part 2: CSRFMiddleware is mounted here so all non-idempotent
+	// requests under /api/* require a valid X-CSRF-Token header matching the
+	// ironsight_csrf cookie. GET/HEAD/OPTIONS are exempt (see CSRFMiddleware).
+	// Routes that are intentionally outside this group (login, sense webhook,
+	// public health) are never checked.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(RequireAuth(cfg, db))
+		r.Use(CSRFMiddleware)
 		r.Use(AuditMiddleware(db))
 		// Camera CRUD
 		r.Route("/cameras", func(r chi.Router) {

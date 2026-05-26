@@ -248,12 +248,15 @@ export default function ActiveAlarmView({ alarm, incident, childAlarms, onResolv
     // If this is part of an incident, acknowledge the whole incident
     if (incident) {
       try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : null;
+        const csrfToken = typeof document !== 'undefined'
+            ? (document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='))?.split('=')[1] ?? '')
+            : '';
         await fetch(`/api/v1/incidents/${incident.id}/acknowledge`, {
           method: 'POST',
+          credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
           },
         });
       } catch { /* best-effort */ }
@@ -1565,9 +1568,8 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
 
   // Load VCA zones for overlay
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
     fetch(`/api/cameras/${cameraId}/vca/rules`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      credentials: 'include',
     })
       .then(r => r.ok ? r.json() : [])
       .then(data => setVcaRules(Array.isArray(data) ? data : []))
@@ -1623,9 +1625,8 @@ function AlarmVideoFeed({ cameraId, snapshotUrl: eventSnapshotUrl, clipUrl, alar
     let cancelled = false;
     const fetchFrame = async () => {
       try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
         const res = await fetch(`/api/cameras/${cameraId}/vca/snapshot`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          credentials: 'include',
         });
         if (!res.ok || cancelled) return;
         const blob = await res.blob();

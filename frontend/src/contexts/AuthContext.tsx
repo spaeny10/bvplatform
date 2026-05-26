@@ -25,6 +25,9 @@ export interface AuthUser {
 
 interface AuthContextValue {
     user: AuthUser | null;
+    // token is kept in the context shape for backward compat with consumers
+    // that read it, but is always null post-P1-A-02-part2 — the JWT lives
+    // in the HttpOnly ironsight_session cookie and is never accessible to JS.
     token: string | null;
     login: (identifier: string, password: string) => Promise<void>;
     logout: () => void;
@@ -41,6 +44,9 @@ export function useAuth() {
     return ctx;
 }
 
+// TOKEN_KEY is kept as a named constant so any remaining transitive
+// references compile, but the value is never written post-P1-A-02-part2.
+// Delete this constant in PR 3 when the Authorization-header path retires.
 const TOKEN_KEY = 'ironsight_token';
 const USER_KEY  = 'ironsight_user';
 
@@ -102,39 +108,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const [user, setUser] = useState<AuthUser | null>(null);
     const [ready, setReady] = useState(false);
 
-    // Rehydrate session on mount by validating the stored token with /auth/me
+    // Rehydrate session on mount by probing /auth/me.
+    //
+    // P1-A-02 part 2: the session JWT now lives in the ironsight_session
+    // HttpOnly cookie and is never accessible to JS. Rehydration calls
+    // /auth/me with credentials:'include' so the browser attaches both
+    // cookies automatically. The Authorization header is no longer sent.
+    //
+    // SSO path (X-Forwarded-Email injected by NPM + oauth2-proxy):
+    // the backend identifies the user from the header even without a
+    // session cookie — this path continues to work unchanged.
     useEffect(() => {
         // Demo bypass: skip the API round-trip and inject the demo
         // customer. This is the path used by `npm run dev` previews
         // when no backend is running.
         if (demoModeActive()) {
-            setToken('demo-token');
+            setToken(null); // no token in JS context — cookie owns the credential
             setUser(DEMO_USER);
             setReady(true);
             return;
         }
 
-        // Always probe /auth/me — even without a stored token. Behind a
-        // reverse proxy that injects X-Forwarded-Email (BigView's NPM +
-        // oauth2-proxy), the API will identify the user from the header
-        // and we never need a JWT. With a stored token we still pass it
-        // (Bearer) so emergency local-login users get the same flow.
-        const storedToken = localStorage.getItem(TOKEN_KEY);
-        const headers: Record<string, string> = {};
-        if (storedToken) headers.Authorization = `Bearer ${storedToken}`;
-
-        fetch('/auth/me', { headers, credentials: 'same-origin' })
+        // Cookie is sent automatically; CSRF is not required on GET.
+        fetch('/auth/me', { credentials: 'include' })
             .then(res => {
                 if (!res.ok) throw new Error('not authenticated');
                 return res.json() as Promise<AuthUser>;
             })
             .then(u => {
-                if (storedToken) setToken(storedToken);
+                setToken(null); // JWT stays in HttpOnly cookie — never exposed to JS
                 setUser(u);
                 localStorage.setItem(USER_KEY, JSON.stringify(u));
             })
             .catch(() => {
-                // No SSO header AND no valid token — clear any stale state.
+                // No SSO header AND no valid session cookie — clear any stale state.
                 localStorage.removeItem(TOKEN_KEY);
                 localStorage.removeItem(USER_KEY);
             })
@@ -142,23 +149,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const login = useCallback(async (identifier: string, password: string) => {
+        // P1-A-02 part 2: credentials:'include' lets the browser store the
+        // ironsight_session + ironsight_csrf cookies from the Set-Cookie
+        // response headers. We no longer write the JWT to localStorage.
+        // The response body still contains `token` during the migration
+        // window (needed by the Authorization-header fallback in RequireAuth
+        // until PR 3 retires it) — we ignore it here.
         const res = await fetch('/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: identifier, password }),
+            credentials: 'include',
         });
         if (!res.ok) {
             const text = await res.text();
             throw new Error(text.trim() || 'Login failed');
         }
         const data = await res.json() as { token: string; user: AuthUser };
-        localStorage.setItem(TOKEN_KEY, data.token);
+        // Persist the user object (not the token) for role-based redirects in
+        // login/page.tsx. The token stays in the HttpOnly cookie — never in JS.
+        // NOTE: ironsight_user in localStorage is intentionally kept here. See
+        // plan §5 "ironsight_user localStorage reads post-migration" — login/page.tsx
+        // reads ironsight_user after login for redirect; that read is safe.
         localStorage.setItem(USER_KEY, JSON.stringify(data.user));
-        setToken(data.token);
+        setToken(null); // JWT in cookie — not exposed to JS
         setUser(data.user);
     }, []);
 
     const logout = useCallback(() => {
+        // P1-A-02 part 2: POST /auth/logout to clear the session cookies
+        // server-side (HandleLogout sets Max-Age=0). Fire-and-forget — the
+        // redirect happens regardless so the user isn't stuck if the request
+        // fails. CSRF is required on the logout POST.
+        const csrfToken = typeof window !== 'undefined'
+            ? (document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='))?.split('=')[1] ?? '')
+            : '';
+        fetch('/auth/logout', {
+            method: 'POST',
+            credentials: 'include',
+            headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {},
+        }).catch(() => { /* best-effort */ });
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
         setToken(null);
@@ -186,9 +216,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (
         <AuthContext.Provider value={{
             user, token, login, logout,
-            // Authenticated if we have either a JWT (local-login flow) OR a
-            // user object (header-trust SSO populates user without a token).
-            isAuthenticated: !!user || !!token,
+            // Authenticated if we have a user object — populated by /auth/me
+            // whether the user arrived via cookie (local-login) or via the
+            // SSO header-trust path. The token field is always null post-P1-A-02-part2.
+            isAuthenticated: !!user,
             hasPermission, canAccess,
         }}>
             {children}
@@ -196,8 +227,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
 }
 
-/** Read the stored token outside of React context (e.g. in api.ts fetch helpers) */
+/**
+ * getStoredToken is a no-op stub kept for import compatibility during the
+ * PR1+PR2 migration window. The JWT no longer lives in localStorage — it is
+ * in the HttpOnly ironsight_session cookie and is inaccessible to JS.
+ *
+ * Delete this export in PR 3 when the Authorization-header fallback retires
+ * and all call-site imports have been cleaned up.
+ *
+ * @deprecated Use credentials:'include' fetches instead of reading a token.
+ */
 export function getStoredToken(): string | null {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem(TOKEN_KEY);
+    return null;
 }

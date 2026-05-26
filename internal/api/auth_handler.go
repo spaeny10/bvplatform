@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log"
 	"log/slog"
@@ -16,6 +18,116 @@ import (
 	"ironsight/internal/database"
 	"ironsight/internal/logging"
 )
+
+// ── Cookie names ──────────────────────────────────────────────────────────────
+
+const (
+	// sessionCookieName carries the session JWT. HttpOnly; not JS-readable,
+	// prevents XSS from exfiltrating the credential.
+	sessionCookieName = "ironsight_session"
+	// csrfCookieName carries the CSRF double-submit token. NOT HttpOnly —
+	// intentionally JS-readable so authFetch can echo it in X-CSRF-Token.
+	csrfCookieName = "ironsight_csrf"
+)
+
+// generateCSRFToken produces a random 32-byte hex string suitable for
+// use as a session-bound CSRF double-submit token.
+func generateCSRFToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+// setSessionCookies writes the ironsight_session (HttpOnly) and
+// ironsight_csrf (JS-readable) cookies onto the response. Both share
+// the same Max-Age derived from the JWT expiry so stale cookies expire
+// in sync with their payloads. The Secure flag follows cfg.CookieSecure.
+func setSessionCookies(w http.ResponseWriter, token, csrfToken string, expiry time.Time, cfg *config.Config) {
+	maxAge := int(time.Until(expiry).Seconds())
+	if maxAge <= 0 {
+		maxAge = 0
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    csrfToken,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: false, // must be JS-readable for the double-submit pattern
+		Secure:   cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// clearSessionCookies removes both auth cookies by setting Max-Age=0.
+func clearSessionCookies(w http.ResponseWriter, cfg *config.Config) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   0,
+		HttpOnly: true,
+		Secure:   cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   0,
+		HttpOnly: false,
+		Secure:   cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// ── CSRF middleware ────────────────────────────────────────────────────────────
+
+// CSRFMiddleware implements the double-submit cookie CSRF check for all
+// non-idempotent requests (POST / PUT / PATCH / DELETE). It reads the
+// ironsight_csrf cookie and the X-CSRF-Token request header, and returns
+// 403 if they do not match or if either is absent.
+//
+// GET / HEAD / OPTIONS are unconditionally passed through — they must not
+// cause side-effects per HTTP semantics, so CSRF is not required.
+//
+// This middleware must be mounted INSIDE the RequireAuth group so that
+// unauthenticated requests are already rejected before we try to read
+// the CSRF cookie. Routes that don't carry a session cookie (public
+// endpoints, the login route, the Milesight sense webhook) are mounted
+// OUTSIDE the RequireAuth group and are therefore never seen by this
+// middleware.
+func CSRFMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie(csrfCookieName)
+		if err != nil || cookie.Value == "" {
+			http.Error(w, "csrf cookie missing", http.StatusForbidden)
+			return
+		}
+		header := r.Header.Get("X-CSRF-Token")
+		if header == "" || header != cookie.Value {
+			http.Error(w, "csrf token mismatch", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // ── Login ─────────────────────────────────────────────────────────────────
 
@@ -216,6 +328,19 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			CreatedAt:       user.CreatedAt,
 			UpdatedAt:       user.UpdatedAt,
 		}
+
+		// P1-A-02 part 2: set ironsight_session (HttpOnly) and ironsight_csrf
+		// (JS-readable) cookies. The session JWT is also returned in the response
+		// body during the migration window so the Authorization-header fallback
+		// in RequireAuth keeps working until PR 3 retires it.
+		csrfToken, err := generateCSRFToken()
+		if err != nil {
+			http.Error(w, "token generation failed", http.StatusInternalServerError)
+			return
+		}
+		expiry := time.Now().Add(24 * time.Hour)
+		setSessionCookies(w, token, csrfToken, expiry, cfg)
+
 		writeJSON(w, loginResponse{Token: token, User: pub, PasswordExpired: expired})
 	}
 }
@@ -225,14 +350,19 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 // cryptographically valid until its natural exp but the auth
 // middleware will reject any further use.
 //
+// P1-A-02 part 2: both ironsight_session and ironsight_csrf cookies are
+// cleared (Max-Age=0) regardless of whether revocation succeeds, so the
+// browser drops them immediately.
+//
 // Returning 204 No Content even on errors below the JWT-parse layer is
 // deliberate — a logout failure should never leak diagnostic info to
 // an unauthenticated caller. The audit log captures the attempt
 // regardless via the AuditMiddleware on the parent route group.
-func HandleLogout(db *database.DB) http.HandlerFunc {
+func HandleLogout(db *database.DB, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := r.Context().Value(ContextKeyClaims).(*auth.Claims)
 		if !ok || claims == nil {
+			clearSessionCookies(w, cfg)
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -242,6 +372,7 @@ func HandleLogout(db *database.DB) http.HandlerFunc {
 			exp = claims.ExpiresAt.Time
 		}
 		_ = db.RevokeToken(r.Context(), claims.ID, userUUID, exp)
+		clearSessionCookies(w, cfg)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -341,18 +472,28 @@ func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Ha
 				// Header missing — fall through to JWT (emergency local login).
 			}
 
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				http.Error(w, "authorization required", http.StatusUnauthorized)
-				return
-			}
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-				http.Error(w, "invalid authorization format", http.StatusUnauthorized)
-				return
+			// P1-A-02 part 2: prefer the session cookie over the Authorization
+			// header. The header remains accepted as a fallback during the
+			// migration window (PR 1 + PR 2 ship together; PR 3 removes this
+			// branch after a 24h soak). Never log the raw token value.
+			var rawToken string
+			if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
+				rawToken = cookie.Value
+			} else {
+				authHeader := r.Header.Get("Authorization")
+				if authHeader == "" {
+					http.Error(w, "authorization required", http.StatusUnauthorized)
+					return
+				}
+				parts := strings.SplitN(authHeader, " ", 2)
+				if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
+					http.Error(w, "invalid authorization format", http.StatusUnauthorized)
+					return
+				}
+				rawToken = parts[1]
 			}
 
-			claims, err := auth.ParseToken(parts[1], cfg.JWTSecret)
+			claims, err := auth.ParseToken(rawToken, cfg.JWTSecret)
 			if err != nil {
 				http.Error(w, "invalid or expired token", http.StatusUnauthorized)
 				return

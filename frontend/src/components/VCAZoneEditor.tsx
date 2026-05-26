@@ -58,12 +58,12 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   const loadSnapshot = useCallback(async () => {
     setSnapshotLoaded(false);
     setSnapshotError(null);
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
-    // Attempt 1: ONVIF snapshot endpoint
+    // Attempt 1: ONVIF snapshot endpoint (public route — no auth header needed,
+    // but credentials:'include' preserves cookie-based session for any future
+    // auth guard that may be added to this endpoint).
     try {
-      const res = await fetch(getVCASnapshotURL(cameraId), { headers });
+      const res = await fetch(getVCASnapshotURL(cameraId), { credentials: 'include' });
       if (res.ok) {
         const blob = await res.blob();
         if (blob.size > 0) {

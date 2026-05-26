@@ -78,6 +78,14 @@ type Config struct {
 	// rather than the dev-time localhost defaults.
 	AllowedOrigins []string
 
+	// CookieSecure controls whether the ironsight_session and ironsight_csrf
+	// cookies are emitted with the Secure attribute (HTTPS-only). Default
+	// true — fred runs behind NPM TLS and cookies without Secure are a
+	// footgun on any public deployment. Set COOKIE_SECURE=false only for
+	// an isolated local dev session where the backend is served over plain
+	// HTTP. Never ship with Secure=false on a reachable host.
+	CookieSecure bool
+
 	// SMTPHost / SMTPPort / SMTPUser / SMTPPass / SMTPFrom configure the
 	// outbound notification mailer. When SMTPHost is empty we fall back
 	// to a stub mailer that logs notifications to stderr instead of
@@ -233,6 +241,7 @@ func Load() *Config {
 		// P1-A-05: optional at config-load time; cmd/server hard-requires via ParseKey at boot.
 		CameraCredentialsKey: getEnv("CAMERA_CREDENTIALS_KEY", ""),
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
+		CookieSecure:        getEnvBool("COOKIE_SECURE", true),
 		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
 		SMTPHost:            getEnv("SMTP_HOST", ""),
 		SMTPPort:            getEnv("SMTP_PORT", "587"),

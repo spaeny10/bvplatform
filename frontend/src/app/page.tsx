@@ -96,7 +96,7 @@ function HomeInner() {
     // Check if storage is configured
     useEffect(() => {
         fetch('/api/storage/status', {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('ironsight_token')}` },
+            credentials: 'include',
         })
             .then(r => r.ok ? r.json() : null)
             .then(data => { if (data) setStorageConfigured(data.configured); })
