@@ -136,6 +136,26 @@ Prometheus exposition endpoint at `GET /metrics`. See [`docs/metrics.md`](./metr
 
 **Security note (D-02):** `sso` is the recommended default. The Prom LXC is on the trusted cluster network and can carry a long-lived service-account JWT. `none` is acceptable if NPM's allow-list rule gates the path to the cluster's internal CIDR before it reaches the API container — do not set `none` on an internet-facing deployment without that NPM rule in place.
 
+
+
+## Logging & error reporting (P1-C-02)
+
+Sentry/GlitchTip integration for automatic error capture. When `SENTRY_DSN` is empty
+(the production default until the GlitchTip LXC is provisioned), the Sentry client is
+never initialised and all Sentry code paths are no-ops — no network calls, no overhead.
+
+`slog.Error` calls are automatically forwarded to Sentry as captured events. The
+`request_id`, `route`, `method`, `status`, and `path` attributes are promoted to
+first-class Sentry tags. Sensitive attribute keys (`password`, `secret`, `token`,
+`key`, `credential`, `authorization`, `auth`) are redacted to `[REDACTED]` before
+transmission. Panics in HTTP handlers are captured via the `sentryhttp` middleware
+(outermost router layer).
+
+| Name | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `SENTRY_DSN` | string | (empty) | no | Data Source Name for the GlitchTip/Sentry endpoint. Empty = Sentry disabled (no-op). Format: `https://<key>@<host>/<project-id>`. Set once the GlitchTip LXC is provisioned. |
+| `SENTRY_ENVIRONMENT` | string | (empty) | no | Environment label attached to every Sentry event (e.g. `production`, `staging`). Omitted when empty — acceptable for dev. |
+
 ---
 
 ## Migration: how to consume new env vars

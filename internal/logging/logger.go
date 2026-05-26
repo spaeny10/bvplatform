@@ -185,3 +185,22 @@ func ensureBaseLogger(logger *slog.Logger) *slog.Logger {
 	}
 	return slog.Default()
 }
+
+// NewWithSentry constructs a JSON slog.Logger that fans out Error-level
+// records to the Sentry/GlitchTip client (P1-C-02). The underlying
+// JSON-to-stderr behaviour is identical to New. Call this instead of
+// New after InitSentry has been called; when DSN was empty, InitSentry
+// is a no-op and the SentryHandler degrades to a pure pass-through.
+func NewWithSentry(level string) *slog.Logger {
+	return newWithSentryAndWriter(level, os.Stderr)
+}
+
+// newWithSentryAndWriter is the test seam for Sentry-wrapped loggers.
+func newWithSentryAndWriter(level string, w io.Writer) *slog.Logger {
+	lvl := parseLevel(level)
+	jsonHandler := slog.NewJSONHandler(w, &slog.HandlerOptions{
+		Level:     lvl,
+		AddSource: false,
+	})
+	return slog.New(NewSentryHandler(jsonHandler))
+}

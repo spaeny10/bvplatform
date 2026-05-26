@@ -33,7 +33,9 @@ import (
 	"time"
 
 	"ironsight/internal/ai"
+	"ironsight/internal/logging"
 	"ironsight/internal/config"
+	"ironsight/internal/crypto"
 	"ironsight/internal/database"
 	"ironsight/internal/export"
 	"ironsight/internal/indexer"
@@ -49,11 +51,33 @@ func main() {
 
 	cfg := config.Load()
 
+	// P1-C-02: Sentry/GlitchTip error reporting — same init as cmd/server.
+	// Empty DSN = no-op (default until GlitchTip LXC is provisioned).
+	if err := logging.InitSentry(cfg.SentryDSN, cfg.SentryEnvironment); err != nil {
+		log.Printf("[WARN] sentry init failed: %v", err)
+	}
+	defer logging.FlushSentry()
+
+	// P1-A-05: same key the api uses. Indexer/export don't currently
+	// read cameras.password through *database.DB (they touch segments
+	// and exports), but plumbing the key here keeps the two binaries
+	// configured identically so a future worker query that does hit
+	// cameras.password decrypts correctly without a config surprise.
+	// Empty key is tolerated — worker doesn't fail-fast like the server
+	// because none of its current paths need it.
+	credentialsKey, err := crypto.ParseKey(cfg.CameraCredentialsKey)
+	if err != nil && cfg.CameraCredentialsKey != "" {
+		log.Fatalf("[FATAL] CAMERA_CREDENTIALS_KEY: %v", err)
+	}
+
 	db, err := database.New(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("[FATAL] Database connect: %v", err)
 	}
 	defer db.Close()
+	if len(credentialsKey) > 0 {
+		db.SetCredentialsKey(credentialsKey)
+	}
 
 	// AI client — same wiring as api. Indexer needs it; retention and
 	// exports don't. Cheap to initialize either way; skipping keeps the

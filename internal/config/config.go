@@ -53,6 +53,12 @@ type Config struct {
 	JWTSecret        string // sign/verify JWTs; set JWT_SECRET in env
 	DefaultAdminPass string // auto-created admin password on first run
 
+	// CameraCredentialsKey is the 32-byte AES-256 key used to encrypt
+	// camera passwords at rest (P1-A-05). Operators supply it via
+	// CAMERA_CREDENTIALS_KEY env (64-char hex or 44-char base64).
+	// Required for cmd/server; cmd/worker/migrate/seed tolerate empty.
+	CameraCredentialsKey string
+
 	// SSO via reverse-proxy header trust. When SSOTrustHeader == "email", the
 	// API trusts an "X-Forwarded-Email" header injected by an upstream proxy
 	// (oauth2-proxy + NPM in the BigView deployment) and skips JWT entirely.
@@ -224,6 +230,8 @@ func Load() *Config {
 		DetectionIntervalMs: getEnvInt("DETECTION_INTERVAL_MS", 500),
 		JWTSecret:           requireSecret("JWT_SECRET"),
 		DefaultAdminPass:    requireAdminPassword("ADMIN_PASSWORD"),
+		// P1-A-05: optional at config-load time; cmd/server hard-requires via ParseKey at boot.
+		CameraCredentialsKey: getEnv("CAMERA_CREDENTIALS_KEY", ""),
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
 		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
 		SMTPHost:            getEnv("SMTP_HOST", ""),
