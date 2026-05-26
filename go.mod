@@ -13,6 +13,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pion/rtp v1.10.1
 	github.com/pressly/goose/v3 v3.27.1
+	github.com/prometheus/client_golang v1.22.0
 	github.com/redis/go-redis/v9 v9.18.0
 	golang.org/x/crypto v0.50.0
 	golang.org/x/sys v0.43.0

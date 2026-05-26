@@ -12,6 +12,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+
+	appmetrics "ironsight/internal/metrics"
 )
 
 // websocket.Upgrader is shared by every HandleWebSocket call.
@@ -137,8 +139,11 @@ func (h *Hub) Run(ctx context.Context) {
 		case conn := <-h.register:
 			h.mu.Lock()
 			h.clients[conn] = true
+			n := len(h.clients)
 			h.mu.Unlock()
-			log.Printf("[WS] Client connected (%d total)", len(h.clients))
+			// P1-C-03: update WS client count gauge.
+			appmetrics.SetWSClients(n)
+			log.Printf("[WS] Client connected (%d total)", n)
 
 		case conn := <-h.unregister:
 			h.mu.Lock()
@@ -146,8 +151,11 @@ func (h *Hub) Run(ctx context.Context) {
 				delete(h.clients, conn)
 				conn.Close()
 			}
+			n := len(h.clients)
 			h.mu.Unlock()
-			log.Printf("[WS] Client disconnected (%d total)", len(h.clients))
+			// P1-C-03: update WS client count gauge.
+			appmetrics.SetWSClients(n)
+			log.Printf("[WS] Client disconnected (%d total)", n)
 
 		case msg := <-h.broadcast:
 			h.writeToClients(msg)

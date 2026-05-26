@@ -20,6 +20,16 @@ type Config struct {
 	// incident without redeploying. Unknown values fall through to info.
 	LogLevel string
 
+	// Sentry / GlitchTip error reporting (P1-C-02). SENTRY_DSN is the
+	// project DSN from the GlitchTip UI. Empty DSN disables the SDK
+	// entirely — the logging handler degrades to JSON-only. This is
+	// the production default until the GlitchTip LXC is stood up.
+	// SENTRY_ENVIRONMENT tags every captured event ("production",
+	// "staging", etc.) so events can be filtered by deploy tier.
+	// Empty = no environment tag (acceptable for dev).
+	SentryDSN         string
+	SentryEnvironment string
+
 	// Database
 	DatabaseURL string
 
@@ -176,6 +186,24 @@ type Config struct {
 	// lock. Default false: multi-container deploys want exactly-one-leader
 	// semantics.
 	WorkerLeaderDisabled bool
+
+	// Metrics (P1-C-03): Prometheus exposition endpoint at /metrics.
+	//
+	// MetricsEnabled gates the whole endpoint. Default true — set
+	// METRICS_ENABLED=false to disable entirely (useful during a
+	// misconfigured deploy before a Prom scraper is pointed at the host).
+	//
+	// MetricsAuth controls who may reach /metrics:
+	//   "sso"  — behind the same RequireAuth JWT/SSO middleware as /api/*.
+	//            Recommended: the Prom LXC is on the trusted cluster network
+	//            and carries a service-account JWT; the endpoint is not
+	//            world-reachable through NPM without a valid session.
+	//   "none" — no auth check. Safe only if NPM strictly limits /metrics
+	//            to the cluster network (e.g. via an allow-list rule).
+	//            Not recommended for internet-facing deployments.
+	// Default "sso".
+	MetricsEnabled bool
+	MetricsAuth    string // "sso" | "none"
 }
 
 // Load reads configuration from environment variables with defaults
@@ -183,6 +211,8 @@ func Load() *Config {
 	cfg := &Config{
 		ServerPort:          getEnv("SERVER_PORT", "8080"),
 		LogLevel:            getEnv("LOG_LEVEL", "info"),
+		SentryDSN:           getEnv("SENTRY_DSN", ""),
+		SentryEnvironment:   getEnv("SENTRY_ENVIRONMENT", ""),
 		DatabaseURL:         getEnv("DATABASE_URL", "postgres://onvif:onvif_dev_password@localhost:5432/onvif_tool?sslmode=disable"),
 		StoragePath:         getEnv("STORAGE_PATH", "./storage/recordings"),
 		HLSPath:             getEnv("HLS_PATH", "./storage/hls"),
@@ -268,8 +298,23 @@ func Load() *Config {
 		// to skip leader election". Preserved as an exact-string check so a
 		// value like "true" doesn't silently start triggering the skip path.
 		WorkerLeaderDisabled: os.Getenv("WORKER_LEADER_DISABLED") == "1",
+
+		// Metrics — P1-C-03. Default on with SSO gating.
+		MetricsEnabled: getEnvBool("METRICS_ENABLED", true),
+		MetricsAuth:    metricsAuthFromEnv(),
 	}
 	return cfg
+}
+
+// metricsAuthFromEnv parses METRICS_AUTH. Valid values are "sso" (default)
+// and "none". Any unrecognised value falls back to "sso" so a misconfigured
+// env never accidentally opens the endpoint.
+func metricsAuthFromEnv() string {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("METRICS_AUTH")))
+	if v == "none" {
+		return "none"
+	}
+	return "sso"
 }
 
 // clampIndexerConcurrency mirrors the historical inline check in

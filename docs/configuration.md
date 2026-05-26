@@ -125,6 +125,17 @@ Single-source reference for every environment variable the Go binaries read. Eve
 |---|---|---|---|---|
 | `PRODUCT_NAME` | string | `Ironsight` | no | User-visible product name used in evidence bundles, log headers, and backend-emitted strings that reach customers. Frontend duplicates the value in `frontend/src/lib/branding.ts`. |
 
+## Metrics (P1-C-03)
+
+Prometheus exposition endpoint at `GET /metrics`. See [`docs/metrics.md`](./metrics.md) for the full series catalog.
+
+| Name | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `METRICS_ENABLED` | bool | `true` | no | Enables the `/metrics` Prometheus endpoint. Set to `false` to disable entirely — useful during an initial deploy before a Prom scraper is pointed at the host, or if NPM cannot restrict the path to the cluster network. |
+| `METRICS_AUTH` | string | `sso` | no | Auth model for `/metrics`. `sso` (default) — endpoint sits behind the same `RequireAuth` JWT/SSO middleware as `/api/*`, so the Prom LXC needs a service-account JWT to scrape. `none` — no auth check; safe only if NPM restricts `/metrics` to the cluster network via an allow-list rule. Any unrecognised value falls back to `sso`. |
+
+**Security note (D-02):** `sso` is the recommended default. The Prom LXC is on the trusted cluster network and can carry a long-lived service-account JWT. `none` is acceptable if NPM's allow-list rule gates the path to the cluster's internal CIDR before it reaches the API container — do not set `none` on an internet-facing deployment without that NPM rule in place.
+
 ---
 
 ## Migration: how to consume new env vars

@@ -17,6 +17,7 @@ import (
 
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	appmetrics "ironsight/internal/metrics"
 )
 
 // Engine manages FFmpeg recording processes for all cameras
@@ -119,6 +120,9 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 		}
 		e.gortRecorders[cameraID] = gr
 		log.Printf("[REC] Camera %s using Go recorder (gortsplib)", cameraName)
+		// P1-C-03: update gauges after a Go recorder starts.
+		appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+		appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 		return nil
 	}
 
@@ -179,6 +183,9 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 
 	e.recorders[cameraID] = recorder
 	log.Printf("[REC] Started recording for camera %s (%s) mode=%s", cameraName, cameraID, mode)
+	// P1-C-03: update Prometheus gauges after a new FFmpeg recorder starts.
+	appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+	appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 	return nil
 }
 
@@ -191,6 +198,9 @@ func (e *Engine) StopRecording(cameraID uuid.UUID) error {
 		gr.Stop()
 		delete(e.gortRecorders, cameraID)
 		log.Printf("[REC] Stopped Go recording for camera %s", cameraID)
+		// P1-C-03: update Prometheus gauges after a Go recorder stops.
+		appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+		appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 		return nil
 	}
 	recorder, ok := e.recorders[cameraID]
@@ -201,6 +211,9 @@ func (e *Engine) StopRecording(cameraID uuid.UUID) error {
 	recorder.Stop()
 	delete(e.recorders, cameraID)
 	log.Printf("[REC] Stopped recording for camera %s", cameraID)
+	// P1-C-03: update Prometheus gauges after an FFmpeg recorder stops.
+	appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+	appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 	return nil
 }
 
@@ -217,6 +230,9 @@ func (e *Engine) StopAll() {
 		gr.Stop()
 		delete(e.gortRecorders, id)
 	}
+	// P1-C-03: zero out Prometheus gauges — no cameras are recording.
+	appmetrics.SetActiveCameras(0)
+	appmetrics.SetFFmpegSubprocesses(0)
 	log.Println("[REC] All recordings stopped")
 }
 
@@ -876,6 +892,9 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					seen[entry.Name()] = true
 					continue
 				}
+
+				// P1-C-03: count segments written per camera for Prometheus.
+				appmetrics.IncSegmentsWritten(r.cameraID.String())
 
 				seen[entry.Name()] = true
 				// Only log new segments (created after this recorder started) to reduce noise

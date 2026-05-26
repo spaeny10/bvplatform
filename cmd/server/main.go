@@ -27,6 +27,7 @@ import (
 	"ironsight/internal/export"
 	"ironsight/internal/indexer"
 	"ironsight/internal/logging"
+	appmetrics "ironsight/internal/metrics"
 	msdriver "ironsight/internal/milesight"
 	"ironsight/internal/notify"
 	"ironsight/internal/onvif"
@@ -43,11 +44,23 @@ func main() {
 	// subsequent log.Printf and slog call emits JSON.
 	cfg := config.Load()
 
+	// P1-C-02: Sentry/GlitchTip error reporting. Init BEFORE the
+	// logger so the first Error-level line (if any) gets captured.
+	// Empty SENTRY_DSN = no-op — the default until the GlitchTip LXC
+	// is provisioned. FlushSentry is deferred so events near shutdown
+	// are delivered before the process exits.
+	if err := logging.InitSentry(cfg.SentryDSN, cfg.SentryEnvironment); err != nil {
+		log.Printf("[WARN] sentry init failed: %v", err)
+	}
+	defer logging.FlushSentry()
+
 	// P1-C-01: structured logging. JSON to stderr, level from
 	// LOG_LEVEL env (info default). Also bridges the stdlib log
 	// package so the 300+ legacy log.Printf call sites emit
-	// structured lines too, migrate-as-touched.
-	logger := logging.New(cfg.LogLevel)
+	// structured lines too, migrate-as-touched. P1-C-02: use
+	// NewWithSentry so Error-level records are also forwarded to
+	// Sentry (no-op when DSN is empty).
+	logger := logging.NewWithSentry(cfg.LogLevel)
 	logging.InstallAsDefault(logger)
 	logger.Info("server_starting",
 		slog.String("product", cfg.ProductName),
@@ -90,6 +103,11 @@ func main() {
 	if err := goose.UpContext(context.Background(), gooseDB, "."); err != nil {
 		gooseDB.Close()
 		log.Fatalf("[FATAL] goose.Up: %v", err)
+	}
+	// P1-C-03: record the applied migration version in Prometheus so
+	// alerts can cross-reference the schema state at incident time.
+	if v, verr := goose.GetDBVersion(gooseDB); verr == nil {
+		appmetrics.SetGooseMigrationVersion(v)
 	}
 	gooseDB.Close()
 	log.Println("[MIGRATIONS] goose up applied; see goose_db_version for current version")
@@ -1218,6 +1236,29 @@ func main() {
 		From:       cfg.TwilioFrom,
 	})
 	notifier := notify.NewDispatcher(emailMailer, smsMailer, cfg.ProductName, cfg.PublicURL)
+
+	// P1-C-03: sync pgxpool stats into Prometheus gauges every 15 s.
+	// The pool exposes a Stat() snapshot (no blocking); we read it on a
+	// ticker so the Prom scraper always sees a reasonably fresh value.
+	if cfg.MetricsEnabled {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					s := db.Pool.Stat()
+					appmetrics.SyncDBPoolStats(appmetrics.DBPoolStat{
+						AcquireCount: s.AcquireCount(),
+						IdleConns:    s.IdleConns(),
+						TotalConns:   s.TotalConns(),
+					})
+				}
+			}
+		}()
+	}
 
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()

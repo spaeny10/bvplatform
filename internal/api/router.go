@@ -8,12 +8,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	sentryhttp "github.com/getsentry/sentry-go/http"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"ironsight/internal/ai"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
 	"ironsight/internal/logging"
+	appmetrics "ironsight/internal/metrics"
 	"ironsight/internal/notify"
 	"ironsight/internal/onvif"
 	"ironsight/internal/recording"
@@ -43,6 +46,20 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// via internal/logging and tag every request with a UUIDv7 request
 	// id. RequestID must come BEFORE RequestLogger so the logger
 	// middleware can pre-bind the id into the per-request slog.Logger.
+	//
+	// P1-C-03: metrics middleware is registered BEFORE the Recoverer so
+	// that panics caught by Recoverer and converted to 500 responses are
+	// still counted in ironsight_http_requests_total{status="500"}. If
+	// metrics came after Recoverer, the 500 conversion would happen
+	// before our wrapper sees the status code.
+	if cfg.MetricsEnabled {
+		r.Use(appmetrics.HTTPMiddleware)
+	}
+	// P1-C-02: sentryhttp panic-capture middleware. Outermost so a panic
+	// is reported to Sentry BEFORE chi's Recoverer converts it to a 500
+	// response (Repanic:true causes it to re-panic after capture so
+	// middleware.Recoverer still writes the 500).
+	r.Use(sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle)
 	r.Use(logging.RequestID)
 	r.Use(logging.RequestLogger(nil)) // nil → process default set in cmd/server
 	r.Use(middleware.Recoverer)
@@ -500,6 +517,29 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// separate hardening task (P1-A-03 follow-up) can fold this into
 	// the same /media/v1/ scheme if Caleb wants belt-and-braces.
 	r.Handle("/exports/*", http.StripPrefix("/exports/", http.FileServer(http.Dir(cfg.ExportPath))))
+
+	// P1-C-03: Prometheus /metrics endpoint.
+	//
+	// Security posture: "sso" (default) puts /metrics behind the same
+	// RequireAuth middleware as /api/*, so a Prom scraper needs a valid
+	// service-account JWT. "none" removes the auth check — safe only if
+	// NPM restricts /metrics to the cluster network at the proxy layer.
+	//
+	// Disabled entirely when MetricsEnabled=false (METRICS_ENABLED=false env).
+	// That lets a misconfigured deploy shut the endpoint off cleanly without
+	// a code change.
+	if cfg.MetricsEnabled {
+		metricsHandler := promhttp.HandlerFor(
+			appmetrics.Registry,
+			promhttp.HandlerOpts{EnableOpenMetrics: false},
+		)
+		if cfg.MetricsAuth == "none" {
+			r.Get("/metrics", metricsHandler.ServeHTTP)
+		} else {
+			// Default: "sso" — gate behind RequireAuth just like /api/*.
+			r.With(RequireAuth(cfg, db)).Get("/metrics", metricsHandler.ServeHTTP)
+		}
+	}
 
 	return r
 }
