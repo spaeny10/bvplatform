@@ -2,6 +2,19 @@
 
 ## Infrastructure
 
+- [ ] P3-INFRA-05 — Soft-delete pattern (IN PROGRESS — code complete, pending deploy to fred)
+      Branch: feat/p3-infra-05-soft-delete (off 4ff6e13 feat/p3-infra-04-id-standardization)
+      Migration: 0028_soft_delete.sql — ALTER TABLE ADD COLUMN deleted_at TIMESTAMPTZ on 8 tables; 8 _active views; 2 partial unique indexes (cameras.sense_webhook_token, users.username)
+      Tables: cameras, sites, organizations, users, speakers, ppe_zones, compliance_rules, vca_rules
+      Excluded: audit_log, playback_audits, deterrence_audits, evidence_manifests, segments, events, person_track_frames, ai_runtime_metrics, active_alarms, incidents, security_events, company_users
+      Cascade: camera→ppe_zones+compliance_rules+vca_rules (1 tx); site→cameras+children (1 tx); org→sites sequential (each in own tx); ppe_zone→compliance_rules (1 tx)
+      Open questions locked: (1) purge/GDPR=OUT; (2) undelete=DEFER; (3) vca_rules=INCLUDE; (4) company_users=EXCLUDE; (5) org→users cascade=NO; (6) include_deleted=ADMIN-ONLY; (7) slug recycling=ACCEPTABLE
+      Trap 1 fix: ListSites/ListSitesScoped JOIN filters c.deleted_at IS NULL (not cameras_active — needs explicit join condition)
+      Trap 2 fix: GetOrCreateUserByEmail resurrects soft-deleted users before INSERT to prevent partial unique index 23505 on SSO re-login
+      API: all DELETE handlers → SoftDeleteX; admin-only ?include_deleted=true on all list endpoints; HandleDeletePPEZone 409 guard removed
+      CI lint: internal/database/soft_delete_convention_test.go (3 checks: required have deleted_at, excluded don't, _active views exist)
+      Doc: docs/soft-delete.md
+
 - [x] P3-INFRA-04 — ID standardization completion (Interpretation B: TEXT PKs grandfathered, not converted)
       Commit: 493cff6 (feat/p3-infra-04-id-standardization); first commit 92857fa
       Decision: Interpretation B locked 2026-05-27. Live fred org IDs are human-readable slugs (co-bv-test, T5-903). Interpretation A (convert TEXT PKs to UUID) rejected — slug-remap would break API contract + 15 tables + URLs for zero benefit.

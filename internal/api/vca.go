@@ -107,7 +107,7 @@ func HandleDeleteVCARule(db *database.DB) http.HandlerFunc {
 			http.Error(w, "invalid rule id", http.StatusBadRequest)
 			return
 		}
-		if err := db.DeleteVCARule(r.Context(), ruleID); err != nil {
+		if err := db.SoftDeleteVCARule(r.Context(), ruleID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

@@ -4,20 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 // ── PPE Zone CRUD ─────────────────────────────────────────────────────────────
 
-// ListPPEZones returns all zones for a camera, scoped to orgID.
+// ListPPEZones returns all live zones for a camera, scoped to orgID.
 // Returns an empty (non-nil) slice when none exist.
 func (db *DB) ListPPEZones(ctx context.Context, cameraID uuid.UUID, orgID string) ([]PPEZone, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, organization_id, camera_id, site_id,
 		       zone_type, name, region, enabled, notes,
 		       created_by, created_at, updated_at
-		FROM ppe_zones
+		FROM ppe_zones_active
 		WHERE camera_id = $1 AND organization_id = $2
 		ORDER BY created_at`,
 		cameraID, orgID,
@@ -38,14 +39,14 @@ func (db *DB) ListPPEZones(ctx context.Context, cameraID uuid.UUID, orgID string
 	return out, nil
 }
 
-// GetPPEZone fetches a single zone by ID, scoped to orgID.
-// Returns (nil, nil) when not found or wrong org.
+// GetPPEZone fetches a single live zone by ID, scoped to orgID.
+// Returns (nil, nil) when not found, wrong org, or soft-deleted.
 func (db *DB) GetPPEZone(ctx context.Context, id uuid.UUID, orgID string) (*PPEZone, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, organization_id, camera_id, site_id,
 		       zone_type, name, region, enabled, notes,
 		       created_by, created_at, updated_at
-		FROM ppe_zones
+		FROM ppe_zones_active
 		WHERE id = $1 AND organization_id = $2`,
 		id, orgID,
 	)
@@ -61,6 +62,34 @@ func (db *DB) GetPPEZone(ctx context.Context, id uuid.UUID, orgID string) (*PPEZ
 		return nil, fmt.Errorf("GetPPEZone scan: %w", err)
 	}
 	return &z, nil
+}
+
+// ListPPEZonesIncludeDeleted returns all zones for a camera (including soft-deleted),
+// scoped to orgID. Admin-only path.
+func (db *DB) ListPPEZonesIncludeDeleted(ctx context.Context, cameraID uuid.UUID, orgID string) ([]PPEZone, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, organization_id, camera_id, site_id,
+		       zone_type, name, region, enabled, notes,
+		       created_by, created_at, updated_at
+		FROM ppe_zones
+		WHERE camera_id = $1 AND organization_id = $2
+		ORDER BY created_at`,
+		cameraID, orgID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListPPEZonesIncludeDeleted: %w", err)
+	}
+	defer rows.Close()
+
+	out := []PPEZone{}
+	for rows.Next() {
+		z, err := scanPPEZone(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListPPEZonesIncludeDeleted scan: %w", err)
+		}
+		out = append(out, z)
+	}
+	return out, nil
 }
 
 // CreatePPEZone inserts a new zone. Returns the created row.
@@ -123,12 +152,50 @@ func (db *DB) DeletePPEZone(ctx context.Context, id uuid.UUID, orgID string) (in
 	return tag.RowsAffected(), nil
 }
 
-// CountComplianceRulesForZone returns the number of compliance rules referencing
-// the given zone. Used by the DELETE handler to enforce the 409 guard.
+// SoftDeletePPEZone marks a zone and its compliance rules as deleted.
+// The 409 guard (CountComplianceRulesForZone) is removed from the handler
+// when using this function — zones can always be soft-deleted; their rules
+// go with them.
+func (db *DB) SoftDeletePPEZone(ctx context.Context, id uuid.UUID, orgID string) (int64, error) {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("SoftDeletePPEZone begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now().UTC()
+
+	// Cascade: soft-delete compliance rules referencing this zone.
+	_, err = tx.Exec(ctx,
+		`UPDATE compliance_rules SET deleted_at=$1
+		 WHERE zone_id=$2 AND organization_id=$3 AND deleted_at IS NULL`,
+		now, id, orgID)
+	if err != nil {
+		return 0, fmt.Errorf("SoftDeletePPEZone cascade compliance_rules: %w", err)
+	}
+
+	// Soft-delete the zone itself.
+	tag, err := tx.Exec(ctx,
+		`UPDATE ppe_zones SET deleted_at=$1
+		 WHERE id=$2 AND organization_id=$3 AND deleted_at IS NULL`,
+		now, id, orgID)
+	if err != nil {
+		return 0, fmt.Errorf("SoftDeletePPEZone: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("SoftDeletePPEZone commit: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// CountComplianceRulesForZone returns the number of live compliance rules referencing
+// the given zone. Uses the _active view so soft-deleted rules are not counted.
+// Retained for any caller that needs the count; the DELETE handler no longer
+// uses it as a 409 guard (SoftDeletePPEZone cascades rules).
 func (db *DB) CountComplianceRulesForZone(ctx context.Context, zoneID uuid.UUID, orgID string) (int, error) {
 	var n int
 	err := db.Pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM compliance_rules WHERE zone_id=$1 AND organization_id=$2`,
+		`SELECT COUNT(*) FROM compliance_rules_active WHERE zone_id=$1 AND organization_id=$2`,
 		zoneID, orgID,
 	).Scan(&n)
 	if err != nil {
@@ -139,14 +206,14 @@ func (db *DB) CountComplianceRulesForZone(ctx context.Context, zoneID uuid.UUID,
 
 // ── Compliance Rule CRUD ──────────────────────────────────────────────────────
 
-// ListComplianceRules returns all rules for a camera (including site-wide rules
+// ListComplianceRules returns all live rules for a camera (including site-wide rules
 // where camera_id IS NULL and site_id matches), scoped to orgID.
-// Zone name + type are joined in from ppe_zones.
+// Zone name + type are joined in from ppe_zones_active.
 func (db *DB) ListComplianceRules(ctx context.Context, cameraID uuid.UUID, orgID string) ([]ComplianceRule, error) {
 	// Fetch the camera's site_id for the site-wide rule join.
 	var siteID string
 	err := db.Pool.QueryRow(ctx,
-		`SELECT COALESCE(site_id,'') FROM cameras WHERE id=$1`, cameraID,
+		`SELECT COALESCE(site_id,'') FROM cameras_active WHERE id=$1`, cameraID,
 	).Scan(&siteID)
 	if err != nil {
 		return nil, fmt.Errorf("ListComplianceRules get site_id: %w", err)
@@ -157,8 +224,8 @@ func (db *DB) ListComplianceRules(ctx context.Context, cameraID uuid.UUID, orgID
 		       r.rule_type, r.ppe_classes, r.enabled, r.notes, r.created_by, r.created_at,
 		       COALESCE(z.name,'') AS zone_name,
 		       COALESCE(z.zone_type,'') AS zone_type
-		FROM compliance_rules r
-		LEFT JOIN ppe_zones z ON z.id = r.zone_id
+		FROM compliance_rules_active r
+		LEFT JOIN ppe_zones_active z ON z.id = r.zone_id
 		WHERE r.organization_id = $1
 		  AND (r.camera_id = $2 OR (r.camera_id IS NULL AND r.site_id = $3))
 		ORDER BY r.created_at`,
@@ -180,15 +247,16 @@ func (db *DB) ListComplianceRules(ctx context.Context, cameraID uuid.UUID, orgID
 	return out, nil
 }
 
-// GetComplianceRule fetches a single rule by ID, scoped to orgID.
+// GetComplianceRule fetches a single live rule by ID, scoped to orgID.
+// Returns (nil, nil) when not found, wrong org, or soft-deleted.
 func (db *DB) GetComplianceRule(ctx context.Context, id uuid.UUID, orgID string) (*ComplianceRule, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT r.id, r.organization_id, r.site_id, r.camera_id, r.zone_id,
 		       r.rule_type, r.ppe_classes, r.enabled, r.notes, r.created_by, r.created_at,
 		       COALESCE(z.name,'') AS zone_name,
 		       COALESCE(z.zone_type,'') AS zone_type
-		FROM compliance_rules r
-		LEFT JOIN ppe_zones z ON z.id = r.zone_id
+		FROM compliance_rules_active r
+		LEFT JOIN ppe_zones_active z ON z.id = r.zone_id
 		WHERE r.id=$1 AND r.organization_id=$2`,
 		id, orgID,
 	)
@@ -204,6 +272,45 @@ func (db *DB) GetComplianceRule(ctx context.Context, id uuid.UUID, orgID string)
 		return nil, fmt.Errorf("GetComplianceRule scan: %w", err)
 	}
 	return &r, nil
+}
+
+// ListComplianceRulesIncludeDeleted returns all rules for a camera (including
+// soft-deleted), scoped to orgID. Admin-only path.
+func (db *DB) ListComplianceRulesIncludeDeleted(ctx context.Context, cameraID uuid.UUID, orgID string) ([]ComplianceRule, error) {
+	var siteID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(site_id,'') FROM cameras WHERE id=$1`, cameraID,
+	).Scan(&siteID)
+	if err != nil {
+		return nil, fmt.Errorf("ListComplianceRulesIncludeDeleted get site_id: %w", err)
+	}
+
+	rows, err := db.Pool.Query(ctx, `
+		SELECT r.id, r.organization_id, r.site_id, r.camera_id, r.zone_id,
+		       r.rule_type, r.ppe_classes, r.enabled, r.notes, r.created_by, r.created_at,
+		       COALESCE(z.name,'') AS zone_name,
+		       COALESCE(z.zone_type,'') AS zone_type
+		FROM compliance_rules r
+		LEFT JOIN ppe_zones z ON z.id = r.zone_id
+		WHERE r.organization_id = $1
+		  AND (r.camera_id = $2 OR (r.camera_id IS NULL AND r.site_id = $3))
+		ORDER BY r.created_at`,
+		orgID, cameraID, siteID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("ListComplianceRulesIncludeDeleted: %w", err)
+	}
+	defer rows.Close()
+
+	out := []ComplianceRule{}
+	for rows.Next() {
+		r, err := scanComplianceRule(rows)
+		if err != nil {
+			return nil, fmt.Errorf("ListComplianceRulesIncludeDeleted scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, nil
 }
 
 // CreateComplianceRule inserts a new compliance rule. Returns the new UUID.
@@ -255,7 +362,8 @@ func (db *DB) UpdateComplianceRule(ctx context.Context, id uuid.UUID, orgID stri
 	return tag.RowsAffected(), nil
 }
 
-// DeleteComplianceRule removes a compliance rule.
+// DeleteComplianceRule removes a compliance rule (hard delete — retained for
+// internal/admin use; API handlers use SoftDeleteComplianceRule).
 func (db *DB) DeleteComplianceRule(ctx context.Context, id uuid.UUID, orgID string) (int64, error) {
 	tag, err := db.Pool.Exec(ctx,
 		`DELETE FROM compliance_rules WHERE id=$1 AND organization_id=$2`,
@@ -267,12 +375,26 @@ func (db *DB) DeleteComplianceRule(ctx context.Context, id uuid.UUID, orgID stri
 	return tag.RowsAffected(), nil
 }
 
+// SoftDeleteComplianceRule marks a single compliance rule as deleted.
+// Returns rows affected (0 = not found, wrong org, or already deleted).
+func (db *DB) SoftDeleteComplianceRule(ctx context.Context, id uuid.UUID, orgID string) (int64, error) {
+	tag, err := db.Pool.Exec(ctx,
+		`UPDATE compliance_rules SET deleted_at=$1
+		 WHERE id=$2 AND organization_id=$3 AND deleted_at IS NULL`,
+		time.Now().UTC(), id, orgID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("SoftDeleteComplianceRule: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ── Worker query ──────────────────────────────────────────────────────────────
 
-// ListZonesAndRulesForCamera returns all active compliance rules for the given
+// ListZonesAndRulesForCamera returns all live, enabled compliance rules for the given
 // camera (including site-wide rules where camera_id IS NULL) with zone polygons
 // joined in. This is the single JOIN query called by the PPE worker once per
-// camera poll cycle — no N+1.
+// camera poll cycle — no N+1. Both _active views filter deleted_at IS NULL.
 func (db *DB) ListZonesAndRulesForCamera(ctx context.Context, cameraID uuid.UUID, siteID string, orgID string) ([]ComplianceRuleWithZone, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT r.id, r.organization_id, r.site_id, r.camera_id, r.zone_id,
@@ -280,8 +402,8 @@ func (db *DB) ListZonesAndRulesForCamera(ctx context.Context, cameraID uuid.UUID
 		       z.id, z.organization_id, z.camera_id, z.site_id,
 		       z.zone_type, z.name, z.region, z.enabled, z.notes,
 		       z.created_by, z.created_at, z.updated_at
-		FROM compliance_rules r
-		JOIN ppe_zones z ON z.id = r.zone_id
+		FROM compliance_rules_active r
+		JOIN ppe_zones_active z ON z.id = r.zone_id
 		WHERE r.organization_id = $1
 		  AND r.enabled = TRUE
 		  AND z.enabled = TRUE

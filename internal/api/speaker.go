@@ -15,9 +15,29 @@ import (
 	"ironsight/internal/onvif"
 )
 
-// HandleListSpeakers returns all speakers
+// HandleListSpeakers returns all speakers.
+// Admin callers may pass ?include_deleted=true to include soft-deleted speakers.
 func HandleListSpeakers(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("include_deleted") == "true" {
+			// Inline claims check — speaker.go does not import auth directly;
+			// use the shared claimsFromRequest helper.
+			claims := claimsFromRequest(r)
+			if claims == nil || claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			speakers, err := db.ListSpeakersIncludeDeleted(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if speakers == nil {
+				speakers = []database.Speaker{}
+			}
+			writeJSON(w, speakers)
+			return
+		}
 		speakers, err := db.ListSpeakers(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -91,7 +111,7 @@ func HandleDeleteSpeaker(db *database.DB) http.HandlerFunc {
 			http.Error(w, "Invalid ID", http.StatusBadRequest)
 			return
 		}
-		if err := db.DeleteSpeaker(r.Context(), id); err != nil {
+		if err := db.SoftDeleteSpeaker(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

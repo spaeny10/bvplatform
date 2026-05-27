@@ -160,9 +160,27 @@ func HandleDiscoverPreview() http.HandlerFunc {
 	}
 }
 
-// HandleListCameras returns all cameras
+// HandleListCameras returns all cameras.
+// Admin callers may pass ?include_deleted=true to include soft-deleted cameras.
 func HandleListCameras(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("include_deleted") == "true" {
+			claims := claimsFromRequest(r)
+			if claims == nil || claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			cameras, err := db.ListCamerasIncludeDeleted(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if cameras == nil {
+				cameras = []database.Camera{}
+			}
+			writeJSON(w, cameras)
+			return
+		}
 		cameras, err := db.ListCameras(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -594,12 +612,12 @@ func HandleDeleteCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			}
 		}
 
-		if err := db.DeleteCamera(r.Context(), id); err != nil {
+		if err := db.SoftDeleteCamera(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		log.Printf("[API] Camera deleted (resources cleaned up): %s", id)
+		log.Printf("[API] Camera soft-deleted (resources cleaned up): %s", id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

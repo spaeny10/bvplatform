@@ -11,9 +11,24 @@ import (
 	"ironsight/internal/database"
 )
 
-// HandleListUsers returns all users (any authenticated user can list)
+// HandleListUsers returns all users (any authenticated user can list).
+// Admin callers may pass ?include_deleted=true to include soft-deleted users.
 func HandleListUsers(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("include_deleted") == "true" {
+			claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+			if claims == nil || claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			users, err := db.ListUsersIncludeDeleted(r.Context())
+			if err != nil {
+				http.Error(w, "failed to list users: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, users)
+			return
+		}
 		users, err := db.ListUsers(r.Context())
 		if err != nil {
 			http.Error(w, "failed to list users: "+err.Error(), http.StatusInternalServerError)
@@ -100,7 +115,7 @@ func HandleDeleteUser(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		if err := db.DeleteUser(r.Context(), id); err != nil {
+		if err := db.SoftDeleteUser(r.Context(), id); err != nil {
 			http.Error(w, "failed to delete user: "+err.Error(), http.StatusInternalServerError)
 			return
 		}

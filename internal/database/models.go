@@ -9,17 +9,19 @@ import (
 // User represents a unified platform account
 // Roles: admin | soc_operator | soc_supervisor | site_manager | customer | viewer
 type User struct {
-	ID              uuid.UUID `json:"id"`
-	Username        string    `json:"username"`
-	PasswordHash    string    `json:"-"` // never expose
-	Role            string    `json:"role"`
-	DisplayName     string    `json:"display_name"`
-	Email           string    `json:"email"`
-	Phone           string    `json:"phone"`
-	OrganizationID  string    `json:"organization_id,omitempty"`
-	AssignedSiteIDs []string  `json:"assigned_site_ids"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	Username        string     `json:"username"`
+	PasswordHash    string     `json:"-"` // never expose
+	Role            string     `json:"role"`
+	DisplayName     string     `json:"display_name"`
+	Email           string     `json:"email"`
+	Phone           string     `json:"phone"`
+	OrganizationID  string     `json:"organization_id,omitempty"`
+	AssignedSiteIDs []string   `json:"assigned_site_ids"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteUser; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // Camera represents an ONVIF camera device
@@ -63,9 +65,12 @@ type Camera struct {
 	// URL (sense_pushed only). Returned to the operator post-create so
 	// they can paste the URL into the camera's Alarm Server config.
 	// Treated like a credential — never logged.
-	SenseWebhookToken string    `json:"sense_webhook_token,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	SenseWebhookToken string     `json:"sense_webhook_token,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteCamera; nil means the camera is live.
+	// Exposed in JSON so admin include_deleted responses surface the timestamp.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // CameraCreate is the input for creating a camera
@@ -111,21 +116,23 @@ type Point struct {
 // VCARule is a zone/line analytics rule tied to a camera.
 // Rule types: intrusion, linecross, regionentrance, loitering.
 type VCARule struct {
-	ID           uuid.UUID `json:"id"`
-	CameraID     uuid.UUID `json:"camera_id"`
-	RuleType     string    `json:"rule_type"`
-	Name         string    `json:"name"`
-	Enabled      bool      `json:"enabled"`
-	Sensitivity  int       `json:"sensitivity"`
-	Region       []Point   `json:"region"`
-	Direction    string    `json:"direction"`
-	ThresholdSec int       `json:"threshold_sec"`
-	Schedule     string    `json:"schedule"`
-	Actions      []string  `json:"actions"`
-	Synced       bool      `json:"synced"`
-	SyncError    string    `json:"sync_error"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uuid.UUID  `json:"id"`
+	CameraID     uuid.UUID  `json:"camera_id"`
+	RuleType     string     `json:"rule_type"`
+	Name         string     `json:"name"`
+	Enabled      bool       `json:"enabled"`
+	Sensitivity  int        `json:"sensitivity"`
+	Region       []Point    `json:"region"`
+	Direction    string     `json:"direction"`
+	ThresholdSec int        `json:"threshold_sec"`
+	Schedule     string     `json:"schedule"`
+	Actions      []string   `json:"actions"`
+	Synced       bool       `json:"synced"`
+	SyncError    string     `json:"sync_error"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteVCARule; nil means live.
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }
 
 // VCARuleCreate is the input for creating a VCA rule.
@@ -325,18 +332,20 @@ var ValidRoles = map[string]bool{
 
 // Speaker represents an ONVIF audio speaker device for talk-down
 type Speaker struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"` // "Front Gate Speaker"
-	OnvifAddress string    `json:"onvif_address"`
-	Username     string    `json:"username"`
-	Password     string    `json:"-"`
-	RTSPUri      string    `json:"rtsp_uri"` // backchannel RTSP URI
-	Zone         string    `json:"zone"`     // logical zone: "Perimeter"
-	Status       string    `json:"status"`   // online/offline
-	Manufacturer string    `json:"manufacturer"`
-	Model        string    `json:"model"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uuid.UUID  `json:"id"`
+	Name         string     `json:"name"` // "Front Gate Speaker"
+	OnvifAddress string     `json:"onvif_address"`
+	Username     string     `json:"username"`
+	Password     string     `json:"-"`
+	RTSPUri      string     `json:"rtsp_uri"` // backchannel RTSP URI
+	Zone         string     `json:"zone"`     // logical zone: "Perimeter"
+	Status       string     `json:"status"`   // online/offline
+	Manufacturer string     `json:"manufacturer"`
+	Model        string     `json:"model"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteSpeaker; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // SpeakerCreate is the input for adding a speaker
@@ -412,6 +421,8 @@ type PPEZone struct {
 	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeletePPEZone; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // PPEZoneCreate is the input DTO for creating/updating a PPE zone.
@@ -438,6 +449,8 @@ type ComplianceRule struct {
 	SiteWide       bool       `json:"site_wide"` // computed: camera_id IS NULL
 	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
 	CreatedAt      time.Time  `json:"created_at"`
+	// DeletedAt is set by SoftDeleteComplianceRule; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// Joined fields — populated by list queries; not stored.
 	ZoneName string `json:"zone_name,omitempty"`
 	ZoneType string `json:"zone_type,omitempty"`

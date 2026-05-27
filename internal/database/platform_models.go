@@ -23,6 +23,8 @@ type Organization struct {
 	LogoURL      string                 `json:"logo_url,omitempty"`
 	Features     map[string]interface{} `json:"features,omitempty"`
 	CreatedAt    time.Time              `json:"created_at"`
+	// DeletedAt is set by SoftDeleteOrganization; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // MonitoringWindow is a recurring time window when the SOC monitors this site.
@@ -73,9 +75,11 @@ type Site struct {
 	PostBufferSec     int       `json:"post_buffer_sec"`    // event-mode tail
 	RecordingTriggers string    `json:"recording_triggers"` // comma-separated: "motion,object"
 	RecordingSchedule string    `json:"recording_schedule"` // JSON {"days":[0-6],"start":"HH:MM","end":"HH:MM"}
-	CreatedAt         time.Time `json:"created_at"`
-	CamerasOnline     int       `json:"cameras_online"`
-	CamerasTotal      int       `json:"cameras_total"`
+	CreatedAt         time.Time  `json:"created_at"`
+	CamerasOnline     int        `json:"cameras_online"`
+	CamerasTotal      int        `json:"cameras_total"`
+	// DeletedAt is set by SoftDeleteSite; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 	// Frontend SiteSummary fields — populated with defaults
 	ComplianceScore int    `json:"compliance_score"`
 	OpenIncidents   int    `json:"open_incidents"`

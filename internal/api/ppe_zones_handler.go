@@ -65,9 +65,19 @@ func HandleListPPEZones(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		zones, err := db.ListPPEZones(r.Context(), cameraID, claims.OrganizationID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		var zones []database.PPEZone
+		var listErr error
+		if r.URL.Query().Get("include_deleted") == "true" {
+			if claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			zones, listErr = db.ListPPEZonesIncludeDeleted(r.Context(), cameraID, claims.OrganizationID)
+		} else {
+			zones, listErr = db.ListPPEZones(r.Context(), cameraID, claims.OrganizationID)
+		}
+		if listErr != nil {
+			http.Error(w, listErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, zones)
@@ -183,9 +193,9 @@ func HandleUpdatePPEZone(db *database.DB) http.HandlerFunc {
 	}
 }
 
-// HandleDeletePPEZone deletes a PPE zone. Returns 409 if compliance rules
-// still reference it (per scope plan D1 — enforce pre-check so operators
-// don't lose rules unexpectedly, even though the FK is ON DELETE CASCADE).
+// HandleDeletePPEZone soft-deletes a PPE zone and its compliance rules in one
+// atomic transaction. The former 409 guard (block if rules exist) is removed —
+// soft-delete preserves the rules' history, so there is no risk of data loss.
 // DELETE /api/cameras/{id}/ppe-zones/{zoneId}
 func HandleDeletePPEZone(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -204,19 +214,7 @@ func HandleDeletePPEZone(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		// Pre-check: are there compliance rules still referencing this zone?
-		n, err := db.CountComplianceRulesForZone(r.Context(), zoneID, claims.OrganizationID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if n > 0 {
-			msg := fmt.Sprintf("zone has %d active compliance rule(s) — delete rules first", n)
-			http.Error(w, msg, http.StatusConflict)
-			return
-		}
-
-		affected, err := db.DeletePPEZone(r.Context(), zoneID, claims.OrganizationID)
+		affected, err := db.SoftDeletePPEZone(r.Context(), zoneID, claims.OrganizationID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -255,9 +253,19 @@ func HandleListComplianceRules(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		rules, err := db.ListComplianceRules(r.Context(), cameraID, claims.OrganizationID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		var rules []database.ComplianceRule
+		var listErr error
+		if r.URL.Query().Get("include_deleted") == "true" {
+			if claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			rules, listErr = db.ListComplianceRulesIncludeDeleted(r.Context(), cameraID, claims.OrganizationID)
+		} else {
+			rules, listErr = db.ListComplianceRules(r.Context(), cameraID, claims.OrganizationID)
+		}
+		if listErr != nil {
+			http.Error(w, listErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, rules)
@@ -414,7 +422,7 @@ func HandleDeleteComplianceRule(db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		affected, err := db.DeleteComplianceRule(r.Context(), ruleID, claims.OrganizationID)
+		affected, err := db.SoftDeleteComplianceRule(r.Context(), ruleID, claims.OrganizationID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
