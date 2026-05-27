@@ -94,6 +94,19 @@ echo -n "$SEED_HEX" | xxd -r -p | \
 
 Alternatively, use `cmd/verify-manifest` in probe mode to print the public key.
 
+### Active production keys
+
+Public keys are safe to publish — that is the point of asymmetric signing. Record
+each deployment's active public key here so third parties can verify manifests
+without contacting us. The private key seed stays only in the deployment's `.env`.
+
+| Deployment | key_id (fingerprint) | ed25519 public key (hex) | Active since |
+|---|---|---|---|
+| fred (192.168.103.49) | `e5eec76e4f2bfa02` | `0bc75019f230fda0a7a9ed7e4745e94c301bd4cb6e445b814534f9d46072cccd` | 2026-05-27 |
+
+To verify a fred-signed manifest offline:
+`cmd/verify-manifest -pubkey 0bc75019f230fda0a7a9ed7e4745e94c301bd4cb6e445b814534f9d46072cccd -manifest manifest.json`
+
 ### Key rotation
 
 1. Generate a new seed with `openssl rand -hex 32`.
