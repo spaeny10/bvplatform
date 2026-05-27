@@ -2,9 +2,9 @@
 
 ## Infrastructure
 
-- [ ] P3-INFRA-05 — Soft-delete pattern (IN PROGRESS — code complete, pending deploy to fred)
-      Branch: feat/p3-infra-05-soft-delete (off 4ff6e13 feat/p3-infra-04-id-standardization)
-      Migration: 0028_soft_delete.sql — ALTER TABLE ADD COLUMN deleted_at TIMESTAMPTZ on 8 tables; 8 _active views; 2 partial unique indexes (cameras.sense_webhook_token, users.username)
+- [x] P3-INFRA-05 — Soft-delete pattern
+      Commits: 341396d + 5f783cf (feat/p3-infra-05-soft-delete, off 4ff6e13)
+      Migration: 0028_soft_delete.sql — ALTER TABLE ADD COLUMN deleted_at TIMESTAMPTZ on 8 tables; 8 _active views; 2 partial unique indexes (cameras.sense_webhook_token, users.username). Applied on fred 2026-05-27 in 308ms; goose now at v28.
       Tables: cameras, sites, organizations, users, speakers, ppe_zones, compliance_rules, vca_rules
       Excluded: audit_log, playback_audits, deterrence_audits, evidence_manifests, segments, events, person_track_frames, ai_runtime_metrics, active_alarms, incidents, security_events, company_users
       Cascade: camera→ppe_zones+compliance_rules+vca_rules (1 tx); site→cameras+children (1 tx); org→sites sequential (each in own tx); ppe_zone→compliance_rules (1 tx)
@@ -14,6 +14,8 @@
       API: all DELETE handlers → SoftDeleteX; admin-only ?include_deleted=true on all list endpoints; HandleDeletePPEZone 409 guard removed
       CI lint: internal/database/soft_delete_convention_test.go (3 checks: required have deleted_at, excluded don't, _active views exist)
       Doc: docs/soft-delete.md
+      Image: sha256:094771fe1809722b31de593934b1ff7d31fd782339d438271ed705b2df0bf203 (fred, 2026-05-27)
+      Verified: /api/health 200, cameras_active filters soft-deleted rows, cameras base table retains rows, partial unique indexes confirmed via pg_indexes
 
 - [x] P3-INFRA-04 — ID standardization completion (Interpretation B: TEXT PKs grandfathered, not converted)
       Commit: 493cff6 (feat/p3-infra-04-id-standardization); first commit 92857fa
