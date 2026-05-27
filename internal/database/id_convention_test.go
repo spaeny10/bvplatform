@@ -110,6 +110,9 @@ var textIDColumnAllowlist = map[string]string{
 	"device_assignments.site_id":            "→ sites.id (TEXT)",
 	"shift_handoffs.from_operator_id":       "→ operators.id (TEXT)",
 	"shift_handoffs.to_operator_id":         "→ operators.id (TEXT)",
+	"vlm_label_jobs.site_id":                "→ sites.id (TEXT)",
+	"vlm_label_jobs.organization_id":        "→ organizations.id (TEXT)",
+	"vlm_label_jobs.alarm_id":               "→ active_alarms.id (TEXT)",
 	// Polymorphic / non-record ids
 	"audit_log.target_id":          "polymorphic audit target (any entity type)",
 	"evidence_manifests.artifact_id": "polymorphic (report_id / event_id / share token)",
