@@ -118,16 +118,18 @@ func TestIntegration_CameraCRUD_EncryptsPasswordAtRest(t *testing.T) {
 		t.Errorf("expected ciphertext to start with %q, got %q (truncated)", crypto.CredentialPrefix, raw[:min(20, len(raw))])
 	}
 
-	// Delete cleans up.
-	if err := db.DeleteCamera(ctx, cam.ID); err != nil {
-		t.Fatalf("DeleteCamera: %v", err)
+	// Soft-delete cleans up. GetCamera reads cameras_active (filters
+	// deleted_at IS NULL) so a soft-deleted camera reads as gone.
+	// (Hard DeleteCamera was removed by P3-INFRA-05 soft-delete.)
+	if err := db.SoftDeleteCamera(ctx, cam.ID); err != nil {
+		t.Fatalf("SoftDeleteCamera: %v", err)
 	}
 	gone, err := db.GetCamera(ctx, cam.ID)
 	if err != nil {
 		t.Fatalf("GetCamera after delete: %v", err)
 	}
 	if gone != nil {
-		t.Errorf("camera %s still present after delete", cam.ID)
+		t.Errorf("camera %s still present after soft-delete", cam.ID)
 	}
 }
 
