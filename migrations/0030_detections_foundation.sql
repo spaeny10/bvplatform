@@ -160,9 +160,15 @@ CREATE TABLE IF NOT EXISTS detections (
     model_version_id UUID        NOT NULL REFERENCES model_versions(id) ON DELETE RESTRICT,
     analysis_run_id  UUID        NOT NULL REFERENCES analysis_runs(id)  ON DELETE RESTRICT,
 
-    segment_id       BIGINT               REFERENCES segments(id) ON DELETE SET NULL,
-    -- SET NULL: segment retention may eventually remove the segment;
-    -- the detection record survives as a historical fact.
+    segment_id       BIGINT,
+    -- Evidence anchor: segments.id that produced this detection.
+    -- No FK constraint: segments is a TimescaleDB hypertable and does
+    -- not carry an explicit PRIMARY KEY constraint in the schema (PG
+    -- requires a unique constraint on the referenced column for FK
+    -- declarations, which hypertable partitioning removes). The value
+    -- is stored as a plain BIGINT; application code enforces lineage.
+    -- When a segment is purged via the retention sweep, the value
+    -- becomes orphaned but the detection record survives (historical fact).
 
     frame_offset_ms  BIGINT,
     -- ms offset within the segment. NULL = sustained violation (time range).

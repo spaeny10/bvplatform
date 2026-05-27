@@ -94,7 +94,7 @@ type Detection struct {
 	VCARuleID       *uuid.UUID      `json:"vca_rule_id,omitempty"`
 	ModelVersionID  uuid.UUID       `json:"model_version_id"`
 	AnalysisRunID   uuid.UUID       `json:"analysis_run_id"`
-	SegmentID       *int64          `json:"segment_id,omitempty"`
+	SegmentID       *int64          `json:"segment_id,omitempty"` // no DB FK (segments is a hypertable with no PK constraint)
 	FrameOffsetMs   *int64          `json:"frame_offset_ms,omitempty"`
 	Source          string          `json:"source"` // live|reanalysis
 	Supersedes      *uuid.UUID      `json:"supersedes,omitempty"`
