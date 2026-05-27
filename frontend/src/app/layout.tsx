@@ -25,7 +25,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return (
         <html lang="en" className={allFontClasses} style={{ [brandCssVarKey()]: 'initial' } as React.CSSProperties}>
             <head>
-                <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+                {/* viewport-fit=cover is required for env(safe-area-inset-*) to
+                    resolve correctly on notched iPhones (iPhone X and later). Without
+                    it, safe-area-inset-bottom always reads as 0 and the bottom-tab nav
+                    overlaps the home-indicator bar. */}
+                <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
                 {/* Theme-color matches the dark operator shell — the portal overrides with its warm palette via portal.css. */}
                 <meta name="theme-color" content="#0A0C10" />
                 {/* Brand CSS vars — read by globals.css and all scoped stylesheets.

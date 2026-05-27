@@ -10,11 +10,11 @@ import { BRAND } from '@/lib/branding';
 // and admin users can also reach it via the same URL since the route
 // guard on /portal already covers all monitoring-side roles.
 //
-// The 2-channel × 2-event matrix is rendered as four toggle cards
-// rather than a table — easier to scan on mobile, and each card has
-// room for the "minimum severity" select that's specific to email
-// alarm-disposition (the most-common knob a customer actually
-// changes).
+// Token usage: all colors/surfaces come from the portal warm-light
+// CSS custom properties (--bg, --bg-card, --border, --text-primary,
+// --text-secondary, --text-dim, --accent, --green, --shadow-sm, etc.)
+// defined in portal.css on .portal-shell. No operator-dark tokens
+// (--sg-*) are used here — those belong to the operator console.
 
 interface Subscription {
   id?: number;
@@ -119,22 +119,25 @@ export default function NotificationPrefsPage() {
   };
 
   return (
+    // Outer shell uses portal warm-light palette. Must be inside
+    // .portal-shell to pick up the CSS custom properties from portal.css.
     <div style={{
       minHeight: '100vh',
-      background: 'var(--sg-bg-base, #0c1015)',
-      color: 'var(--sg-text-primary, #E4E8F0)',
+      background: 'var(--bg, #f5f0e8)',
+      color: 'var(--text-primary, #2a2520)',
       padding: 24,
+      fontFamily: "var(--font-family, 'Inter', sans-serif)",
     }}>
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <div style={{ marginBottom: 8, fontSize: 12 }}>
-          <Link href="/portal" style={{ color: 'var(--sg-text-dim, #9CA3AF)', textDecoration: 'none' }}>
+          <Link href="/portal" style={{ color: 'var(--accent, #c84b2f)', textDecoration: 'none' }}>
             ← Back to portal
           </Link>
         </div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px' }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', color: 'var(--text-primary, #2a2520)' }}>
           Notification preferences
         </h1>
-        <p style={{ fontSize: 13, color: 'var(--sg-text-dim, #9CA3AF)', margin: '0 0 24px', lineHeight: 1.5 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-secondary, #6b6560)', margin: '0 0 24px', lineHeight: 1.5 }}>
           Choose how {BRAND.name} reaches you when something happens at your sites.
           Changes save automatically.
         </p>
@@ -142,26 +145,26 @@ export default function NotificationPrefsPage() {
         {err && (
           <div style={{
             padding: '10px 14px', marginBottom: 16,
-            background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)',
-            borderRadius: 4, color: '#EF9B8B', fontSize: 12,
+            background: 'rgba(200,75,47,0.06)', border: '1px solid rgba(200,75,47,0.2)',
+            borderRadius: 6, color: 'var(--accent, #c84b2f)', fontSize: 12,
           }}>
-            ⚠ {err}
+            {err}
           </div>
         )}
 
         {savedAt > 0 && Date.now() - savedAt < 3000 && (
           <div style={{
             padding: '8px 14px', marginBottom: 16,
-            background: 'rgba(132,204,22,0.08)', border: '1px solid rgba(132,204,22,0.25)',
-            borderRadius: 4, color: '#A3E635', fontSize: 12,
+            background: 'rgba(26,122,74,0.06)', border: '1px solid rgba(26,122,74,0.2)',
+            borderRadius: 6, color: 'var(--green, #1a7a4a)', fontSize: 12,
           }}>
-            ✓ Saved
+            Saved
           </div>
         )}
 
         {subs === null ? (
-          <div style={{ padding: 32, textAlign: 'center', color: 'var(--sg-text-dim, #9CA3AF)' }}>
-            Loading…
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-dim, #a09990)' }}>
+            Loading...
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -174,43 +177,65 @@ export default function NotificationPrefsPage() {
                   key={key}
                   style={{
                     padding: 16,
-                    background: 'var(--sg-surface-1, rgba(255,255,255,0.02))',
-                    border: '1px solid var(--sg-border-subtle, rgba(255,255,255,0.06))',
+                    background: 'var(--bg-card, #ffffff)',
+                    border: '1px solid var(--border, #e0dbd0)',
                     borderRadius: 8,
+                    boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.05))',
                     opacity: saving ? 0.65 : 1,
+                    transition: 'opacity 0.15s',
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: row.hasSeverity ? 12 : 0 }}>
                     <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                      <div style={{
+                        fontSize: 14, fontWeight: 600, marginBottom: 4,
+                        color: 'var(--text-primary, #2a2520)',
+                      }}>
                         {row.title}
                       </div>
-                      <div style={{ fontSize: 12, color: 'var(--sg-text-dim, #9CA3AF)', lineHeight: 1.5 }}>
+                      <div style={{
+                        fontSize: 12, color: 'var(--text-secondary, #6b6560)', lineHeight: 1.5,
+                      }}>
                         {row.subtitle}
                       </div>
                     </div>
+                    {/* Toggle button meets ≥44×44px touch target requirement */}
                     <button
                       type="button"
                       onClick={() => saveSub({ ...sub, enabled: !sub.enabled })}
                       disabled={saving}
                       style={{
                         position: 'relative',
-                        width: 44, height: 24, flexShrink: 0,
-                        borderRadius: 12, border: 'none',
-                        background: sub.enabled ? '#84CC16' : 'rgba(255,255,255,0.12)',
+                        /* Invisible hit area expanded to 44×44 while track stays 44×24 */
+                        minWidth: 44, minHeight: 44,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        flexShrink: 0,
+                        border: 'none',
+                        background: 'transparent',
+                        padding: 0,
                         cursor: saving ? 'wait' : 'pointer',
-                        transition: 'background 0.15s',
                       }}
                       aria-pressed={sub.enabled}
                       aria-label={`${sub.enabled ? 'Disable' : 'Enable'} ${row.title.toLowerCase()}`}
                     >
+                      {/* Visible track */}
                       <span style={{
-                        position: 'absolute', top: 2,
-                        left: sub.enabled ? 22 : 2,
-                        width: 20, height: 20, borderRadius: 10,
-                        background: '#fff',
-                        transition: 'left 0.15s',
-                      }} />
+                        display: 'block',
+                        width: 44, height: 24,
+                        borderRadius: 12,
+                        background: sub.enabled ? 'var(--green, #1a7a4a)' : 'var(--border, #e0dbd0)',
+                        transition: 'background 0.15s',
+                        position: 'relative',
+                      }}>
+                        <span style={{
+                          position: 'absolute', top: 2,
+                          left: sub.enabled ? 22 : 2,
+                          width: 20, height: 20, borderRadius: 10,
+                          background: '#fff',
+                          boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+                          transition: 'left 0.15s',
+                        }} />
+                      </span>
                     </button>
                   </div>
 
@@ -218,10 +243,11 @@ export default function NotificationPrefsPage() {
                     <div style={{ marginLeft: 0 }}>
                       <label style={{
                         display: 'block', fontSize: 11, fontWeight: 600,
-                        color: 'var(--sg-text-dim, #9CA3AF)',
+                        color: 'var(--text-dim, #a09990)',
                         marginBottom: 6, letterSpacing: 0.4,
+                        textTransform: 'uppercase',
                       }}>
-                        MINIMUM SEVERITY
+                        Minimum severity
                       </label>
                       <select
                         value={sub.severity_min}
@@ -229,11 +255,12 @@ export default function NotificationPrefsPage() {
                         disabled={saving}
                         style={{
                           width: '100%', maxWidth: 320,
-                          padding: '6px 10px', fontSize: 12,
-                          background: 'var(--sg-surface-2, rgba(255,255,255,0.04))',
-                          border: '1px solid var(--sg-border-subtle, rgba(255,255,255,0.10))',
-                          borderRadius: 4,
-                          color: 'var(--sg-text-primary, #E4E8F0)',
+                          /* Touch target height ≥44px for mobile */
+                          padding: '10px 10px', fontSize: 13, minHeight: 44,
+                          background: 'var(--bg-warm, #faf9f5)',
+                          border: '1px solid var(--border, #e0dbd0)',
+                          borderRadius: 6,
+                          color: 'var(--text-primary, #2a2520)',
                           fontFamily: 'inherit',
                         }}
                       >
@@ -251,8 +278,8 @@ export default function NotificationPrefsPage() {
 
         <div style={{
           marginTop: 32, paddingTop: 16,
-          borderTop: '1px solid var(--sg-border-subtle, rgba(255,255,255,0.06))',
-          fontSize: 11, color: 'var(--sg-text-dim, #6B7280)', lineHeight: 1.5,
+          borderTop: '1px solid var(--border, #e0dbd0)',
+          fontSize: 11, color: 'var(--text-dim, #a09990)', lineHeight: 1.5,
         }}>
           {BRAND.name} sends notifications only for events at sites your account
           has access to. SMS notifications use the phone number on your profile.

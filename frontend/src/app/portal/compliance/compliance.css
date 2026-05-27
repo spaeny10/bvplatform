@@ -252,6 +252,25 @@
   100% { background-position: -200% 0; }
 }
 
+/* ── REDUCED MOTION ── Shimmer skeletons use a background-position
+   animation; the period tab / download-button transitions are also
+   neutralized. Skeleton elements fall back to a static muted fill
+   that still distinguishes them from real content. */
+@media (prefers-reduced-motion: reduce) {
+  .compliance-skeleton-card,
+  .compliance-skeleton-chart,
+  .compliance-skeleton-row {
+    animation: none;
+    background: var(--surface-2, #f0ece6);
+    background-size: unset;
+  }
+
+  .compliance-period-tab,
+  .compliance-download-btn {
+    transition: none;
+  }
+}
+
 /* ── Empty state ────────────────────────────────────────────── */
 
 .compliance-empty {

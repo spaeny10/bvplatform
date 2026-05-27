@@ -3,7 +3,7 @@
 ## Infrastructure
 
 - [x] P3-INFRA-08 — Weekly digest email
-      Commit: TBD (feat/p3-infra-08-weekly-digest, off 73e7644)
+      Commit: 13d1e9e (feat/p3-infra-08-weekly-digest, off 73e7644)
       Migration: 0029_digest_sends.sql — `digest_sends` table with UNIQUE(org_id, scope, period_start) durable idempotency. Goose v29.
       Tests: 7 notify unit tests (HTML content/no-flex/multipart/stub-mode/empty-recipients/send-error-isolation) + 7 database integration tests (idempotency/scope-isolation/different-weeks/MatchWeeklyDigestRecipients/cross-tenant-isolation/no-activity-skip/soft-delete-exclusion). All pass on fred.
       New files: migrations/0029_digest_sends.sql, internal/database/digest_sends.go, internal/notify/dispatcher_weekly_digest_test.go, internal/database/digest_sends_test.go

@@ -428,6 +428,39 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* ── REDUCED MOTION ── Users who prefer reduced motion (system
+   accessibility setting) get instant opacity fades instead of
+   translate animations. Transitions on hover/active states are
+   also neutralized so interactive feedback stays but nothing
+   slides or bounces. */
+@media (prefers-reduced-motion: reduce) {
+  .portal-summary-card,
+  .portal-two-col,
+  .portal-table-section {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .portal-summary-card:hover {
+    transform: none;
+    transition: none;
+  }
+
+  .portal-bar-segment,
+  .portal-org-selector,
+  .portal-nav-item,
+  .portal-user-row,
+  .portal-incident-item,
+  .portal-btn,
+  .portal-btn-ghost,
+  .portal-btn-primary,
+  .portal-card,
+  .portal-report-btn {
+    transition: none;
+  }
+}
+
 /* ── TWO COLUMN LAYOUT FOR CHART + INCIDENTS ── */
 .portal-two-col {
   display: grid;
