@@ -3,7 +3,7 @@
 ## Infrastructure
 
 - [x] P3-INFRA-04 — ID standardization completion (Interpretation B: TEXT PKs grandfathered, not converted)
-      Commit: TBD (feat/p3-infra-04-id-standardization)
+      Commit: 92857fa (feat/p3-infra-04-id-standardization)
       Decision: Interpretation B locked 2026-05-27. Live fred org IDs are human-readable slugs (co-bv-test, T5-903). Interpretation A (convert TEXT PKs to UUID) rejected — slug-remap would break API contract + 15 tables + URLs for zero benefit.
       Schema change: migration 0027_vlm_label_jobs_camera_fk.sql — vlm_label_jobs.camera_id TEXT→UUID + FOREIGN KEY REFERENCES cameras(id) ON DELETE SET NULL. Pre-flight on fred: 5 rows, all valid UUIDs. USING cast succeeded.
       Go model change: VLMLabelJob.CameraID string→uuid.UUID; EnqueueLabelJob signature updated; cmd/server goroutine closure updated.
