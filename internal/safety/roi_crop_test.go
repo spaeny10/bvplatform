@@ -55,11 +55,12 @@ func decodeDims(t *testing.T, jpegData []byte) (int, int) {
 	return b.Dx(), b.Dy()
 }
 
-// TestCropToROI_Normal crops the center 50% of a 640×480 frame.
-// bbox (0.25, 0.25, 0.75, 0.75) → pixel (160, 120, 320, 240)
-// padding 0.25: larger dim = 160, pad = 40
-// padded: (120, 80, 360, 280) — all within frame bounds
-// expected output size: 240×200
+// TestCropToROI_Normal crops the center half of a 640×480 frame.
+// bbox (0.25, 0.25, 0.75, 0.75) → pixel (160, 120, 480, 360)
+// bboxW=320, bboxH=240, larger=320
+// padding 0.25: pad = round(320 * 0.25) = 80
+// padded: x1=max(0,80)=80, y1=max(0,40)=40, x2=min(640,560)=560, y2=min(480,440)=440
+// expected output size: W=480, H=400
 func TestCropToROI_Normal(t *testing.T) {
 	src := makeTestJPEG(t, 640, 480)
 	bbox := ai.BBox{X1: 0.25, Y1: 0.25, X2: 0.75, Y2: 0.75}
@@ -71,11 +72,11 @@ func TestCropToROI_Normal(t *testing.T) {
 		t.Fatal("expected non-nil output")
 	}
 	w, h := decodeDims(t, out)
-	// bbox pixel: x1=160 y1=120 x2=320 y2=240 → W=160 H=120
-	// pad = round(160 * 0.25) = 40
-	// padded: x1=120 y1=80 x2=360 y2=280 → W=240 H=200
-	if w != 240 || h != 200 {
-		t.Errorf("expected 240×200, got %d×%d", w, h)
+	// bbox pixel: x1=160 y1=120 x2=480 y2=360 → W=320 H=240
+	// pad = round(320 * 0.25) = 80
+	// padded: x1=80 y1=40 x2=560 y2=440 → W=480 H=400
+	if w != 480 || h != 400 {
+		t.Errorf("expected 480×400, got %d×%d", w, h)
 	}
 }
 
