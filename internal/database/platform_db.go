@@ -184,19 +184,6 @@ func (db *DB) SoftDeleteOrganization(ctx context.Context, id string) error {
 	return nil
 }
 
-	// Soft-delete the org itself.
-	tag, err := tx.Exec(ctx,
-		`UPDATE organizations SET deleted_at=$1 WHERE id=$2 AND deleted_at IS NULL`, now, id)
-	if err != nil {
-		return fmt.Errorf("SoftDeleteOrganization: %w", err)
-	}
-	if tag.RowsAffected() == 0 {
-		return nil // already deleted or not found
-	}
-
-	return tx.Commit(ctx)
-}
-
 // ═══════════════════════════════════════════════════════════════
 // Site CRUD
 // ═══════════════════════════════════════════════════════════════
