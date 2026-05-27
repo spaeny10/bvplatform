@@ -217,12 +217,13 @@ SELECT create_hypertable('detections', 'detected_at',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE);
 
--- Post-hypertable unique index on id for application-level lookups.
--- A plain UNIQUE INDEX (not a PK) is acceptable in TimescaleDB as long
--- as the partition key (detected_at) is not required in the uniqueness
--- constraint for the query patterns we need. Lookups by id are always
--- accompanied by the insert timestamp in the application layer.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_det_id
+-- Non-unique index on id for GetDetection point lookups.
+-- TimescaleDB requires any UNIQUE index on a hypertable to include the
+-- partition key (detected_at), so we cannot declare a standalone UNIQUE
+-- index on id alone (SQLSTATE TS103). A non-unique index covers the
+-- GetDetection(id, org) query path; uniqueness is enforced at the
+-- application layer (gen_random_uuid() collision probability is negligible).
+CREATE INDEX IF NOT EXISTS idx_det_id
     ON detections (id);
 
 -- Append-only trigger: reuse the ironsight_prevent_mutation() function
@@ -324,6 +325,9 @@ DROP TABLE IF EXISTS detection_reviews;
 -- policies and compression jobs — no explicit remove_retention_policy call
 -- needed (and the named-arg form is not in all TimescaleDB versions).
 DROP TRIGGER IF EXISTS detections_append_only ON detections;
+-- DROP INDEX statements before DROP TABLE are redundant for hypertables
+-- (the hypertable drop cascades all chunk indexes) but are included for
+-- documentation clarity on what was created.
 DROP INDEX IF EXISTS idx_det_site_domain_detected;
 DROP INDEX IF EXISTS idx_det_supersedes;
 DROP INDEX IF EXISTS idx_det_analysis_run;
