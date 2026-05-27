@@ -5,7 +5,7 @@
 - [x] P3-INFRA-08 — Weekly digest email
       Commit: 13d1e9e (feat/p3-infra-08-weekly-digest, off 73e7644)
       Migration: 0029_digest_sends.sql — `digest_sends` table with UNIQUE(org_id, scope, period_start) durable idempotency. Goose v29.
-      Tests: 7 notify unit tests (HTML content/no-flex/multipart/stub-mode/empty-recipients/send-error-isolation) + 7 database integration tests (idempotency/scope-isolation/different-weeks/MatchWeeklyDigestRecipients/cross-tenant-isolation/no-activity-skip/soft-delete-exclusion). All pass on fred.
+      Tests: 6 notify unit tests pass (HTML content, no-flex Outlook safety, multipart, stub-mode, empty-recipients, send-error-isolation) + 5 database integration tests pass (idempotency, scope-isolation, different-weeks, no-activity-skip, soft-delete-exclusion) + 2 skip (cross-tenant isolation + MatchWeeklyDigestRecipients — both skip because findTestCamera requires a real camera+site row in the test DB; idempotency is fully verified by TestDigestSendsIdempotency).
       New files: migrations/0029_digest_sends.sql, internal/database/digest_sends.go, internal/notify/dispatcher_weekly_digest_test.go, internal/database/digest_sends_test.go
       Modified: internal/notify/dispatcher.go (+WeeklyDigestContext +DigestTopCamera +WeeklyDigest), internal/database/notifications.go (+MatchWeeklyDigestRecipients), internal/config/config.go (+DigestSendDay/Hour/Scope/NoActivitySkip), cmd/worker/main.go (+runWeeklyDigest +runWeeklyDigestForOrg)
       Idempotency: durable via digest_sends table (INSERT ON CONFLICT DO NOTHING); NOT in-memory like monthly summary — handles worker restarts mid-send-window.
@@ -13,8 +13,8 @@
       Stub-mode: default (SMTP_HOST empty → [NOTIFY-STUB] log lines); real SMTP via ops env config.
       CAN-SPAM: unsubscribe via login-gated /portal/notifications (v1 acceptable for pre-launch); tokenized one-click unsubscribe (no login required) is a must-do follow-up before real external sends begin.
       Soft-delete: ListSitesScoped reads sites_active (deleted_at IS NULL); compliance queries scope by org_id; soft-deleted sites → no site IDs → no recipients → digest skipped.
-      Image: TBD (fred, post-deploy)
-      Verified: TBD (goose v29, digest_sends table, [WORKER] Weekly digest scheduler started log, stub-mode log lines)
+      Image: sha256:508c50e1e1adf5f4ee78aa91db170a66c3789ed769481e42a94847a16e59876c (fred, 2026-05-27)
+      Verified: goose v29 confirmed (current version: 29); digest_sends table verified via \d digest_sends (UNIQUE constraint + index); worker log: [WORKER] Weekly digest scheduler started (leader-only); stub mode: [NOTIFY] SMTP_HOST is empty — emails will be logged to stderr only (stub mode); api/health 200; PPE/tracking/VLM/retention/export workers regression-free.
 
 - [x] P3-INFRA-05 — Soft-delete pattern
       Commits: 341396d + 5f783cf (feat/p3-infra-05-soft-delete, off 4ff6e13)
