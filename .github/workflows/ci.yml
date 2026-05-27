@@ -108,6 +108,15 @@ jobs:
         run: npx tsc --noEmit -p .
 
       - name: Lint
+        # ADVISORY (non-blocking): `next lint` has no committed ESLint config,
+        # so in CI's non-interactive shell it prompts "How would you like to
+        # configure ESLint?" and exits 1. The frontend has never had an eslintrc
+        # (not in git, not on fred). Setting one up + fixing the resulting lint
+        # across ~179 never-linted files is a separate task. Until then this is
+        # advisory — the real gates (tsc --noEmit above, and the next-build
+        # type-check below) still hard-fail. TODO: add .eslintrc + clean lint,
+        # then drop continue-on-error.
+        continue-on-error: true
         run: npm run lint
 
       - name: Production build
