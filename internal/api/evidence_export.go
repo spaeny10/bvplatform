@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -295,6 +296,30 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 		}
 		if err := sw.Sign(&manifest, func(b *evidence.SignatureBlock) { manifest.Signature = b }, signingKey); err != nil {
 			log.Printf("[EVIDENCE] sign failed for event %d: %v", eventID, err)
+		}
+
+		// P3-INFRA-03: write a clip_export chain-of-custody manifest.
+		// Per decision 2: artifact_sha256 = SHA-256 of the event.json bytes.
+		// We re-serialize the (now-populated) manifest to get those exact bytes.
+		if eventJSONBytes, marshalErr := json.MarshalIndent(&manifest, "", "  "); marshalErr == nil {
+			createdByUUID, _ := uuid.Parse(claims.UserID)
+			var segIDsForManifest []string
+			if segID != nil {
+				segIDsForManifest = []string{strconv.FormatInt(*segID, 10)}
+			}
+			go writeManifest(
+				context.Background(), db, cfg,
+				"clip_export",
+				strconv.FormatInt(eventID, 10),
+				claims.OrganizationID,
+				createdByUUID,
+				[]string{cameraID},
+				segIDsForManifest,
+				nil, nil, // time range not available at this call site
+				nil,      // source_segment_hashes: no stored hash on segments table
+				eventJSONBytes,
+				uuid.Nil,
+			)
 		}
 
 		// Audit trail: evidence export is a high-value action; log it.

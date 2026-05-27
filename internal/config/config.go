@@ -120,6 +120,42 @@ type Config struct {
 	//   openssl rand -hex 32
 	EvidenceSigningKey string
 
+	// EvidenceED25519PrivateKey is a hex-encoded ed25519 private key used to
+	// sign chain-of-custody manifests (P3-INFRA-03).  Unlike the HMAC
+	// EvidenceSigningKey, ed25519 signatures are asymmetric: anyone with the
+	// corresponding PUBLIC key can verify a manifest independently — no shared
+	// secret required.  This is the "courtroom will verify findings" story.
+	//
+	// Format: 128 hex chars (64-byte full ed25519 private key), or 64 hex chars
+	// (32-byte seed from which the full key is derived).
+	//
+	// Generate a keypair:
+	//   openssl genpkey -algorithm ed25519 -out ed25519.pem
+	//   openssl pkey -in ed25519.pem -outform DER | tail -c 32 | xxd -p -c 64
+	//   # Or simply: openssl rand -hex 32   (generates seed; key derived at boot)
+	//
+	// When empty: manifest signing is skipped, manifests are still inserted
+	// (with empty signature/key_id) so the table exists but is not yet
+	// cryptographically anchored.  UL 827B deployments MUST set this.
+	//
+	// Env var: EVIDENCE_ED25519_PRIVATE_KEY
+	EvidenceED25519PrivateKey string
+
+	// EvidenceSigningKeyring is a JSON map of key_id → hex-encoded ed25519
+	// public key, used for key rotation.  After rotating to a new private key
+	// the OLD public key stays in the keyring so manifests signed with the
+	// old key remain verifiable.
+	//
+	// Format: JSON object, e.g.:
+	//   {"abcd1234ef567890":"<64-hex-public-key>","<new-id>":"<new-hex-pub>"}
+	//
+	// The active key's entry is added automatically at boot from
+	// EvidenceED25519PrivateKey; callers do not need to duplicate it here
+	// (though it's harmless to include it).
+	//
+	// Env var: EVIDENCE_SIGNING_KEYRING
+	EvidenceSigningKeyring string
+
 	// Branding — user-visible product name. Used in generated evidence
 	// bundles, log headers, and any other text the backend produces that
 	// reaches a customer. The frontend gets the same value from
@@ -323,6 +359,8 @@ func Load() *Config {
 		AllowedOrigins:      parseAllowedOrigins(getEnv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080")),
 		CookieSecure:        getEnvBool("COOKIE_SECURE", true),
 		EvidenceSigningKey:  getEnv("EVIDENCE_SIGNING_KEY", ""),
+		EvidenceED25519PrivateKey: getEnv("EVIDENCE_ED25519_PRIVATE_KEY", ""),
+		EvidenceSigningKeyring:    getEnv("EVIDENCE_SIGNING_KEYRING", ""),
 		SMTPHost:            getEnv("SMTP_HOST", ""),
 		SMTPPort:            getEnv("SMTP_PORT", "587"),
 		SMTPUser:            getEnv("SMTP_USER", ""),

@@ -134,6 +134,8 @@ Single-source reference for every environment variable the Go binaries read. Eve
 | Name | Type | Default | Required | Description |
 |---|---|---|---|---|
 | `EVIDENCE_SIGNING_KEY` | string | (empty) | no | Hex-encoded HMAC key signing evidence-export bundles. Missing or weak key disables signing — exports still succeed but ship without `SIGNATURE.txt`. For UL 827B / TMA-AVS-01 readiness this should be at least 32 bytes (64 hex chars); generate with `openssl rand -hex 32`. |
+| `EVIDENCE_ED25519_PRIVATE_KEY` | string | (empty) | no | Hex-encoded ed25519 private key for chain-of-custody manifest signing (P3-INFRA-03). Format: 128 hex chars (64-byte full key) or 64 hex chars (32-byte seed). Generate: `openssl rand -hex 32`. When empty manifests are inserted unsigned. UL 827B deployments **must** set this. See `docs/chain-of-custody.md`. |
+| `EVIDENCE_SIGNING_KEYRING` | JSON | (empty) | no | JSON object mapping `key_id → hex public key` for verifying manifests signed with older keys after rotation. Example: `{"abcd1234ef567890":"<64-hex-pub>"}`. The active key's entry is derived automatically from `EVIDENCE_ED25519_PRIVATE_KEY`. |
 
 ## Branding
 

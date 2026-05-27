@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
+	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/pdf"
 )
@@ -240,7 +244,12 @@ func HandleComplianceSummary(db *database.DB) http.HandlerFunc {
 // HandleComplianceReportPDF handles GET /api/v1/portal/compliance/report.pdf.
 // Generates and streams a server-rendered compliance PDF. report_id is assigned
 // server-side and returned in the X-Report-ID header for audit-trail linkage.
-func HandleComplianceReportPDF(db *database.DB) http.HandlerFunc {
+//
+// P3-INFRA-03: after rendering the PDF, a compliance_report chain-of-custody
+// manifest is signed with the ed25519 key and inserted into evidence_manifests.
+// The artifact_sha256 is SHA-256 of the PDF bytes.  Manifest errors are logged
+// but do NOT abort the HTTP response.
+func HandleComplianceReportPDF(db *database.DB, cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -413,6 +422,26 @@ func HandleComplianceReportPDF(db *database.DB) http.HandlerFunc {
 			http.Error(w, `{"error":"report generation failed"}`, http.StatusInternalServerError)
 			return
 		}
+
+		// P3-INFRA-03: write a compliance_report chain-of-custody manifest.
+		// artifact_sha256 = SHA-256(pdfBytes).  Best-effort: errors are logged
+		// but do not abort the PDF response.
+		// Use context.Background() because the goroutine outlives the request.
+		createdByUUID, _ := uuid.Parse(claims.UserID)
+		startCopy, endCopy := start, end // capture for goroutine
+		go writeManifest(
+			context.Background(), db, cfg,
+			"compliance_report",
+			reportID,
+			orgID,
+			createdByUUID,
+			nil, // camera_ids not relevant for a period-aggregate report
+			nil, // segment_ids not relevant
+			&startCopy, &endCopy,
+			nil, // source_segment_hashes
+			pdfBytes,
+			uuid.Nil,
+		)
 
 		filename := fmt.Sprintf("ironsight-compliance-%s-%s-%s.pdf",
 			r.URL.Query().Get("period"),

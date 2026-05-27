@@ -410,7 +410,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// Both are GET endpoints — CSRFMiddleware exempts GET/HEAD/OPTIONS.
 			// Tenant-scoped from JWT claims; SOC roles may spectate via ?org=.
 			r.Get("/portal/compliance/summary", HandleComplianceSummary(db))
-			r.Get("/portal/compliance/report.pdf", HandleComplianceReportPDF(db))
+			r.Get("/portal/compliance/report.pdf", HandleComplianceReportPDF(db, cfg))
+
+			// Chain-of-custody manifests (P3-INFRA-03)
+			// GET endpoints — CSRF-exempt per CSRFMiddleware GET exclusion.
+			r.Get("/evidence/manifests", HandleListManifests(db))
+			r.Get("/evidence/manifests/{id}", HandleGetManifest(db))
+			r.Get("/evidence/manifests/{id}/verify", HandleVerifyManifest(db, cfg))
 
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))

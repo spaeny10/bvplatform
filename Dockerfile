@@ -46,10 +46,11 @@ ENV CGO_ENABLED=0 \
 # and `docker compose run --rm api /app/migrate <subcommand>` for migration
 # inspection / rollback. Sharing the base layer keeps the registry footprint
 # low; the binaries are each ~10–25 MB compressed.
-RUN go build -trimpath -ldflags "-s -w" -o /out/server  ./cmd/server  && \
-    go build -trimpath -ldflags "-s -w" -o /out/worker  ./cmd/worker  && \
-    go build -trimpath -ldflags "-s -w" -o /out/seed    ./cmd/seed    && \
-    go build -trimpath -ldflags "-s -w" -o /out/migrate ./cmd/migrate
+RUN go build -trimpath -ldflags "-s -w" -o /out/server          ./cmd/server          && \
+    go build -trimpath -ldflags "-s -w" -o /out/worker          ./cmd/worker          && \
+    go build -trimpath -ldflags "-s -w" -o /out/seed            ./cmd/seed            && \
+    go build -trimpath -ldflags "-s -w" -o /out/migrate         ./cmd/migrate         && \
+    go build -trimpath -ldflags "-s -w" -o /out/verify-manifest ./cmd/verify-manifest
 
 # ── Stage 2: runtime ───────────────────────────────────────────
 # We pick bookworm-slim over distroless because the server shells out to
@@ -74,10 +75,11 @@ RUN groupadd --system --gid ${APP_GID} ironsight && \
     useradd  --system --uid ${APP_UID} --gid ironsight --home /app ironsight
 
 WORKDIR /app
-COPY --from=build --chown=ironsight:ironsight /out/server  /app/server
-COPY --from=build --chown=ironsight:ironsight /out/worker  /app/worker
-COPY --from=build --chown=ironsight:ironsight /out/seed    /app/seed
-COPY --from=build --chown=ironsight:ironsight /out/migrate /app/migrate
+COPY --from=build --chown=ironsight:ironsight /out/server          /app/server
+COPY --from=build --chown=ironsight:ironsight /out/worker          /app/worker
+COPY --from=build --chown=ironsight:ironsight /out/seed            /app/seed
+COPY --from=build --chown=ironsight:ironsight /out/migrate         /app/migrate
+COPY --from=build --chown=ironsight:ironsight /out/verify-manifest /app/verify-manifest
 
 # Storage paths live under /data by convention. docker-compose mounts a
 # named volume (or a host path) at /data; the Go server gets pointed at

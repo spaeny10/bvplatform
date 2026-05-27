@@ -165,7 +165,7 @@ func TestHandleComplianceReportPDF_Smoke(t *testing.T) {
 
 	orgID, _, _ := findDBTestCamera(t, realDB, ctx)
 
-	handler := HandleComplianceReportPDF(realDB)
+	handler := HandleComplianceReportPDF(realDB, nil) // nil cfg: manifest signing skipped in unit tests
 	claims := complianceClaimsFor(orgID, "customer")
 	w := httptest.NewRecorder()
 	r := complianceRequest(http.MethodGet, "/api/v1/portal/compliance/report.pdf?period=week", claims)
