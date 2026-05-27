@@ -289,6 +289,15 @@ type Config struct {
 	VLMWorkerMaxConcurrent    int
 	VLMWorkerMaxRetries       int
 	VLMWorkerMaxAgeHours      int
+
+	// VLMCropPaddingFactor controls how much context surrounds the detection
+	// bounding box when CropToROI crops the frame before sending to Qwen
+	// (P2-C-05). A value of 0.25 pads by 25% of max(bboxWidth, bboxHeight)
+	// in each direction, clamped to frame bounds. Accepted range: 0.0–1.0;
+	// values outside are silently clamped by CropToROI.
+	//
+	// Env var: VLM_CROP_PADDING_FACTOR  default 0.25
+	VLMCropPaddingFactor float64
 }
 
 // Load reads configuration from environment variables with defaults
@@ -413,6 +422,11 @@ func Load() *Config {
 		VLMWorkerMaxConcurrent:   getEnvInt("VLM_WORKER_MAX_CONCURRENT", 1),
 		VLMWorkerMaxRetries:      getEnvInt("VLM_WORKER_MAX_RETRIES", 3),
 		VLMWorkerMaxAgeHours:     getEnvInt("VLM_WORKER_MAX_AGE_HOURS", 24),
+
+		// VLM crop padding — P2-C-05.
+		// 0.25 = 25% of max(bboxW, bboxH) pad in each direction. Range 0–1;
+		// CropToROI silently clamps values outside this range.
+		VLMCropPaddingFactor: getEnvFloat64("VLM_CROP_PADDING_FACTOR", 0.25),
 	}
 	return cfg
 }

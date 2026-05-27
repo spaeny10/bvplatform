@@ -201,9 +201,26 @@ func (w *VLMWorker) processRow(ctx context.Context, row database.VLMQueueRow) {
 	}
 
 	// Pick the first bounding box for the VLM prompt; fall back to zero bbox.
+	// C-05: crops to BoundingBoxes[0]. If multi-bbox rows are introduced,
+	// update to use the specific violation's bbox.
 	var bboxNorm ai.BBox
 	if len(row.BoundingBoxes) > 0 {
 		bboxNorm = row.BoundingBoxes[0].BBoxNorm
+	}
+
+	// C-05: Crop the frame to the detection's ROI before sending to Qwen.
+	// A focused thumbnail reduces visual noise and speeds up inference.
+	// Falls back to the full frame on crop failure — VLM validation still
+	// proceeds; only Qwen transport/inference failure sets VerdictError.
+	paddingFactor := w.cfg.VLMCropPaddingFactor
+	if paddingFactor <= 0 {
+		paddingFactor = 0.25
+	}
+	if croppedBytes, cropErr := CropToROI(frameBytes, bboxNorm, paddingFactor); cropErr != nil {
+		log.Printf("[VLM] row %s: crop failed (%v), falling back to full frame", row.ID, cropErr)
+		// frameBytes is already set to the full frame; use it unchanged.
+	} else {
+		frameBytes = croppedBytes
 	}
 
 	result := ValidatePPECandidate(ctx, w.client,

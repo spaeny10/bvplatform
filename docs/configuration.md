@@ -70,6 +70,22 @@ Single-source reference for every environment variable the Go binaries read. Eve
 | `INDEXER_ENABLED` | bool-ish | `true` | no | Set to `0` or `false` (case-insensitive) to disable the background VLM indexer entirely. Any other non-empty value keeps it on. Narrower than the shared bool helper to preserve historical behaviour. |
 | `INDEXER_MIN_AGE_SEC` | int (seconds) | `90` | no | Minimum age in seconds before a closed recording segment becomes eligible for indexing. Guards against racing a still-writing file. |
 
+## PPE validation worker (P2-C-01 / P2-C-03)
+
+| Name | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `PPE_CONFIDENCE_THRESHOLD` | float64 | `0.50` | no | Minimum YOLO confidence score (0–1) for a PPE violation to create a `pending_review_queue` row. The sidecar applies its own threshold; this is the application-layer gate above it. |
+| `PPE_FRAME_RETENTION_DAYS` | int | `7` | no | Days to keep reviewed/dismissed PPE evidence frames (and their queue rows) before the retention sweep removes them. |
+| `PPE_FRAMES_DIR` | string | `/tank/data/ironsight/ppe-frames` | no | Root directory for PPE evidence JPEGs. Frames are stored as `<PPEFramesDir>/<org_id>/<YYYY-MM-DD>/<timestamp_ms>.jpg`. |
+| `PPE_POLL_INTERVAL_SEC` | int (seconds) | `30` | no | Cadence between snapshot polls per camera. |
+| `VLM_CROP_PADDING_FACTOR` | float64 | `0.25` | no | Padding factor for ROI cropping before sending PPE candidates to Qwen (P2-C-05). A value of `0.25` pads by 25% of `max(bboxWidth, bboxHeight)` in each direction, clamped to frame bounds. Accepted range `0.0`–`1.0`; values outside are silently clamped. Tune upward if Qwen crops are too tight (hard hat crown clipped); tune downward if adjacent workers introduce noise. |
+| `VLM_WORKER_BATCH_SIZE` | int | `5` | no | Rows processed per VLM poll cycle. |
+| `VLM_WORKER_ENABLED` | bool | `false` | no | Enables the async VLM validation loop. **Default false** — Qwen is not running on fred. Enable only after `GET <AI_QWEN_URL>/health` returns `{"degraded":false}`. While disabled, PPE candidates accumulate at `vlm_verdict='pending'` and remain visible in the human review queue. |
+| `VLM_WORKER_MAX_AGE_HOURS` | int | `24` | no | Pending rows older than this are aged out to `vlm_verdict='uncertain'` so the human queue doesn't fill during a Qwen outage. |
+| `VLM_WORKER_MAX_CONCURRENT` | int | `1` | no | Parallel Qwen calls per batch. Default 1 to avoid VRAM contention with the VLM indexer on the RTX 3070. |
+| `VLM_WORKER_MAX_RETRIES` | int | `3` | no | `vlm_attempts` cap. After this many errors a row stays at `vlm_verdict='error'` permanently. |
+| `VLM_WORKER_POLL_INTERVAL_SEC` | int (seconds) | `10` | no | Sleep between VLM poll cycles. |
+
 ## Worker
 
 | Name | Type | Default | Required | Description |

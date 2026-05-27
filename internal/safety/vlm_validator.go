@@ -124,18 +124,23 @@ func ValidatePPECandidate(
 // /analyze request. The prompt asks Qwen to embed a structured JSON verdict
 // in its description field because the sidecar endpoint is shared and we
 // cannot add a PPE-specific system prompt without modifying server.py.
-func buildPPEPrompt(class, label string, confidence float64, bbox ai.BBox) string {
+//
+// C-05: bbox coordinates are intentionally omitted from the prompt. The
+// image passed to Qwen is already a crop focused on the detection region;
+// citing frame-relative bbox coords in the prompt would be misleading (the
+// coordinates describe the original full frame, not the cropped image Qwen
+// sees). Qwen has full spatial context from the image itself.
+func buildPPEPrompt(class, label string, confidence float64, _ ai.BBox) string {
 	return fmt.Sprintf(
 		"PPE COMPLIANCE VALIDATION REQUEST.\n"+
-			"YOLO detected a missing PPE item: %s (class: %s, confidence: %.0f%%).\n"+
-			"Bounding box (normalized): x1=%.3f y1=%.3f x2=%.3f y2=%.3f.\n\n"+
-			"Is the person at this bounding box actually missing their %s?\n"+
+			"YOLO detected a missing PPE item: %s (class: %s, confidence: %.0f%%).\n\n"+
+			"The image shows the person in question cropped from the camera frame.\n"+
+			"Is this person actually missing their %s?\n"+
 			"Consider: partial occlusion, viewing angle, similar-looking objects, "+
 			"person partially out of frame.\n"+
 			"Respond ONLY with JSON: "+
 			`{"verdict":"confirmed"|"dismissed"|"uncertain","reasoning":"one sentence"}`,
 		label, class, confidence*100,
-		bbox.X1, bbox.Y1, bbox.X2, bbox.Y2,
 		label,
 	)
 }
