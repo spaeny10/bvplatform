@@ -1239,7 +1239,7 @@ func (db *DB) ListUsers(ctx context.Context) ([]UserPublic, error) {
 // Admin-only. The deleted_at field is populated for soft-deleted rows.
 func (db *DB) ListUsersIncludeDeleted(ctx context.Context) ([]UserPublic, error) {
 	rows, err := db.Pool.Query(ctx,
-		`SELECT id, username, role, display_name, email, phone, COALESCE(organization_id, ''), assigned_site_ids, created_at, updated_at
+		`SELECT id, username, role, display_name, email, phone, COALESCE(organization_id, ''), assigned_site_ids, created_at, updated_at, deleted_at
 		 FROM users ORDER BY role, username ASC`)
 	if err != nil {
 		return nil, err
@@ -1250,7 +1250,7 @@ func (db *DB) ListUsersIncludeDeleted(ctx context.Context) ([]UserPublic, error)
 	for rows.Next() {
 		var u UserPublic
 		var siteIDsJSON []byte
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &u.OrganizationID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &u.OrganizationID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(siteIDsJSON, &u.AssignedSiteIDs)

@@ -385,7 +385,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// these are the authenticated supervisor-only management
 			// endpoints. Audit middleware tags the actions as
 			// create_evidence_share / revoke_evidence_share.
-			r.Post("/incidents/{id}/share", HandleCreateEvidenceShare(db))
+			r.Post("/incidents/{id}/share", HandleCreateEvidenceShare(cfg, db))
 			r.Get("/incidents/{id}/shares", HandleListEvidenceShares(db))
 			r.Delete("/shares/{token}", HandleRevokeEvidenceShare(db))
 			r.Get("/incidents", HandleListIncidents(db))

@@ -297,6 +297,9 @@ type UserPublic struct {
 	AssignedSiteIDs []string  `json:"assigned_site_ids"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// DeletedAt is populated only by ListUsersIncludeDeleted (admin view);
+	// nil/omitted means the user is live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // UserCreate is the input DTO for creating a platform user

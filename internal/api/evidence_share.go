@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"ironsight/internal/auth"
+	"ironsight/internal/config"
 	"ironsight/internal/database"
 )
 
@@ -47,7 +49,7 @@ type createShareRequest struct {
 //     The frontend should immediately show this once and then never read
 //     it back from a list endpoint — the audit binder lives at the
 //     supervisor's clipboard, not in our database UI.
-func HandleCreateEvidenceShare(db *database.DB) http.HandlerFunc {
+func HandleCreateEvidenceShare(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
 		if claims == nil {
@@ -84,6 +86,34 @@ func HandleCreateEvidenceShare(db *database.DB) http.HandlerFunc {
 			http.Error(w, "create share failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		// P3-INFRA-03: write an evidence_share chain-of-custody manifest.
+		// The artifact bytes are the canonical share metadata (token, incident,
+		// expiry, creator) — the durable record of who shared what, when, and
+		// for how long. Best-effort: a signing-key issue must not break sharing.
+		if shareBytes, marshalErr := json.Marshal(struct {
+			Token      string     `json:"token"`
+			IncidentID string     `json:"incident_id"`
+			CreatedBy  string     `json:"created_by"`
+			ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+			CreatedAt  time.Time  `json:"created_at"`
+		}{share.Token, share.IncidentID, share.CreatedBy, share.ExpiresAt, share.CreatedAt}); marshalErr == nil {
+			createdByUUID, _ := uuid.Parse(claims.UserID)
+			go writeManifest(
+				context.Background(), db, cfg,
+				"evidence_share",
+				share.Token,
+				claims.OrganizationID,
+				createdByUUID,
+				nil, // cameras not enumerated at share creation
+				nil, // segments not enumerated
+				nil, nil,
+				nil,
+				shareBytes,
+				uuid.Nil,
+			)
+		}
+
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, share)
 	}
