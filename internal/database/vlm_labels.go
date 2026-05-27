@@ -14,12 +14,14 @@ import (
 // Created passively whenever Qwen produces a description for an alarm frame;
 // drained by internal annotators via /admin/labeling (never by SOC operators).
 //
-// camera_id is uuid.UUID following migration 0027 (P3-INFRA-04), which
-// converted the column from TEXT to UUID and added a FK to cameras(id).
+// CameraID is *uuid.UUID following migration 0027 (P3-INFRA-04), which
+// converted the column from TEXT NOT NULL to UUID (nullable) and added a FK
+// to cameras(id) ON DELETE SET NULL.  NULL means the originating camera was
+// deleted after the job was enqueued; the annotation history is preserved.
 type VLMLabelJob struct {
 	ID             int64      `json:"id"`
 	AlarmID        string     `json:"alarm_id"`
-	CameraID       uuid.UUID  `json:"camera_id"`
+	CameraID       *uuid.UUID `json:"camera_id"`
 	SiteID         string     `json:"site_id"`
 	SnapshotURL    string     `json:"snapshot_url"`
 	VLMDescription string     `json:"vlm_description"`

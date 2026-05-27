@@ -3,23 +3,25 @@
 --
 -- Background
 -- ----------
--- vlm_label_jobs.camera_id was declared TEXT in the baseline, but the column
--- semantically references cameras.id which is UUID.  The scope plan (P3-INFRA-04)
--- confirmed on 2026-05-27 that all 5 existing rows on fred hold valid UUID-shaped
--- strings ("862bb7e9-a2fe-4ae3-9d48-588f7bee948d", etc.), so a USING cast is safe.
+-- vlm_label_jobs.camera_id was declared TEXT NOT NULL DEFAULT '' in the baseline,
+-- but the column semantically references cameras.id which is UUID.  The scope plan
+-- (P3-INFRA-04) confirmed on 2026-05-27 that all 5 existing rows on fred hold
+-- valid UUID-shaped strings ("862bb7e9-a2fe-4ae3-9d48-588f7bee948d", etc.), so
+-- the USING cast is safe.
 --
--- This migration:
---   1. Converts vlm_label_jobs.camera_id from TEXT to UUID via USING camera_id::uuid.
---   2. Adds a FK constraint to cameras(id) with ON DELETE SET NULL — matching the
---      pattern used by pending_review_queue.camera_id (the other camera-referencing
---      table added post-baseline).  SET NULL is preferred over CASCADE for a labeling
---      queue: if a camera is deleted we lose the FK reference but keep the annotation
---      history; the annotator UI already handles NULL gracefully.
+-- However, those 5 camera UUIDs no longer exist in cameras (pre-launch test rows
+-- whose cameras were deleted).  Because the FK is declared ON DELETE SET NULL, we
+-- must:
+--   1. Drop the NOT NULL constraint and the ''::text DEFAULT.
+--   2. NULL out any existing rows whose camera_id has no matching cameras.id.
+--   3. Convert the column type TEXT → UUID.
+--   4. Add the FK constraint.
 --
--- Pre-flight check (run before this migration on any target DB):
---   SELECT camera_id, count(*) FROM vlm_label_jobs GROUP BY camera_id LIMIT 20;
--- All values must be UUID-shaped strings.  If any value is NOT a valid UUID the
--- ALTER COLUMN ... USING cast will fail loudly here — that is the correct behavior.
+-- Semantic note: camera_id is now NULLABLE.  That is correct — ON DELETE SET NULL
+-- means a camera deletion leaves the label-job row alive but with camera_id=NULL.
+-- The annotator UI already renders these gracefully (it checks snapshot_url, not
+-- camera identity).  New rows from EnqueueLabelJob will always supply a non-NULL
+-- camera UUID; the nullable column only exists for orphan tolerance.
 --
 -- Convention alignment (P3-INFRA-04 Interpretation B)
 -- ---------------------------------------------------
@@ -34,19 +36,42 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Step 1: Convert the column type.
--- If any existing row contains a non-UUID string this will fail with:
---   "invalid input syntax for type uuid: ..."
--- That is intentional — surfacing bad data is better than silent truncation.
+-- Step 1: Drop the NOT NULL constraint and the ''::text default.
+-- The column needs to be nullable so that ON DELETE SET NULL can work when a
+-- camera is deleted.  The empty-string default must be dropped before the type
+-- change because Postgres cannot cast '' to uuid.
+ALTER TABLE vlm_label_jobs
+    ALTER COLUMN camera_id DROP NOT NULL;
+
+ALTER TABLE vlm_label_jobs
+    ALTER COLUMN camera_id DROP DEFAULT;
+
+-- Step 2: NULL out orphaned rows (camera deleted before this migration ran).
+-- Any camera_id that is non-empty and does not match a cameras.id row is an
+-- orphan.  We set it to NULL now so the FK constraint can be added cleanly.
+-- On fred at 2026-05-27 all 5 pre-launch test rows are in this category.
+UPDATE vlm_label_jobs
+SET camera_id = NULL
+WHERE camera_id <> ''
+  AND camera_id NOT IN (SELECT id::text FROM cameras);
+
+-- Also NULL out the empty-string sentinel rows (inserted via the old DEFAULT '').
+UPDATE vlm_label_jobs
+SET camera_id = NULL
+WHERE camera_id = '';
+
+-- Step 3: Convert the column type TEXT → UUID.
+-- Any non-NULL, non-empty value that survived Step 2 is a valid UUID-shaped
+-- string (confirmed by pre-flight query); the USING cast is safe.
+-- If an unexpected non-UUID value slipped through, Postgres will fail loudly
+-- here with "invalid input syntax for type uuid" — that is intentional.
 ALTER TABLE vlm_label_jobs
     ALTER COLUMN camera_id TYPE uuid USING camera_id::uuid;
 
--- Step 2: Add the FK constraint, idempotent via DO block.
+-- Step 4: Add the FK constraint.
 -- ON DELETE SET NULL: a deleted camera sets camera_id to NULL rather than
 -- cascading a delete of the label job (preserving annotation history).
--- NOT VALID is NOT used here because the table is small (pre-launch) and
--- an immediate full-table validate is cheap; NOT VALID would add operational
--- complexity without benefit.
+-- Wrapped in a DO block for idempotency in case of replay.
 DO $idem$
 BEGIN
     ALTER TABLE vlm_label_jobs
@@ -63,12 +88,21 @@ $idem$;
 -- +goose Down
 -- +goose StatementBegin
 
--- Drop FK first, then revert the column type.
+-- Drop FK first, then revert the column type back to text.
 ALTER TABLE vlm_label_jobs
     DROP CONSTRAINT IF EXISTS fk_vlm_label_jobs_camera;
 
--- Revert UUID → TEXT.  All UUID values round-trip cleanly through ::text.
+-- Revert UUID → TEXT.  Non-NULL UUIDs round-trip cleanly; NULLs stay NULL.
 ALTER TABLE vlm_label_jobs
     ALTER COLUMN camera_id TYPE text USING camera_id::text;
+
+-- Restore the original NOT NULL + DEFAULT '' that the baseline had.
+ALTER TABLE vlm_label_jobs
+    ALTER COLUMN camera_id SET DEFAULT '';
+
+UPDATE vlm_label_jobs SET camera_id = '' WHERE camera_id IS NULL;
+
+ALTER TABLE vlm_label_jobs
+    ALTER COLUMN camera_id SET NOT NULL;
 
 -- +goose StatementEnd
