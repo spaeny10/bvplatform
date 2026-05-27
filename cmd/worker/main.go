@@ -45,6 +45,7 @@ import (
 	"ironsight/internal/notify"
 	"ironsight/internal/ppe"
 	"ironsight/internal/recording"
+	"ironsight/internal/safety"
 	"ironsight/internal/tracking"
 )
 
@@ -178,6 +179,19 @@ func main() {
 	ppeWorker.Start(ctx)
 	log.Println("[WORKER] PPE worker started")
 
+	// ── VLM validation worker — P2-C-03 ──────────────────────────────────
+	// Default disabled (VLM_WORKER_ENABLED=false) because Qwen is not
+	// running on fred at C-03 deploy time. Enable only after confirming
+	// Qwen is healthy: GET <AI_QWEN_URL>/health returns {"degraded":false}.
+	var vlmWorker *safety.VLMWorker
+	if cfg.VLMWorkerEnabled {
+		vlmWorker = safety.NewVLMWorker(cfg, db, aiClient)
+		vlmWorker.Start(ctx)
+		log.Println("[WORKER] VLM validation worker started")
+	} else {
+		log.Println("[VLM] worker disabled (VLM_WORKER_ENABLED=false) — candidates stay at vlm_verdict='pending'")
+	}
+
 	// ── Monthly summary emailer ──────────────────────────────────
 	// Polls every hour. When the wall clock crosses into the first
 	// hour of the 1st of a month AND we haven't already sent for
@@ -220,6 +234,9 @@ func main() {
 	vlmIndexer.Stop()
 	exportWorker.Wait()
 	ppeWorker.Stop()
+	if vlmWorker != nil {
+		vlmWorker.Stop()
+	}
 
 	log.Println("[WORKER] Clean shutdown complete")
 }

@@ -29,6 +29,10 @@ var reviewRoles = map[string]bool{
 // pendingReviewEntry is the API response shape for one queue entry.
 // frame_url points at the dedicated frame-serve sub-route, scoped to
 // the authenticated caller's session.
+//
+// VLM fields (P2-C-03): vlm_verdict, vlm_reasoning, vlm_checked_at are
+// included when present. vlm_verdict='pending' means the async VLM pass
+// has not run yet (e.g. VLM_WORKER_ENABLED=false or worker hasn't polled).
 type pendingReviewEntry struct {
 	ID             string          `json:"id"`
 	CameraID       string          `json:"camera_id"`
@@ -45,10 +49,21 @@ type pendingReviewEntry struct {
 	ReviewedBy     *string         `json:"reviewed_by,omitempty"`
 	ReviewedAt     *string         `json:"reviewed_at,omitempty"`
 	Notes          *string         `json:"notes,omitempty"`
+	// VLM fields (P2-C-03)
+	VLMVerdict   *string `json:"vlm_verdict,omitempty"`
+	VLMReasoning *string `json:"vlm_reasoning,omitempty"`
+	VLMCheckedAt *string `json:"vlm_checked_at,omitempty"`
+	VLMModel     *string `json:"vlm_model,omitempty"`
 }
 
 // HandleListPendingReview handles GET /api/portal/pending-review.
 // Returns PPE violation findings for the caller's organization only.
+//
+// Query params (P2-C-03 additions):
+//
+//	include_dismissed=true — include rows where vlm_verdict='dismissed'
+//	  (normally excluded from the default view; kept for audit access).
+//	  Default: false — dismissed rows are hidden.
 func HandleListPendingReview(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
@@ -77,9 +92,15 @@ func HandleListPendingReview(cfg *config.Config, db *database.DB) http.HandlerFu
 			return
 		}
 
+		// P2-C-03: include_dismissed controls whether vlm_verdict='dismissed'
+		// rows appear. Default is to exclude them (VLM auto-dismissed them as
+		// likely false positives). Pass ?include_dismissed=true to see all.
+		includeDismissed := r.URL.Query().Get("include_dismissed") == "true"
+
 		f := database.PPEQueueFilter{
-			OrganizationID: orgID,
-			Status:         status,
+			OrganizationID:      orgID,
+			Status:              status,
+			ExcludeVLMDismissed: !includeDismissed,
 		}
 		if cidStr := r.URL.Query().Get("camera_id"); cidStr != "" {
 			if cid, err := uuid.Parse(cidStr); err == nil {
@@ -120,6 +141,10 @@ func HandleListPendingReview(cfg *config.Config, db *database.DB) http.HandlerFu
 				Status:         e.Status,
 				CreatedAt:      e.CreatedAt.UTC().Format(time.RFC3339),
 				Notes:          e.Notes,
+				// P2-C-03: VLM verdict fields (omitempty — nil when no VLM pass yet)
+				VLMVerdict:   e.VLMVerdict,
+				VLMReasoning: e.VLMReasoning,
+				VLMModel:     e.VLMModel,
 			}
 			if e.ReviewedBy != nil {
 				s := e.ReviewedBy.String()
@@ -128,6 +153,10 @@ func HandleListPendingReview(cfg *config.Config, db *database.DB) http.HandlerFu
 			if e.ReviewedAt != nil {
 				s := e.ReviewedAt.UTC().Format(time.RFC3339)
 				re.ReviewedAt = &s
+			}
+			if e.VLMCheckedAt != nil {
+				s := e.VLMCheckedAt.UTC().Format(time.RFC3339)
+				re.VLMCheckedAt = &s
 			}
 			// Frame URL: dedicated serve sub-route, authenticated by session cookie.
 			re.FrameURL = "/api/portal/pending-review/" + e.ID.String() + "/frame"

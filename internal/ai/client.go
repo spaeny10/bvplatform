@@ -460,6 +460,46 @@ func (c *Client) DetectYOLO(ctx context.Context, jpegFrame []byte) (*YOLOResult,
 	return c.detectYOLO(ctx, jpegFrame)
 }
 
+// PPEValidationResult is the typed result of a PPE-specific Qwen validation
+// call. It is mapped from QwenResult by ValidatePPEFrame.
+type PPEValidationResult struct {
+	FalsePositivePct float64 // maps from QwenResult.FalsePositivePct
+	Description      string  // maps from QwenResult.Description (may embed JSON)
+	Model            string  // maps from QwenResult.Model
+	InferenceMs      float64 // maps from QwenResult.InferenceMs
+	Degraded         bool    // true when the sidecar fell back to mock analysis
+}
+
+// ValidatePPEFrame sends a JPEG frame to Qwen's existing /analyze endpoint
+// with a PPE-specific prompt injected via the site_context field. It is a
+// thin public wrapper around the private analyzeQwen, reusing the existing
+// sidecar endpoint without any modification to services/qwen/server.py.
+//
+// ppePrompt should be the purpose-built PPE compliance context string
+// assembled by the caller (vlm_validator.go). The sidecar returns its
+// standard QwenResult; ValidatePPEFrame maps it to PPEValidationResult.
+//
+// Returns a non-nil result with Degraded=true on transport or HTTP failure
+// so the caller always has a usable struct to record.
+func (c *Client) ValidatePPEFrame(
+	ctx context.Context,
+	jpegBytes []byte,
+	detections []Detection,
+	ppePrompt string,
+) (*PPEValidationResult, error) {
+	qwen, err := c.analyzeQwen(ctx, jpegBytes, detections, ppePrompt)
+	if err != nil {
+		return &PPEValidationResult{Degraded: true}, err
+	}
+	return &PPEValidationResult{
+		FalsePositivePct: qwen.FalsePositivePct,
+		Description:      qwen.Description,
+		Model:            qwen.Model,
+		InferenceMs:      qwen.InferenceMs,
+		Degraded:         qwen.Degraded,
+	}, nil
+}
+
 // AnalyzeVideo runs Qwen video inference on a short surveillance clip. The
 // video tier runs after the single-frame tier — it gives Qwen motion context
 // (e.g., how an object is carried, movement direction) that a single snapshot

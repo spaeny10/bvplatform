@@ -259,6 +259,36 @@ type Config struct {
 	TrackingBucketMinutes       int
 	TrackingRawRetentionDays    int
 	TrackingBucketRetentionDays int
+
+	// VLM validation worker (P2-C-03). VLMWorkerEnabled gates the whole
+	// async validation loop — default FALSE because Qwen is not running on
+	// fred at C-03 deploy time. When disabled, PPE candidates remain at
+	// vlm_verdict='pending' and the human review queue shows them normally.
+	// Do NOT enable until `GET <AIQwenURL>/health` returns {"degraded":false}.
+	//
+	// VLMWorkerBatchSize: rows processed per poll cycle (default 5).
+	// VLMWorkerPollIntervalSec: sleep between cycles in seconds (default 10).
+	// VLMWorkerMaxConcurrent: parallel Qwen calls per batch (default 1 to
+	//   avoid VRAM contention on the RTX 3070 alongside the VLM indexer).
+	// VLMWorkerMaxRetries: vlm_attempts cap; after this many errors a row
+	//   stays at vlm_verdict='error' permanently (default 3).
+	// VLMWorkerMaxAgeHours: pending rows older than this are aged out to
+	//   vlm_verdict='uncertain' so the human queue doesn't fill with stale
+	//   unvalidated candidates during a Qwen outage (default 24).
+	//
+	// Env vars:
+	//   VLM_WORKER_ENABLED           default false
+	//   VLM_WORKER_BATCH_SIZE        default 5
+	//   VLM_WORKER_POLL_INTERVAL_SEC default 10
+	//   VLM_WORKER_MAX_CONCURRENT    default 1
+	//   VLM_WORKER_MAX_RETRIES       default 3
+	//   VLM_WORKER_MAX_AGE_HOURS     default 24
+	VLMWorkerEnabled         bool
+	VLMWorkerBatchSize        int
+	VLMWorkerPollIntervalSec  int
+	VLMWorkerMaxConcurrent    int
+	VLMWorkerMaxRetries       int
+	VLMWorkerMaxAgeHours      int
 }
 
 // Load reads configuration from environment variables with defaults
@@ -373,6 +403,16 @@ func Load() *Config {
 		TrackingBucketMinutes:       getEnvInt("TRACKING_BUCKET_MINUTES", 5),
 		TrackingRawRetentionDays:    getEnvInt("TRACKING_RAW_RETENTION_DAYS", 7),
 		TrackingBucketRetentionDays: getEnvInt("TRACKING_BUCKET_RETENTION_DAYS", 90),
+
+		// VLM validation worker — P2-C-03.
+		// Default false: Qwen is not running on fred at C-03 deploy time.
+		// Enable only after `GET <AI_QWEN_URL>/health` returns {"degraded":false}.
+		VLMWorkerEnabled:        getEnvBool("VLM_WORKER_ENABLED", false),
+		VLMWorkerBatchSize:       getEnvInt("VLM_WORKER_BATCH_SIZE", 5),
+		VLMWorkerPollIntervalSec: getEnvInt("VLM_WORKER_POLL_INTERVAL_SEC", 10),
+		VLMWorkerMaxConcurrent:   getEnvInt("VLM_WORKER_MAX_CONCURRENT", 1),
+		VLMWorkerMaxRetries:      getEnvInt("VLM_WORKER_MAX_RETRIES", 3),
+		VLMWorkerMaxAgeHours:     getEnvInt("VLM_WORKER_MAX_AGE_HOURS", 24),
 	}
 	return cfg
 }

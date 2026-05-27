@@ -10,12 +10,20 @@ import (
 )
 
 // PendingReviewQueueRow is a single PPE violation finding awaiting human review.
-// DB table: pending_review_queue (migration 0022).
+// DB table: pending_review_queue (migration 0022, altered by 0025).
 //
 // NOTE on ID types:
 //   - id, camera_id, reviewed_by are UUID in the DB (gen_random_uuid() defaults).
 //   - organization_id, site_id are TEXT in the DB (matching the organizations and
 //     sites tables, which pre-date the uuid-primary-key migration).
+//
+// VLM columns (migration 0025): the C-01 stub columns were renamed/replaced.
+//   - vlm_validated BOOLEAN → vlm_verdict TEXT
+//   - vlm_notes → vlm_reasoning
+//   - vlm_validated_at → vlm_checked_at
+//   - vlm_confidence REAL kept as-is
+//   - vlm_model TEXT (new)
+//   - vlm_attempts INT (new)
 type PendingReviewQueueRow struct {
 	ID             uuid.UUID `json:"id"`
 	OrganizationID string    `json:"organization_id"`
@@ -40,11 +48,14 @@ type PendingReviewQueueRow struct {
 	ReviewedAt *time.Time `json:"reviewed_at,omitempty"`
 	Notes      *string    `json:"notes,omitempty"`
 
-	// VLM (C-03 backfill, always nil for C-01)
-	VLMValidated   *bool      `json:"vlm_validated,omitempty"`
-	VLMValidatedAt *time.Time `json:"vlm_validated_at,omitempty"`
-	VLMConfidence  *float64   `json:"vlm_confidence,omitempty"`
-	VLMNotes       *string    `json:"vlm_notes,omitempty"`
+	// VLM validation (migration 0025 / P2-C-03).
+	// VLMVerdict: 'pending' | 'confirmed' | 'dismissed' | 'uncertain' | 'error'
+	VLMVerdict    *string    `json:"vlm_verdict,omitempty"`
+	VLMReasoning  *string    `json:"vlm_reasoning,omitempty"`
+	VLMCheckedAt  *time.Time `json:"vlm_checked_at,omitempty"`
+	VLMModel      *string    `json:"vlm_model,omitempty"`
+	VLMConfidence *float64   `json:"vlm_confidence,omitempty"`
+	VLMAttempts   int        `json:"vlm_attempts"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -75,12 +86,18 @@ type PPEQueueInsert struct {
 
 // PPEQueueFilter is the query filter for ListPPEQueueEntries.
 // OrganizationID is mandatory.
+//
+// ExcludeVLMDismissed (P2-C-03): when true the query adds
+// AND vlm_verdict != 'dismissed' so VLM-auto-dismissed rows are hidden
+// from the default operator view. Set false to include them (e.g. audit
+// or ?include_dismissed=true handler path).
 type PPEQueueFilter struct {
-	OrganizationID string
-	Status         string
-	CameraID       *uuid.UUID
-	Limit          int
-	Before         *time.Time
+	OrganizationID      string
+	Status              string
+	CameraID            *uuid.UUID
+	Limit               int
+	Before              *time.Time
+	ExcludeVLMDismissed bool // P2-C-03: hide vlm_verdict='dismissed' from default list
 }
 
 // InsertPPEQueueEntry persists one violation finding. Returns the assigned UUID.
@@ -109,6 +126,9 @@ func (db *DB) InsertPPEQueueEntry(ctx context.Context, ins PPEQueueInsert) (uuid
 }
 
 // ListPPEQueueEntries returns violation findings scoped to the caller's org.
+// When f.ExcludeVLMDismissed is true, rows with vlm_verdict='dismissed' are
+// hidden from the result (P2-C-03 default view — VLM auto-dismissed rows are
+// kept for audit but not shown in the operator review queue by default).
 func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]PendingReviewQueueRow, error) {
 	status := f.Status
 	if status == "" {
@@ -129,6 +149,9 @@ func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]Pend
 		args = append(args, *f.Before)
 		cond += fmt.Sprintf(" AND q.created_at < $%d", len(args))
 	}
+	if f.ExcludeVLMDismissed {
+		cond += " AND (q.vlm_verdict IS NULL OR q.vlm_verdict != 'dismissed')"
+	}
 
 	rows, err := db.Pool.Query(ctx, `
 		SELECT
@@ -137,7 +160,8 @@ func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]Pend
 		    q.detection_class, q.missing_label, q.confidence,
 		    q.bounding_boxes, q.yolo_model,
 		    q.status, q.reviewed_by, q.reviewed_at, q.notes,
-		    q.vlm_validated, q.vlm_validated_at, q.vlm_confidence, q.vlm_notes,
+		    q.vlm_verdict, q.vlm_reasoning, q.vlm_checked_at,
+		    q.vlm_model, q.vlm_confidence, q.vlm_attempts,
 		    q.created_at, q.updated_at,
 		    COALESCE(c.name, '') AS camera_name,
 		    COALESCE(s.name, '') AS site_name
@@ -162,10 +186,11 @@ func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]Pend
 		var reviewedBy *uuid.UUID
 		var reviewedAt *time.Time
 		var notes *string
-		var vlmVal *bool
-		var vlmAt *time.Time
+		var vlmVerdict *string
+		var vlmReasoning *string
+		var vlmCheckedAt *time.Time
+		var vlmModel *string
 		var vlmConf *float64
-		var vlmNotes *string
 		var bbRaw []byte
 
 		if err := rows.Scan(
@@ -174,7 +199,8 @@ func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]Pend
 			&r.DetectionClass, &r.MissingLabel, &r.Confidence,
 			&bbRaw, &r.YOLOModel,
 			&r.Status, &reviewedBy, &reviewedAt, &notes,
-			&vlmVal, &vlmAt, &vlmConf, &vlmNotes,
+			&vlmVerdict, &vlmReasoning, &vlmCheckedAt,
+			&vlmModel, &vlmConf, &r.VLMAttempts,
 			&r.CreatedAt, &r.UpdatedAt,
 			&r.CameraName, &r.SiteName,
 		); err != nil {
@@ -184,10 +210,11 @@ func (db *DB) ListPPEQueueEntries(ctx context.Context, f PPEQueueFilter) ([]Pend
 		r.ReviewedBy = reviewedBy
 		r.ReviewedAt = reviewedAt
 		r.Notes = notes
-		r.VLMValidated = vlmVal
-		r.VLMValidatedAt = vlmAt
+		r.VLMVerdict = vlmVerdict
+		r.VLMReasoning = vlmReasoning
+		r.VLMCheckedAt = vlmCheckedAt
+		r.VLMModel = vlmModel
 		r.VLMConfidence = vlmConf
-		r.VLMNotes = vlmNotes
 		r.BoundingBoxes = json.RawMessage(bbRaw)
 		out = append(out, r)
 	}
@@ -215,10 +242,11 @@ func (db *DB) GetPPEQueueEntry(ctx context.Context, id uuid.UUID, orgID string) 
 	var reviewedBy *uuid.UUID
 	var reviewedAt *time.Time
 	var notes *string
-	var vlmVal *bool
-	var vlmAt *time.Time
+	var vlmVerdict *string
+	var vlmReasoning *string
+	var vlmCheckedAt *time.Time
+	var vlmModel *string
 	var vlmConf *float64
-	var vlmNotes *string
 	var bbRaw []byte
 
 	err := db.Pool.QueryRow(ctx, `
@@ -228,7 +256,8 @@ func (db *DB) GetPPEQueueEntry(ctx context.Context, id uuid.UUID, orgID string) 
 		    q.detection_class, q.missing_label, q.confidence,
 		    q.bounding_boxes, q.yolo_model,
 		    q.status, q.reviewed_by, q.reviewed_at, q.notes,
-		    q.vlm_validated, q.vlm_validated_at, q.vlm_confidence, q.vlm_notes,
+		    q.vlm_verdict, q.vlm_reasoning, q.vlm_checked_at,
+		    q.vlm_model, q.vlm_confidence, q.vlm_attempts,
 		    q.created_at, q.updated_at
 		FROM pending_review_queue q
 		WHERE q.id = $1 AND q.organization_id = $2`,
@@ -239,7 +268,8 @@ func (db *DB) GetPPEQueueEntry(ctx context.Context, id uuid.UUID, orgID string) 
 		&r.DetectionClass, &r.MissingLabel, &r.Confidence,
 		&bbRaw, &r.YOLOModel,
 		&r.Status, &reviewedBy, &reviewedAt, &notes,
-		&vlmVal, &vlmAt, &vlmConf, &vlmNotes,
+		&vlmVerdict, &vlmReasoning, &vlmCheckedAt,
+		&vlmModel, &vlmConf, &r.VLMAttempts,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
@@ -252,10 +282,11 @@ func (db *DB) GetPPEQueueEntry(ctx context.Context, id uuid.UUID, orgID string) 
 	r.ReviewedBy = reviewedBy
 	r.ReviewedAt = reviewedAt
 	r.Notes = notes
-	r.VLMValidated = vlmVal
-	r.VLMValidatedAt = vlmAt
+	r.VLMVerdict = vlmVerdict
+	r.VLMReasoning = vlmReasoning
+	r.VLMCheckedAt = vlmCheckedAt
+	r.VLMModel = vlmModel
 	r.VLMConfidence = vlmConf
-	r.VLMNotes = vlmNotes
 	r.BoundingBoxes = json.RawMessage(bbRaw)
 	return &r, nil
 }

@@ -1,0 +1,229 @@
+package safety
+
+// vlm_worker.go — P2-C-03 async VLM validation worker.
+//
+// The VLMWorker polls pending_review_queue for rows that need a Qwen
+// second-opinion pass and updates their vlm_verdict in place. It is
+// intentionally decoupled from the PPE worker (which writes rows) and
+// from the human review flow (which reads rows via the API).
+//
+// Degradation contract: Qwen down → rows accumulate 'error' verdicts up
+// to VLMWorkerMaxRetries, then stay at 'error' (visible to humans). No
+// crash, no blocking the human queue. VLM_WORKER_ENABLED=false (default)
+// keeps the worker dormant so Qwen absence has zero impact.
+
+import (
+	"context"
+	"log"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+)
+
+// VLMWorker is the async VLM validation polling worker.
+type VLMWorker struct {
+	cfg    *config.Config
+	db     *database.DB
+	client AIClient
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
+
+// NewVLMWorker creates a new VLMWorker. Call Start to begin polling.
+func NewVLMWorker(cfg *config.Config, db *database.DB, client AIClient) *VLMWorker {
+	return &VLMWorker{
+		cfg:    cfg,
+		db:     db,
+		client: client,
+		stopCh: make(chan struct{}),
+	}
+}
+
+// Start launches the VLM worker poll loop in a background goroutine.
+// It returns immediately; the loop runs until Stop is called or ctx is
+// canceled. The loop is not started when VLMWorkerEnabled=false.
+func (w *VLMWorker) Start(ctx context.Context) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		w.loop(ctx)
+	}()
+}
+
+// Stop signals the worker to cease polling and waits for the current
+// cycle to finish. Safe to call multiple times.
+func (w *VLMWorker) Stop() {
+	select {
+	case <-w.stopCh:
+		// already stopped
+	default:
+		close(w.stopCh)
+	}
+	w.wg.Wait()
+}
+
+// loop is the main poll/sleep cycle.
+func (w *VLMWorker) loop(ctx context.Context) {
+	batchSize := w.cfg.VLMWorkerBatchSize
+	if batchSize <= 0 {
+		batchSize = 5
+	}
+	pollInterval := time.Duration(w.cfg.VLMWorkerPollIntervalSec) * time.Second
+	if pollInterval <= 0 {
+		pollInterval = 10 * time.Second
+	}
+	maxRetries := w.cfg.VLMWorkerMaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	maxAgeHours := w.cfg.VLMWorkerMaxAgeHours
+	if maxAgeHours <= 0 {
+		maxAgeHours = 24
+	}
+	maxConcurrent := w.cfg.VLMWorkerMaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+
+	log.Printf("[VLM] worker started (batch=%d poll=%s maxRetries=%d maxAge=%dh concurrent=%d)",
+		batchSize, pollInterval, maxRetries, maxAgeHours, maxConcurrent)
+
+	for {
+		select {
+		case <-w.stopCh:
+			log.Println("[VLM] worker stopped")
+			return
+		case <-ctx.Done():
+			log.Println("[VLM] worker: context done")
+			return
+		default:
+		}
+
+		w.runCycle(ctx, batchSize, maxRetries, maxAgeHours, maxConcurrent)
+
+		select {
+		case <-w.stopCh:
+			log.Println("[VLM] worker stopped")
+			return
+		case <-ctx.Done():
+			log.Println("[VLM] worker: context done")
+			return
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// runCycle fetches a batch of pending VLM rows, validates each one, and
+// also triggers the age-out sweep. Panics inside per-row processing are
+// recovered so a single bad row cannot crash the worker.
+func (w *VLMWorker) runCycle(ctx context.Context, batchSize, maxRetries, maxAgeHours, maxConcurrent int) {
+	// Age-out stale pending rows first so they don't keep re-appearing.
+	if err := w.db.ExpireStalePendingVLM(ctx, maxAgeHours); err != nil {
+		log.Printf("[VLM] ExpireStalePendingVLM error: %v", err)
+	}
+
+	rows, err := w.db.ListPendingVLM(ctx, batchSize, maxRetries)
+	if err != nil {
+		log.Printf("[VLM] ListPendingVLM error: %v", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+
+	log.Printf("[VLM] processing %d candidate(s)", len(rows))
+
+	if maxConcurrent <= 1 {
+		// Serial path — no goroutine overhead.
+		for _, row := range rows {
+			w.processRow(ctx, row)
+		}
+		return
+	}
+
+	// Concurrent path — bounded parallelism via a semaphore channel.
+	sem := make(chan struct{}, maxConcurrent)
+	var rowWG sync.WaitGroup
+	for _, row := range rows {
+		row := row // capture
+		rowWG.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer rowWG.Done()
+			defer func() { <-sem }()
+			w.processRow(ctx, row)
+		}()
+	}
+	rowWG.Wait()
+}
+
+// processRow validates one pending_review_queue row. It reads the frame
+// from disk, calls Qwen, and writes back the verdict. Panics are recovered
+// so a single row cannot crash the worker cycle.
+func (w *VLMWorker) processRow(ctx context.Context, row database.VLMQueueRow) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[VLM] panic in processRow %s: %v", row.ID, r)
+		}
+	}()
+
+	framesDir := w.cfg.PPEFramesDir
+	if framesDir == "" {
+		framesDir = "/tank/data/ironsight/ppe-frames"
+	}
+
+	// Validate the frame path to prevent directory traversal.
+	rel := filepath.Clean(row.FramePath)
+	if strings.HasPrefix(rel, "..") {
+		log.Printf("[VLM] row %s: invalid frame path %q", row.ID, row.FramePath)
+		_ = w.db.UpdateVLMVerdict(ctx, row.ID,
+			string(VerdictError), "invalid frame path", "", row.Attempts+1)
+		return
+	}
+
+	absPath := filepath.Join(framesDir, rel)
+	frameBytes, err := os.ReadFile(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("[VLM] row %s: frame file not found: %s", row.ID, absPath)
+		} else {
+			log.Printf("[VLM] row %s: read frame error: %v", row.ID, err)
+		}
+		_ = w.db.UpdateVLMVerdict(ctx, row.ID,
+			string(VerdictError), "frame file not found", "", row.Attempts+1)
+		return
+	}
+
+	// Pick the first bounding box for the VLM prompt; fall back to zero bbox.
+	var bboxNorm ai.BBox
+	if len(row.BoundingBoxes) > 0 {
+		bboxNorm = row.BoundingBoxes[0].BBoxNorm
+	}
+
+	result := ValidatePPECandidate(ctx, w.client,
+		frameBytes,
+		row.DetectionClass,
+		row.MissingLabel,
+		row.Confidence,
+		bboxNorm,
+	)
+
+	if err := w.db.UpdateVLMVerdict(ctx, row.ID,
+		string(result.Verdict),
+		result.Reasoning,
+		result.Model,
+		row.Attempts+1,
+	); err != nil {
+		log.Printf("[VLM] row %s: UpdateVLMVerdict error: %v", row.ID, err)
+		return
+	}
+
+	log.Printf("[VLM] row %s: verdict=%s attempts=%d model=%s",
+		row.ID, result.Verdict, row.Attempts+1, result.Model)
+}
