@@ -77,7 +77,10 @@ CREATE INDEX IF NOT EXISTS idx_ptb_site_bucket
 
 -- +goose Down
 
-SELECT remove_retention_policy('person_track_frames'::regclass, if_not_exists => TRUE);
+-- No explicit remove_retention_policy: DROP TABLE on the hypertable below
+-- removes its retention policy/job automatically, and the named-arg
+-- remove_retention_policy(regclass, if_not_exists => bool) signature is not
+-- present in all TimescaleDB versions (broke the up/down/up CI round-trip).
 DROP INDEX IF EXISTS idx_ptf_person_nonzero;
 DROP INDEX IF EXISTS idx_ptf_camera_time;
 DROP INDEX IF EXISTS idx_ptf_org_time;

@@ -54,7 +54,20 @@ ALTER TABLE speakers
 
 -- +goose Down
 -- +goose StatementBegin
-ALTER TABLE cameras DROP CONSTRAINT IF EXISTS cameras_status_chk;
-ALTER TABLE cameras DROP CONSTRAINT IF EXISTS cameras_recording_mode_chk;
-ALTER TABLE speakers DROP CONSTRAINT IF EXISTS speakers_status_chk;
+-- Guard with to_regclass: in a full `goose reset` the down chain runs
+-- 0029→0001, and a table this migration constrained may already have been
+-- dropped by a LATER migration's down (speakers is re-declared in 0007, whose
+-- down drops it before this runs). Down is never run in prod (up-only), but
+-- the CI up/down/up round-trip exercises every down section, so it must be
+-- resilient to tables already being gone.
+DO $$
+BEGIN
+    IF to_regclass('public.cameras') IS NOT NULL THEN
+        ALTER TABLE cameras DROP CONSTRAINT IF EXISTS cameras_status_chk;
+        ALTER TABLE cameras DROP CONSTRAINT IF EXISTS cameras_recording_mode_chk;
+    END IF;
+    IF to_regclass('public.speakers') IS NOT NULL THEN
+        ALTER TABLE speakers DROP CONSTRAINT IF EXISTS speakers_status_chk;
+    END IF;
+END $$;
 -- +goose StatementEnd
