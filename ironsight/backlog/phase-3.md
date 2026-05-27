@@ -3,13 +3,14 @@
 ## Infrastructure
 
 - [x] P3-INFRA-04 — ID standardization completion (Interpretation B: TEXT PKs grandfathered, not converted)
-      Commit: 92857fa (feat/p3-infra-04-id-standardization)
+      Commit: 493cff6 (feat/p3-infra-04-id-standardization); first commit 92857fa
       Decision: Interpretation B locked 2026-05-27. Live fred org IDs are human-readable slugs (co-bv-test, T5-903). Interpretation A (convert TEXT PKs to UUID) rejected — slug-remap would break API contract + 15 tables + URLs for zero benefit.
-      Schema change: migration 0027_vlm_label_jobs_camera_fk.sql — vlm_label_jobs.camera_id TEXT→UUID + FOREIGN KEY REFERENCES cameras(id) ON DELETE SET NULL. Pre-flight on fred: 5 rows, all valid UUIDs. USING cast succeeded.
-      Go model change: VLMLabelJob.CameraID string→uuid.UUID; EnqueueLabelJob signature updated; cmd/server goroutine closure updated.
+      Schema change: migration 0027_vlm_label_jobs_camera_fk.sql — vlm_label_jobs.camera_id TEXT NOT NULL DEFAULT ''→UUID nullable + FOREIGN KEY REFERENCES cameras(id) ON DELETE SET NULL. Pre-flight: 5 rows all valid UUID strings. Migration: dropped NOT NULL + DEFAULT, NULLed out 5 orphaned rows (cameras deleted pre-launch), USING cast TEXT→UUID, added FK. Goose v27 applied cleanly in 443ms on fred.
+      Go model change: VLMLabelJob.CameraID string→*uuid.UUID (nullable); EnqueueLabelJob cameraID param stays uuid.UUID (always non-nil at enqueue); cmd/server goroutine closure captures cameraID uuid.UUID directly.
       CI lint: internal/database/id_convention_test.go::TestSchemaIDConventions — blocks new TEXT-PK tables outside allowlist, blocks TEXT *_id columns in UUID-convention tables. Wired into new backend-integration CI job (.github/workflows/ci.yml).
       Convention doc: docs/id-conventions.md — two-tier policy, grandfathered TEXT-PK table list + rationale, FK type rule, CI lint instructions.
       TEXT-PK tables NOT changed: organizations, sites, incidents, active_alarms, security_events, site_sops, company_users, operators.
+      Image: sha256:f0c3d14170c05372f9121b94ebe18e6a82150a718d97d6acb063215ca774ce6e (fred, 2026-05-27)
 
 - [x] P3-INFRA-03 — Evidence chain-of-custody manifests
       Commit: 3412690 (feat/p3-infra-03-chain-of-custody)
