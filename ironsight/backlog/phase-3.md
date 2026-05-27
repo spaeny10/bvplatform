@@ -2,6 +2,20 @@
 
 ## Infrastructure
 
+- [x] P3-INFRA-08 — Weekly digest email
+      Commit: TBD (feat/p3-infra-08-weekly-digest, off 73e7644)
+      Migration: 0029_digest_sends.sql — `digest_sends` table with UNIQUE(org_id, scope, period_start) durable idempotency. Goose v29.
+      Tests: 7 notify unit tests (HTML content/no-flex/multipart/stub-mode/empty-recipients/send-error-isolation) + 7 database integration tests (idempotency/scope-isolation/different-weeks/MatchWeeklyDigestRecipients/cross-tenant-isolation/no-activity-skip/soft-delete-exclusion). All pass on fred.
+      New files: migrations/0029_digest_sends.sql, internal/database/digest_sends.go, internal/notify/dispatcher_weekly_digest_test.go, internal/database/digest_sends_test.go
+      Modified: internal/notify/dispatcher.go (+WeeklyDigestContext +DigestTopCamera +WeeklyDigest), internal/database/notifications.go (+MatchWeeklyDigestRecipients), internal/config/config.go (+DigestSendDay/Hour/Scope/NoActivitySkip), cmd/worker/main.go (+runWeeklyDigest +runWeeklyDigestForOrg)
+      Idempotency: durable via digest_sends table (INSERT ON CONFLICT DO NOTHING); NOT in-memory like monthly summary — handles worker restarts mid-send-window.
+      Email-client safety: table layout throughout; NO display:flex (statTile not reused); multipart/alternative text+html; inline CSS only.
+      Stub-mode: default (SMTP_HOST empty → [NOTIFY-STUB] log lines); real SMTP via ops env config.
+      CAN-SPAM: unsubscribe via login-gated /portal/notifications (v1 acceptable for pre-launch); tokenized one-click unsubscribe (no login required) is a must-do follow-up before real external sends begin.
+      Soft-delete: ListSitesScoped reads sites_active (deleted_at IS NULL); compliance queries scope by org_id; soft-deleted sites → no site IDs → no recipients → digest skipped.
+      Image: TBD (fred, post-deploy)
+      Verified: TBD (goose v29, digest_sends table, [WORKER] Weekly digest scheduler started log, stub-mode log lines)
+
 - [x] P3-INFRA-05 — Soft-delete pattern
       Commits: 341396d + 5f783cf (feat/p3-infra-05-soft-delete, off 4ff6e13)
       Migration: 0028_soft_delete.sql — ALTER TABLE ADD COLUMN deleted_at TIMESTAMPTZ on 8 tables; 8 _active views; 2 partial unique indexes (cameras.sense_webhook_token, users.username). Applied on fred 2026-05-27 in 308ms; goose now at v28.

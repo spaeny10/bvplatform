@@ -224,6 +224,50 @@ func (db *DB) MatchAlarmRecipients(ctx context.Context, siteID, severity string,
 	return out, nil
 }
 
+// MatchWeeklyDigestRecipients returns the email-only list of users
+// subscribed to the weekly digest for any of the supplied sites.
+// Mirrors MatchMonthlySummaryRecipients but filters event_type =
+// 'weekly_digest'. Email is the only channel for digest reports.
+//
+// Tenant isolation: siteIDs must already be scoped to one org — the
+// caller (runWeeklyDigest) iterates per-org and passes only that org's
+// site list. The query does not add a redundant org filter because the
+// site_ids already encode the scope; adding it would duplicate the
+// caller's responsibility and create a false sense of double-checking.
+func (db *DB) MatchWeeklyDigestRecipients(ctx context.Context, siteIDs []string) ([]AlarmRecipient, error) {
+	if len(siteIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := db.Pool.Query(ctx, `
+		SELECT DISTINCT s.user_id, COALESCE(u.email,'')
+		FROM notification_subscriptions s
+		JOIN users u ON u.id = s.user_id
+		WHERE s.enabled = true
+		  AND s.event_type = 'weekly_digest'
+		  AND s.channel = 'email'
+		  AND COALESCE(u.email,'') <> ''
+		  AND (
+		    s.site_ids IS NULL
+		    OR s.site_ids = 'null'::jsonb
+		    OR (jsonb_typeof(s.site_ids) = 'array' AND s.site_ids ?| $1)
+		  )`,
+		siteIDs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AlarmRecipient
+	for rows.Next() {
+		var r AlarmRecipient
+		if err := rows.Scan(&r.UserID, &r.Email); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // MatchMonthlySummaryRecipients returns the email-only list of users
 // subscribed to the monthly summary for any of the supplied sites.
 // SMS doesn't make sense for a multi-paragraph report; we hardcode

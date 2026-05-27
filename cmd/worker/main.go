@@ -217,6 +217,9 @@ func main() {
 	go runMonthlySummary(ctx, db, notifier)
 	log.Println("[WORKER] Monthly summary scheduler started")
 
+	go runWeeklyDigest(ctx, cfg, db, notifier)
+	log.Println("[WORKER] Weekly digest scheduler started (leader-only)")
+
 	// Graceful shutdown — signal arrives, cancel ctx, wait for workers
 	// to finish. Retention respects ctx.Done() immediately; export worker
 	// completes any in-flight FFmpeg then exits.
@@ -379,4 +382,258 @@ func runMonthlyForOrg(ctx context.Context, db *database.DB, dispatcher *notify.D
 	}, dispatchRecipients)
 
 	log.Printf("[MONTHLY] org %s sent to %d recipient(s)", orgName, len(dispatchRecipients))
+}
+
+// runWeeklyDigest is the weekly PPE compliance digest scheduler.
+//
+// Polls every 30 minutes (vs. hourly for monthly, to keep the send
+// window tight — worst-case 30 minutes late, acceptable for a weekly
+// report). When the current UTC day-of-week matches cfg.DigestSendDay
+// AND the hour matches cfg.DigestSendHour AND the digest_sends table
+// has no row for the current ISO week, it runs per-org digest sends.
+//
+// Durable idempotency: UpsertDigestSend records each successful org
+// send in the digest_sends table. A worker restart during the send
+// window re-checks the table and skips orgs already recorded.
+//
+// Per-org error isolation: a failed query or send for one org logs
+// and continues to the next; other orgs are unaffected.
+//
+// Soft-delete composability: compliance queries read pending_review_queue
+// which references camera_id/site_id — those are scoped by org_id and
+// the query layer already filters deleted cameras/sites via the _active
+// views (see compliance_queries.go).
+func runWeeklyDigest(ctx context.Context, cfg *config.Config, db *database.DB, dispatcher *notify.Dispatcher) {
+	const scope = "org"
+	tick := time.NewTicker(30 * time.Minute)
+	defer tick.Stop()
+
+	// weekStart returns the Monday 00:00:00 UTC of the ISO week
+	// containing t. Used as the idempotency key and the period start.
+	weekStart := func(t time.Time) time.Time {
+		t = t.UTC()
+		// Weekday(): Sunday=0, Monday=1, ..., Saturday=6
+		// We want Monday=0 for the offset calculation.
+		weekday := int(t.Weekday())
+		if weekday == 0 {
+			weekday = 7 // treat Sunday as day 7 so Monday-offset is 0
+		}
+		daysToMonday := weekday - 1
+		mon := t.AddDate(0, 0, -daysToMonday)
+		return time.Date(mon.Year(), mon.Month(), mon.Day(), 0, 0, 0, 0, time.UTC)
+	}
+
+	check := func() {
+		now := time.Now().UTC()
+		if int(now.Weekday()) != cfg.DigestSendDay {
+			return
+		}
+		if now.Hour() != cfg.DigestSendHour {
+			return
+		}
+
+		periodStart := weekStart(now)
+		// Digest covers Mon 00:00 through Sun 23:59:59 UTC of the
+		// *previous* week, relative to the send day.
+		// If send day is Monday, the window is the 7 days ending Sunday.
+		periodEnd := periodStart.Add(-time.Second)          // Sunday 23:59:59
+		periodStart = periodStart.AddDate(0, 0, -7)         // prior Monday
+
+		log.Printf("[DIGEST] Checking weekly digest for week starting %s...",
+			periodStart.Format("2006-01-02"))
+
+		orgs, err := db.ListOrganizationsWithEmail(ctx)
+		if err != nil {
+			log.Printf("[DIGEST] list orgs failed: %v", err)
+			return
+		}
+
+		sent := 0
+		skipped := 0
+		for _, org := range orgs {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Durable idempotency check: has this org already been sent
+			// a digest for this ISO week?
+			existing, err := db.GetLastDigestSend(ctx, org.ID, scope, periodStart)
+			if err != nil {
+				log.Printf("[DIGEST] idempotency check failed (org=%s): %v", org.ID, err)
+				continue
+			}
+			if existing != nil {
+				// Already sent for this week — skip.
+				continue
+			}
+
+			dispatched := runWeeklyDigestForOrg(ctx, cfg, db, dispatcher, org.ID, org.Name, periodStart, periodEnd)
+			if dispatched {
+				if inserted, err := db.UpsertDigestSend(ctx, org.ID, scope, periodStart); err != nil {
+					log.Printf("[DIGEST] UpsertDigestSend failed (org=%s): %v", org.ID, err)
+				} else if inserted {
+					sent++
+				}
+			} else {
+				skipped++
+			}
+
+			// Small rate-limit between sends to be polite to the relay.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+
+		log.Printf("[DIGEST] week=%s sent=%d skipped=%d",
+			periodStart.Format("2006-01-02"), sent, skipped)
+	}
+
+	check()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			check()
+		}
+	}
+}
+
+// runWeeklyDigestForOrg builds and dispatches the digest for a single
+// organization. Returns true if the digest was dispatched (i.e., there
+// were recipients and the no-activity check passed), false if skipped.
+//
+// Soft-delete: ListSitesScoped already reads from sites_active (deleted_at
+// IS NULL). Compliance queries filter org_id; cameras are scoped by
+// site_id which is already filtered out for deleted sites.
+func runWeeklyDigestForOrg(
+	ctx context.Context,
+	cfg *config.Config,
+	db *database.DB,
+	dispatcher *notify.Dispatcher,
+	orgID, orgName string,
+	periodStart, periodEnd time.Time,
+) (dispatched bool) {
+	f := database.ComplianceFilter{
+		OrgID:     orgID,
+		Start:     periodStart,
+		End:       periodEnd,
+		TruncUnit: "day",
+	}
+
+	headline, err := db.GetComplianceHeadline(ctx, f)
+	if err != nil {
+		log.Printf("[DIGEST] org=%s headline query failed: %v", orgID, err)
+		return false
+	}
+
+	// No-activity skip: if zero violations and zero pending items and
+	// DIGEST_NO_ACTIVITY_SKIP is set, don't send a noise email.
+	if cfg.DigestNoActivitySkip &&
+		headline.TotalViolations == 0 &&
+		headline.PendingCount == 0 {
+		// Check occupancy too — if tracking has data, send anyway.
+		_, hrs, occErr := db.GetComplianceOccupancy(ctx, f)
+		if occErr == nil && (hrs == nil || *hrs == 0) {
+			log.Printf("[DIGEST] org=%s skipped — no activity in window", orgID)
+			return false
+		}
+	}
+
+	// Top cameras — up to 5.
+	topCamsDB, err := db.GetComplianceTopCameras(ctx, f, 5)
+	if err != nil {
+		log.Printf("[DIGEST] org=%s top-cameras query failed: %v", orgID, err)
+		topCamsDB = nil // non-fatal; proceed with empty list
+	}
+
+	// Occupancy / person-hours.
+	_, personHours, _ := db.GetComplianceOccupancy(ctx, f)
+	personHoursAvail := personHours != nil
+	var personHoursVal float64
+	if personHours != nil {
+		personHoursVal = *personHours
+	}
+
+	// Compliance rate: (reviewed - violations) / reviewed * 100.
+	var complianceRate float64
+	if headline.TotalReviewed > 0 {
+		compliant := headline.TotalReviewed - headline.TotalViolations
+		if compliant < 0 {
+			compliant = 0
+		}
+		complianceRate = float64(compliant) / float64(headline.TotalReviewed) * 100
+	}
+
+	// Resolve recipients via digest-specific subscriptions.
+	// Sites are fetched to scope MatchWeeklyDigestRecipients (same
+	// pattern as runMonthlyForOrg uses for MatchMonthlySummaryRecipients).
+	sites, err := db.ListSitesScoped(ctx, database.CallerScope{
+		Role:           "admin",
+		OrganizationID: orgID,
+	})
+	if err != nil || len(sites) == 0 {
+		// No active sites for this org.
+		log.Printf("[DIGEST] org=%s no active sites, skipping", orgID)
+		return false
+	}
+	siteIDs := make([]string, 0, len(sites))
+	for _, s := range sites {
+		siteIDs = append(siteIDs, s.ID)
+	}
+
+	alarmRecipients, err := db.MatchWeeklyDigestRecipients(ctx, siteIDs)
+	if err != nil {
+		log.Printf("[DIGEST] org=%s recipients query failed: %v", orgID, err)
+		return false
+	}
+	if len(alarmRecipients) == 0 {
+		// No subscribed recipients for this org — no-op, not an error.
+		return false
+	}
+
+	dispatchRecipients := make([]notify.Recipient, 0, len(alarmRecipients))
+	for _, r := range alarmRecipients {
+		dispatchRecipients = append(dispatchRecipients, notify.Recipient{Email: r.Email})
+	}
+
+	// Build top-cameras list for the notify layer.
+	topCams := make([]notify.DigestTopCamera, 0, len(topCamsDB))
+	for _, c := range topCamsDB {
+		topCams = append(topCams, notify.DigestTopCamera{
+			CameraName:     c.CameraName,
+			ViolationCount: c.ViolationCount,
+			PctOfTotal:     c.PctOfTotal,
+		})
+	}
+
+	baseURL := cfg.PublicURL
+	if baseURL == "" {
+		baseURL = "http://localhost:3000"
+	}
+
+	digestCtx := notify.WeeklyDigestContext{
+		OrganizationName:     orgName,
+		PeriodStart:          periodStart,
+		PeriodEnd:            periodEnd,
+		TotalViolations:      headline.TotalViolations,
+		TotalReviewed:        headline.TotalReviewed,
+		PendingCount:         headline.PendingCount,
+		ComplianceRate:       complianceRate,
+		ViolationTrend:       0, // trend comparison deferred (no prior-week query yet)
+		TopCameras:           topCams,
+		PersonHoursAvailable: personHoursAvail,
+		PersonHours:          personHoursVal,
+		ComplianceURL:        baseURL + "/portal/compliance",
+		PendingReviewURL:     baseURL + "/portal/compliance?tab=pending",
+		UnsubscribeURL:       baseURL + "/portal/notifications",
+	}
+
+	dispatcher.WeeklyDigest(ctx, digestCtx, dispatchRecipients)
+	log.Printf("[DIGEST] org=%s sent to %d recipient(s)", orgName, len(dispatchRecipients))
+	return true
 }

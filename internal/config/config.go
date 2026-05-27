@@ -334,6 +334,14 @@ type Config struct {
 	//
 	// Env var: VLM_CROP_PADDING_FACTOR  default 0.25
 	VLMCropPaddingFactor float64
+
+	// Weekly digest emailer (P3-INFRA-08). See Load() for env var names
+	// and defaults. DigestScope is always "org" for this release;
+	// "site" is reserved for a future per-site expansion.
+	DigestSendDay        int    // 0=Sunday ... 6=Saturday
+	DigestSendHour       int    // 0-23 UTC
+	DigestScope          string // "org" | "site" (only "org" implemented)
+	DigestNoActivitySkip bool   // skip digest for orgs with no PPE activity
 }
 
 // Load reads configuration from environment variables with defaults
@@ -465,6 +473,28 @@ func Load() *Config {
 		// 0.25 = 25% of max(bboxW, bboxH) pad in each direction. Range 0–1;
 		// CropToROI silently clamps values outside this range.
 		VLMCropPaddingFactor: getEnvFloat64("VLM_CROP_PADDING_FACTOR", 0.25),
+
+		// Weekly digest emailer — P3-INFRA-08.
+		// DigestSendDay is the day of week (0=Sunday … 6=Saturday) to send
+		// the digest. Default 1 (Monday) so the digest covers the prior
+		// Mon–Sun week and lands first thing the following Monday morning.
+		// DigestSendHour is the UTC hour (0–23) at which the scheduler
+		// fires; default 13 (1 PM UTC ≈ 9 AM US Eastern, 6 AM US Pacific).
+		// DigestScope is reserved for a future per-site expansion; only
+		// "org" (one email per org, all sites aggregated) is implemented.
+		// DigestNoActivitySkip controls whether a site/org with zero PPE
+		// activity in the window gets a digest at all — default true (skip
+		// empty windows to avoid noise emails).
+		//
+		// Env vars:
+		//   DIGEST_SEND_DAY          default 1 (Monday)
+		//   DIGEST_SEND_HOUR         default 13 (UTC)
+		//   DIGEST_SCOPE             default "org"
+		//   DIGEST_NO_ACTIVITY_SKIP  default true
+		DigestSendDay:         clampWeekday(getEnvInt("DIGEST_SEND_DAY", 1)),
+		DigestSendHour:        clampHour(getEnvInt("DIGEST_SEND_HOUR", 13)),
+		DigestScope:           digestScopeFromEnv(),
+		DigestNoActivitySkip:  getEnvBool("DIGEST_NO_ACTIVITY_SKIP", true),
 	}
 	return cfg
 }
@@ -605,6 +635,35 @@ func getEnvBool(key string, fallback bool) bool {
 		return false
 	}
 	return true
+}
+
+// clampWeekday clamps n into [0,6]. Values outside the range default to 1
+// (Monday) — the intended default for the weekly digest send day.
+func clampWeekday(n int) int {
+	if n < 0 || n > 6 {
+		return 1
+	}
+	return n
+}
+
+// clampHour clamps n into [0,23]. Values outside the range default to 13
+// (1 PM UTC) — the intended default for the weekly digest send hour.
+func clampHour(n int) int {
+	if n < 0 || n > 23 {
+		return 13
+	}
+	return n
+}
+
+// digestScopeFromEnv parses DIGEST_SCOPE. Only "org" is implemented; any
+// unrecognised value falls through to "org" to ensure a safe default.
+// "site" is reserved for a future per-site expansion (P3-INFRA-08 v2).
+func digestScopeFromEnv() string {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("DIGEST_SCOPE")))
+	if v == "site" {
+		return "site"
+	}
+	return "org"
 }
 
 // parseAllowedOrigins splits a comma-separated env value into a list of
