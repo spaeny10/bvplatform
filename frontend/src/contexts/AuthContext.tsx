@@ -44,9 +44,9 @@ export function useAuth() {
     return ctx;
 }
 
-// TOKEN_KEY is kept as a named constant so any remaining transitive
-// references compile, but the value is never written post-P1-A-02-part2.
-// Delete this constant in PR 3 when the Authorization-header path retires.
+// TOKEN_KEY: kept only so logout() can clear any stale localStorage entry
+// from a session before P1-A-02 part 2. Never written. Safe to remove once
+// no legacy sessions can have this key set.
 const TOKEN_KEY = 'ironsight_token';
 const USER_KEY  = 'ironsight_user';
 
@@ -152,9 +152,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // P1-A-02 part 2: credentials:'include' lets the browser store the
         // ironsight_session + ironsight_csrf cookies from the Set-Cookie
         // response headers. We no longer write the JWT to localStorage.
-        // The response body still contains `token` during the migration
-        // window (needed by the Authorization-header fallback in RequireAuth
-        // until PR 3 retires it) — we ignore it here.
+        // The response body still contains `token` for legacy clients; we
+        // ignore it here — the JWT lives in the HttpOnly cookie (P1-A-02 PR3).
         const res = await fetch('/auth/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -227,16 +226,3 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     );
 }
 
-/**
- * getStoredToken is a no-op stub kept for import compatibility during the
- * PR1+PR2 migration window. The JWT no longer lives in localStorage — it is
- * in the HttpOnly ironsight_session cookie and is inaccessible to JS.
- *
- * Delete this export in PR 3 when the Authorization-header fallback retires
- * and all call-site imports have been cleaned up.
- *
- * @deprecated Use credentials:'include' fetches instead of reading a token.
- */
-export function getStoredToken(): string | null {
-    return null;
-}

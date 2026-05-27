@@ -553,26 +553,35 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// the same /media/v1/ scheme if Caleb wants belt-and-braces.
 	r.Handle("/exports/*", http.StripPrefix("/exports/", http.FileServer(http.Dir(cfg.ExportPath))))
 
-	// P1-C-03: Prometheus /metrics endpoint.
+	// P1-C-03 / P1-A-02 PR3: Prometheus /metrics endpoint.
 	//
-	// Security posture: "sso" (default) puts /metrics behind the same
-	// RequireAuth middleware as /api/*, so a Prom scraper needs a valid
-	// service-account JWT. "none" removes the auth check — safe only if
-	// NPM restricts /metrics to the cluster network at the proxy layer.
+	// Security posture (updated P1-A-02 PR3):
+	//   METRICS_AUTH=none (default) — /metrics is NOT wrapped in RequireAuth.
+	//     The Prometheus scraper on the monitoring LXC hits the endpoint
+	//     without an auth token. REQUIRED: NPM must restrict /metrics to the
+	//     monitoring LXC IP + trusted LAN CIDR before traffic reaches this
+	//     container. Do NOT expose publicly with no NPM restriction.
+	//     See docs/metrics.md for the NPM rule requirement.
+	//   METRICS_AUTH=sso — gate behind RequireAuth (JWT/SSO middleware).
+	//     Useful for dev/testing environments where network restrictions are
+	//     not in place, or as belt-and-suspenders on top of NPM restrictions.
+	//
+	// The bearer-token path in RequireAuth has been retired (P1-A-02 PR3), so
+	// the scraper can no longer authenticate via Authorization header —
+	// network-trust is the production scraping model going forward.
 	//
 	// Disabled entirely when MetricsEnabled=false (METRICS_ENABLED=false env).
-	// That lets a misconfigured deploy shut the endpoint off cleanly without
-	// a code change.
 	if cfg.MetricsEnabled {
 		metricsHandler := promhttp.HandlerFor(
 			appmetrics.Registry,
 			promhttp.HandlerOpts{EnableOpenMetrics: false},
 		)
-		if cfg.MetricsAuth == "none" {
-			r.Get("/metrics", metricsHandler.ServeHTTP)
-		} else {
-			// Default: "sso" — gate behind RequireAuth just like /api/*.
+		if cfg.MetricsAuth == "sso" {
+			// Explicit opt-in: gate behind RequireAuth for dev/test.
 			r.With(RequireAuth(cfg, db)).Get("/metrics", metricsHandler.ServeHTTP)
+		} else {
+			// Default ("none"): no application auth — NPM network restriction required.
+			r.Get("/metrics", metricsHandler.ServeHTTP)
 		}
 	}
 

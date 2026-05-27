@@ -7,16 +7,18 @@ package api
 // exercise the full login/logout flow (including DB writes) belong in the
 // integration suite (internal/testutil/integration_test.go).
 //
-// Test map (§4 of the plan):
+// Test map:
 //   TestLogin_SetsCookies          — setSessionCookies emits the right attributes
 //   TestLogout_ClearsCookies       — clearSessionCookies zeroes both cookies
 //   TestRequireAuth_CookieAccepted — valid cookie reaches next handler
-//   TestRequireAuth_AuthHeaderStillAccepted — Bearer header still accepted during fallback window
 //   TestCSRF_MismatchReturns403    — wrong CSRF token → 403
 //   TestCSRF_AbsenceReturns403     — absent CSRF token → 403
 //   TestCSRF_GETNotChecked         — GET exempt from CSRF
 //   TestSSO_NoCookieRequired       — X-Forwarded-Email path unaffected
 //   TestWSTicket_CookieSession     — stub: verify cookie read supplies claims to context
+//
+// Note: TestRequireAuth_AuthHeaderStillAccepted was removed in P1-A-02 PR3.
+// The retirement regression guard lives in auth_header_retire_test.go.
 
 import (
 	"net/http"
@@ -184,32 +186,10 @@ func TestRequireAuth_CookieAccepted(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_AuthHeaderStillAccepted verifies the Authorization:
-// Bearer fallback is still accepted during the PR1+PR2 migration window.
-// This test should be deleted when PR 3 retires the header path.
-func TestRequireAuth_AuthHeaderStillAccepted(t *testing.T) {
-	cfg := minConfig(false)
-	tok, _ := signTestToken(t, "uid-03", "bob", "admin")
-
-	reached := false
-	sentinel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
-		w.WriteHeader(http.StatusOK)
-	})
-
-	handler := RequireAuth(cfg, nil)(sentinel)
-	req := httptest.NewRequest(http.MethodGet, "/api/whatever", nil)
-	req.Header.Set("Authorization", "Bearer "+tok)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("got %d, want 200", w.Code)
-	}
-	if !reached {
-		t.Error("downstream handler not reached")
-	}
-}
+// TestRequireAuth_AuthHeaderStillAccepted was the P1-A-02 PR1+PR2 migration
+// window guard confirming Bearer header fallback was accepted. Removed in
+// P1-A-02 PR3 — the header path is now retired. The corresponding regression
+// guard is TestRequireAuth_AuthHeaderRejected in auth_header_retire_test.go.
 
 // ── CSRF middleware ───────────────────────────────────────────────────────────
 

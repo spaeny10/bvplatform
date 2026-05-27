@@ -1,7 +1,3 @@
-// getStoredToken import is kept during the PR1+PR2 migration window for
-// any transitive consumers. It is a no-op stub now — delete in PR 3.
-import { getStoredToken } from '@/contexts/AuthContext';
-
 const API_BASE = '/api';
 
 /**
@@ -27,14 +23,12 @@ function getCSRFToken(): string {
  *    requests (POST / PUT / PATCH / DELETE)
  *  - redirects to /login on 401
  *
- * The Authorization: Bearer path is intentionally removed post-P1-A-02-part2.
- * The getStoredToken() import above is a dead stub kept for import compat.
+ * P1-A-02 PR3: Authorization: Bearer path has been retired. Sessions are
+ * maintained exclusively via the ironsight_session HttpOnly cookie.
  *
  * P1-A-02 part 2 — replaces the localStorage-based token injection.
  */
 export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
-    // getStoredToken always returns null now — call kept for import compat only.
-    void getStoredToken;
     const headers = new Headers(init.headers ?? {});
     const method = (init.method ?? 'GET').toUpperCase();
     // Inject CSRF header on state-changing requests. GET / HEAD / OPTIONS

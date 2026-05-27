@@ -134,9 +134,9 @@ Monitoring LXC deploy guide: [`deploy/monitoring/DEPLOY.md`](../deploy/monitorin
 | Name | Type | Default | Required | Description |
 |---|---|---|---|---|
 | `METRICS_ENABLED` | bool | `true` | no | Enables the `/metrics` Prometheus endpoint. Set to `false` to disable entirely — useful during an initial deploy before a Prom scraper is pointed at the host, or if NPM cannot restrict the path to the cluster network. |
-| `METRICS_AUTH` | string | `sso` | no | Auth model for `/metrics`. `sso` (default) — endpoint sits behind the same `RequireAuth` JWT/SSO middleware as `/api/*`, so the Prom LXC needs a service-account JWT to scrape. `none` — no auth check; safe only if NPM restricts `/metrics` to the cluster network via an allow-list rule. Any unrecognised value falls back to `sso`. |
+| `METRICS_AUTH` | string | `none` | no | Auth model for `/metrics`. **`none` (default, P1-A-02 PR3)** — no application-layer auth check; `/metrics` is NOT wrapped in RequireAuth. **REQUIRED: NPM must restrict `/metrics` to the monitoring LXC IP / trusted LAN CIDR.** Do NOT expose publicly without that NPM rule. `sso` — endpoint is behind the same `RequireAuth` middleware as `/api/*`; useful for dev/testing when network restrictions are not in place. Any unrecognised value falls back to `none`. |
 
-**Security note (D-02):** `sso` is the recommended default. The Prom LXC is on the trusted cluster network and can carry a long-lived service-account JWT. `none` is acceptable if NPM's allow-list rule gates the path to the cluster's internal CIDR before it reaches the API container — do not set `none` on an internet-facing deployment without that NPM rule in place.
+**Security note (P1-A-02 PR3):** `none` is the production default. The `Authorization: Bearer` path in `RequireAuth` has been retired — the scraper can no longer authenticate via token header. The production scraping model is **network-trust**: NPM restricts `/metrics` to the monitoring LXC's IP and cluster LAN CIDR before it reaches the API container. See [`docs/metrics.md`](./metrics.md#security--network-restriction-required-when-metrics_authnone) for the NPM rule requirement. Set `METRICS_AUTH=sso` in dev/CI environments where NPM network restrictions are not in place.
 
 
 

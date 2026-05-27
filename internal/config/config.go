@@ -208,16 +208,19 @@ type Config struct {
 	// misconfigured deploy before a Prom scraper is pointed at the host).
 	//
 	// MetricsAuth controls who may reach /metrics:
+	//   "none" — (PRODUCTION DEFAULT, P1-A-02 PR3) no application-layer auth
+	//            check. The /metrics route is NOT wrapped in RequireAuth.
+	//            REQUIRED: NPM must restrict /metrics to the monitoring LXC
+	//            IP and/or trusted LAN CIDR before traffic reaches the app.
+	//            Do NOT expose /metrics publicly with METRICS_AUTH=none — it
+	//            leaks internal observability data. See docs/metrics.md.
 	//   "sso"  — behind the same RequireAuth JWT/SSO middleware as /api/*.
-	//            Recommended: the Prom LXC is on the trusted cluster network
-	//            and carries a service-account JWT; the endpoint is not
-	//            world-reachable through NPM without a valid session.
-	//   "none" — no auth check. Safe only if NPM strictly limits /metrics
-	//            to the cluster network (e.g. via an allow-list rule).
-	//            Not recommended for internet-facing deployments.
-	// Default "sso".
+	//            Useful for dev/testing when network restrictions are not in
+	//            place. Not the production scraping path post-P1-A-02-PR3
+	//            (the bearer token path has been retired).
+	// Default "none" (P1-A-02 PR3, previously "sso").
 	MetricsEnabled bool
-	MetricsAuth    string // "sso" | "none"
+	MetricsAuth    string // "none" (prod) | "sso" (dev/test)
 
 	// PPE worker (P2-C-01). PPEPollIntervalSec is the cadence between
 	// snapshot polls per camera. PPEConfidenceThreshold is the
@@ -354,7 +357,8 @@ func Load() *Config {
 		// value like "true" doesn't silently start triggering the skip path.
 		WorkerLeaderDisabled: os.Getenv("WORKER_LEADER_DISABLED") == "1",
 
-		// Metrics — P1-C-03. Default on with SSO gating.
+		// Metrics — P1-C-03. Default on; P1-A-02 PR3 changed default auth to
+		// "none" (network-trust via NPM). Set METRICS_AUTH=sso for dev.
 		MetricsEnabled: getEnvBool("METRICS_ENABLED", true),
 		MetricsAuth:    metricsAuthFromEnv(),
 
@@ -373,15 +377,20 @@ func Load() *Config {
 	return cfg
 }
 
-// metricsAuthFromEnv parses METRICS_AUTH. Valid values are "sso" (default)
-// and "none". Any unrecognised value falls back to "sso" so a misconfigured
-// env never accidentally opens the endpoint.
+// metricsAuthFromEnv parses METRICS_AUTH. Valid values are "none" (default,
+// P1-A-02 PR3) and "sso" (dev/test). Any unrecognised value falls back to
+// "none" to match the documented production default. "sso" must be set
+// explicitly when application-layer auth is desired.
+//
+// IMPORTANT: "none" means /metrics has NO application-layer auth. The
+// operator MUST restrict the endpoint at the reverse proxy (NPM) to the
+// monitoring LXC IP / trusted LAN CIDR. See docs/metrics.md.
 func metricsAuthFromEnv() string {
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("METRICS_AUTH")))
-	if v == "none" {
-		return "none"
+	if v == "sso" {
+		return "sso"
 	}
-	return "sso"
+	return "none"
 }
 
 // clampIndexerConcurrency mirrors the historical inline check in

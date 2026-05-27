@@ -329,10 +329,10 @@ func HandleLogin(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			UpdatedAt:       user.UpdatedAt,
 		}
 
-		// P1-A-02 part 2: set ironsight_session (HttpOnly) and ironsight_csrf
-		// (JS-readable) cookies. The session JWT is also returned in the response
-		// body during the migration window so the Authorization-header fallback
-		// in RequireAuth keeps working until PR 3 retires it.
+		// P1-A-02 PR3: set ironsight_session (HttpOnly) and ironsight_csrf
+		// (JS-readable) cookies. The session JWT is also returned in the
+		// response body for legacy clients that still parse it, but RequireAuth
+		// no longer reads the Authorization header — the cookie IS the auth.
 		csrfToken, err := generateCSRFToken()
 		if err != nil {
 			http.Error(w, "token generation failed", http.StatusInternalServerError)
@@ -417,20 +417,28 @@ type contextKey string
 
 const ContextKeyClaims contextKey = "claims"
 
-// RequireAuth is a middleware that validates the Bearer token. After
-// the cryptographic check it consults the revoked_tokens blocklist —
-// a logged-out token is rejected even though its signature is still
-// valid. The DB hit is one indexed point lookup on the jti primary
-// key, so the cost is negligible compared to the bcrypt and JWT
-// parsing already on the path.
+// RequireAuth is a middleware that validates the session credential.
+// After the cryptographic check it consults the revoked_tokens blocklist —
+// a logged-out token is rejected even though its signature is still valid.
+// The DB hit is one indexed point lookup on the jti primary key, so the
+// cost is negligible compared to the bcrypt and JWT parsing already on the
+// path.
 //
-// Reverse-proxy header-trust SSO: when cfg.SSOTrustHeader == "email" AND the
-// inbound request carries X-Forwarded-Email (injected by oauth2-proxy via NPM
-// in the BigView deployment), we trust the header, look up or auto-provision
-// the user, synthesize *auth.Claims into context, and skip JWT entirely. The
-// JWT path stays alive as an emergency local-login fallback and for
-// service-to-service tokens. SECURITY: only enable behind a trusted reverse
-// proxy that strips client-supplied X-Forwarded-Email — see config docs.
+// Two accepted auth paths (in priority order):
+//
+//  1. Reverse-proxy header-trust SSO: when cfg.SSOTrustHeader == "email" AND
+//     the inbound request carries X-Forwarded-Email (injected by oauth2-proxy
+//     via NPM in the BigView deployment), we trust the header, look up or
+//     auto-provision the user, synthesize *auth.Claims into context, and skip
+//     JWT entirely. SECURITY: only enable behind a trusted reverse proxy that
+//     strips client-supplied X-Forwarded-Email — see config docs.
+//
+//  2. ironsight_session HttpOnly cookie: set by /auth/login (P1-A-02 part 2).
+//     The JWT value is read from the cookie value and verified/revocation-
+//     checked normally.
+//
+// The Authorization: Bearer <sessionJWT> header path was removed in P1-A-02
+// PR3. A bare Authorization header without a valid cookie now returns 401.
 func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Handler {
 	// Build a fast lookup set of admin-allowlisted emails (case-insensitive).
 	adminSet := make(map[string]struct{}, len(cfg.SSOAdminEmails))
@@ -469,29 +477,18 @@ func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Ha
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
-				// Header missing — fall through to JWT (emergency local login).
+				// Header missing — fall through to cookie path (emergency local login).
 			}
 
-			// P1-A-02 part 2: prefer the session cookie over the Authorization
-			// header. The header remains accepted as a fallback during the
-			// migration window (PR 1 + PR 2 ship together; PR 3 removes this
-			// branch after a 24h soak). Never log the raw token value.
-			var rawToken string
-			if cookie, err := r.Cookie(sessionCookieName); err == nil && cookie.Value != "" {
-				rawToken = cookie.Value
-			} else {
-				authHeader := r.Header.Get("Authorization")
-				if authHeader == "" {
-					http.Error(w, "authorization required", http.StatusUnauthorized)
-					return
-				}
-				parts := strings.SplitN(authHeader, " ", 2)
-				if len(parts) != 2 || !strings.EqualFold(parts[0], "bearer") {
-					http.Error(w, "invalid authorization format", http.StatusUnauthorized)
-					return
-				}
-				rawToken = parts[1]
+			// P1-A-02 PR3: the Authorization: Bearer header path has been retired.
+			// The ONLY accepted session credential is the ironsight_session HttpOnly
+			// cookie set by /auth/login. Never log the raw token value.
+			cookie, err := r.Cookie(sessionCookieName)
+			if err != nil || cookie.Value == "" {
+				http.Error(w, "authorization required", http.StatusUnauthorized)
+				return
 			}
+			rawToken := cookie.Value
 
 			claims, err := auth.ParseToken(rawToken, cfg.JWTSecret)
 			if err != nil {

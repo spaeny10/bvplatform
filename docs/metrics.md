@@ -5,6 +5,22 @@ Prometheus exposition endpoint: `GET /metrics`
 Auth: controlled by `METRICS_AUTH` env var (see [`configuration.md`](./configuration.md#metrics-p1-c-03)).  
 Registry: non-default (`internal/metrics.Registry`) — standard Go runtime + process collectors plus the series below.
 
+## SECURITY — network restriction required when `METRICS_AUTH=none`
+
+**`METRICS_AUTH=none` is the production default (P1-A-02 PR3).** This means `/metrics` has **no application-layer authentication**. The Prometheus scraper on the monitoring LXC hits the endpoint without any token.
+
+**You MUST restrict `/metrics` at the reverse proxy (NPM) layer:**
+
+- Allow the monitoring LXC's IP (e.g. the LXC's LAN IP on the cluster network).
+- Allow any trusted LAN CIDR that the Prometheus scraper may originate from.
+- Block all other sources — including public internet.
+
+**Do not expose `/metrics` publicly with `METRICS_AUTH=none` and no NPM restriction.** The endpoint leaks internal observability data (camera counts, error rates, DB pool stats, recording state, WebSocket client counts).
+
+**NPM configuration**: in Nginx Proxy Manager, add an `allow`/`deny` block on the `/metrics` location for the `/metrics` proxy host that limits access to the monitoring LXC IP and trusted cluster CIDR before proxying to the API container.
+
+If NPM network restrictions are not in place, set `METRICS_AUTH=sso` as a fallback — the endpoint then requires a valid session cookie (local login via cookie) or SSO header. Note that `sso` is a dev/test option; the production scraping model is network-trust (`none`).
+
 Decision context: [`docs/decisions.md` D-02](../../docs/decisions.md) — self-host Prom + Grafana LXC.  
 Prom LXC provisioning is platform-ops work separate from this endpoint.
 
