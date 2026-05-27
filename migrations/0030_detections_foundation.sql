@@ -35,6 +35,22 @@
 --   site_id         → TEXT  (sites.id is TEXT)
 --   camera_id       → UUID  (cameras.id is UUID)
 --   all other FKs   → UUID
+--
+-- TimescaleDB FK constraints on hypertables:
+--   PostgreSQL requires a unique constraint on the referenced column for FK
+--   declarations. When 'detections' is converted to a hypertable its 'id'
+--   column cannot serve as a single-column PK/UNIQUE target because TimescaleDB
+--   requires the partition key (detected_at) to be included in any primary key
+--   on a hypertable (i.e. PRIMARY KEY would have to be (id, detected_at)).
+--   A compound PK cannot be referenced by a single-column FK
+--   (detection_reviews.detection_id, supersedes) from other tables.
+--   Resolution: id is NOT NULL + UNIQUE via a post-hypertable index; supersedes
+--   and detection_reviews.detection_id are plain UUID columns (no FK declared).
+--   Application code enforces the referential semantics; the append-only
+--   trigger prevents deletion so orphaned reviews cannot occur in practice.
+--   Similarly, segments.id has no PK in the schema (hypertable, id is bigserial
+--   NOT NULL without an explicit PRIMARY KEY constraint), so segment_id is a
+--   plain BIGINT column with no FK declared.
 
 -- +goose Up
 
@@ -114,6 +130,10 @@ CREATE INDEX IF NOT EXISTS idx_ar_model_version
 -- ────────────────────────────────────────────────────────────────
 -- detections — hypertable on detected_at
 -- ────────────────────────────────────────────────────────────────
+-- id is NOT NULL only (no PRIMARY KEY clause) so that create_hypertable
+-- can convert the table without requiring (id, detected_at) as a compound
+-- PK. A UNIQUE index is created post-conversion for application lookups.
+-- See note at top of file on TimescaleDB FK constraints.
 
 CREATE TABLE IF NOT EXISTS detections (
     id               UUID        NOT NULL DEFAULT gen_random_uuid(),
@@ -162,13 +182,9 @@ CREATE TABLE IF NOT EXISTS detections (
 
     segment_id       BIGINT,
     -- Evidence anchor: segments.id that produced this detection.
-    -- No FK constraint: segments is a TimescaleDB hypertable and does
-    -- not carry an explicit PRIMARY KEY constraint in the schema (PG
-    -- requires a unique constraint on the referenced column for FK
-    -- declarations, which hypertable partitioning removes). The value
-    -- is stored as a plain BIGINT; application code enforces lineage.
-    -- When a segment is purged via the retention sweep, the value
-    -- becomes orphaned but the detection record survives (historical fact).
+    -- No FK constraint: segments is a TimescaleDB hypertable with no
+    -- standalone PK constraint (see file header note). Plain BIGINT;
+    -- application code enforces lineage.
 
     frame_offset_ms  BIGINT,
     -- ms offset within the segment. NULL = sustained violation (time range).
@@ -179,11 +195,12 @@ CREATE TABLE IF NOT EXISTS detections (
     -- Denormalized from analysis_run.run_type for fast filtering.
 
     -- SUPERSEDE CHAIN -------------------------------------------------
-    supersedes       UUID                 REFERENCES detections(id) ON DELETE SET NULL,
-    -- When a reanalysis or correction produces a new row superseding an old
-    -- one, the NEW row carries supersedes = <old_row_id>.
+    supersedes       UUID,
+    -- Plain UUID (no FK declared — see file header note on hypertable
+    -- FK constraints). When a reanalysis or correction produces a new row
+    -- superseding an old one, the NEW row carries supersedes = <old_row_id>.
     -- The old row is NEVER updated or deleted (append-only trigger below).
-    -- detections_current view: rows NOT referenced by any supersedes FK.
+    -- detections_current view: rows NOT referenced by any supersedes value.
 
     -- METADATA --------------------------------------------------------
     details          JSONB       NOT NULL DEFAULT '{}',
@@ -199,6 +216,14 @@ CREATE TABLE IF NOT EXISTS detections (
 SELECT create_hypertable('detections', 'detected_at',
     chunk_time_interval => INTERVAL '7 days',
     if_not_exists => TRUE);
+
+-- Post-hypertable unique index on id for application-level lookups.
+-- A plain UNIQUE INDEX (not a PK) is acceptable in TimescaleDB as long
+-- as the partition key (detected_at) is not required in the uniqueness
+-- constraint for the query patterns we need. Lookups by id are always
+-- accompanied by the insert timestamp in the application layer.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_det_id
+    ON detections (id);
 
 -- Append-only trigger: reuse the ironsight_prevent_mutation() function
 -- defined in migration 0001 / 0017. Same function used by audit_log,
@@ -242,21 +267,27 @@ CREATE INDEX IF NOT EXISTS idx_det_site_domain_detected
 -- Corrections are not detection rows; they are annotations on an
 -- existing detection. Allows multiple review passes without polluting
 -- the detections sequence.
+--
+-- detection_id: plain UUID column (no FK to detections — hypertable FK
+-- constraint limitation, see file header). Application code verifies
+-- the detection exists and belongs to the same org before insert.
+-- The append-only trigger on detections prevents deletion so orphaned
+-- reviews cannot occur in practice.
 
 CREATE TABLE IF NOT EXISTS detection_reviews (
-    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    organization_id TEXT        NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
-    detection_id    UUID        NOT NULL REFERENCES detections(id)    ON DELETE RESTRICT,
-    -- RESTRICT: reviews reference a detection that should never disappear.
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id  TEXT        NOT NULL REFERENCES organizations(id) ON DELETE RESTRICT,
+    detection_id     UUID        NOT NULL,
+    -- No FK: see note above re: hypertable FK constraints.
 
-    reviewer_user_id UUID       NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    reviewer_user_id UUID        NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
 
-    verdict         TEXT        NOT NULL
+    verdict          TEXT        NOT NULL
         CHECK (verdict IN ('confirmed', 'false_positive', 'uncertain')),
 
-    notes           TEXT,
+    notes            TEXT,
 
-    reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    reviewed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Primary lookup: list reviews for a detection.
@@ -299,6 +330,7 @@ DROP INDEX IF EXISTS idx_det_analysis_run;
 DROP INDEX IF EXISTS idx_det_org_class_detected;
 DROP INDEX IF EXISTS idx_det_camera_detected;
 DROP INDEX IF EXISTS idx_det_org_domain_detected;
+DROP INDEX IF EXISTS idx_det_id;
 DROP TABLE IF EXISTS detections;
 
 DROP INDEX IF EXISTS idx_ar_model_version;

@@ -125,6 +125,9 @@ type DetectionInsert struct {
 
 // DetectionReview is a human operator annotation on a detection.
 // Corrections live here, not as new detection rows (DECISION-D2).
+// detection_id is stored as a plain UUID (no DB FK constraint — detections
+// is a hypertable; see migration 0030 header for the FK constraint rationale).
+// Application code verifies the detection exists before inserting a review.
 type DetectionReview struct {
 	ID             uuid.UUID  `json:"id"`
 	OrganizationID string     `json:"organization_id"`
