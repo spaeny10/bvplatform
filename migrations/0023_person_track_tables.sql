@@ -77,7 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_ptb_site_bucket
 
 -- +goose Down
 
-SELECT remove_retention_policy('person_track_frames', if_not_exists => TRUE);
+SELECT remove_retention_policy('person_track_frames'::regclass, if_not_exists => TRUE);
 DROP INDEX IF EXISTS idx_ptf_person_nonzero;
 DROP INDEX IF EXISTS idx_ptf_camera_time;
 DROP INDEX IF EXISTS idx_ptf_org_time;

@@ -112,3 +112,7 @@ bin/reset-*.sql
 dev.log.err
 **/dev.log.err
 **/*.log.err
+
+# The Ironsight backlog/plans live in the OUTER bigview-platform repo, not here.
+# Agents sometimes cd into this repo and write ironsight/backlog/* by mistake.
+/ironsight/
