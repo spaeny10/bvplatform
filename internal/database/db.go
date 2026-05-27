@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ironsight/internal/crypto"
 )
 
 // DB wraps the PostgreSQL connection pool and provides query methods
@@ -24,6 +26,32 @@ type DB struct {
 // is configured. The key is held in memory only — never persisted.
 func (db *DB) SetCredentialsKey(key []byte) {
 	db.credentialsKey = key
+}
+
+// encryptCred returns the at-rest form of a camera credential. No key
+// configured, empty value, or already-encrypted value → returned unchanged
+// (so the field stays plaintext-compatible on deployments without a key, and
+// re-encryption is idempotent). P1-A-05.
+func (db *DB) encryptCred(plaintext string) (string, error) {
+	if db.credentialsKey == nil || plaintext == "" || crypto.IsEncrypted(plaintext) {
+		return plaintext, nil
+	}
+	return crypto.EncryptCredential(plaintext, db.credentialsKey)
+}
+
+// decryptCred reverses encryptCred for the read path so ONVIF/RTSP consumers
+// stay plaintext-facing. Tolerant: no key or a legacy plaintext row → returned
+// as-is; a decrypt failure (wrong key / tampered) → empty so auth fails closed
+// rather than leaking ciphertext as a password.
+func (db *DB) decryptCred(stored string) string {
+	if db.credentialsKey == nil || !crypto.IsEncrypted(stored) {
+		return stored
+	}
+	pt, err := crypto.DecryptCredential(stored, db.credentialsKey)
+	if err != nil {
+		return ""
+	}
+	return pt
 }
 
 // New creates a new database connection pool
@@ -89,6 +117,12 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 	if c.SenseWebhookToken != "" {
 		senseToken = c.SenseWebhookToken
 	}
+	// P1-A-05: encrypt the camera password at rest. No-op when no key is
+	// configured. The in-memory c.Password is left plaintext for the caller.
+	storedPassword, encErr := db.encryptCred(c.Password)
+	if encErr != nil {
+		return encErr
+	}
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO cameras (id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
@@ -97,7 +131,7 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 			device_class, sense_webhook_token,
 			created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
-		c.ID, c.Name, c.OnvifAddress, c.Username, c.Password, c.RTSPUri, c.SubStreamUri,
+		c.ID, c.Name, c.OnvifAddress, c.Username, storedPassword, c.RTSPUri, c.SubStreamUri,
 		c.RetentionDays, c.Recording, c.RecordingMode, c.PreBufferSec, c.PostBufferSec, c.RecordingTriggers,
 		c.EventsEnabled, c.AudioEnabled, c.CameraGroup, c.Schedule, c.PrivacyMask,
 		c.Status, c.ProfileToken, c.HasPTZ, c.Manufacturer, c.Model, c.Firmware,
@@ -135,6 +169,7 @@ func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 	return c, err
 }
 
@@ -164,6 +199,7 @@ func (db *DB) GetCameraIncludeDeleted(ctx context.Context, id uuid.UUID) (*Camer
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05
 	return c, err
 }
 
@@ -201,6 +237,7 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 		if senseToken != nil {
 			c.SenseWebhookToken = *senseToken
 		}
+		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 		cameras = append(cameras, c)
 	}
 	return cameras, nil
@@ -242,6 +279,7 @@ func (db *DB) ListCamerasIncludeDeleted(ctx context.Context) ([]Camera, error) {
 		if senseToken != nil {
 			c.SenseWebhookToken = *senseToken
 		}
+		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 		cameras = append(cameras, c)
 	}
 	return cameras, nil
@@ -278,6 +316,7 @@ func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera,
 	if senseToken != nil {
 		c.SenseWebhookToken = *senseToken
 	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05
 	return c, err
 }
 

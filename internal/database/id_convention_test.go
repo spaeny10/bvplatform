@@ -79,6 +79,51 @@ var textPKAllowlist = map[string]string{
 	"evidence_shares": "token is an opaque share string, not a record-identity UUID",
 }
 
+// textIDColumnAllowlist is the set of "table.column" *_id columns that are
+// legitimately TEXT even though their table is not a TEXT-PK table. Three
+// reasons: (a) FK to a TEXT-PK table (site_id→sites, organization_id/org_id→
+// organizations, alarm_id→active_alarms, *_operator_id→operators); (b) a
+// polymorphic / non-record id (audit target_id, manifest artifact_id, key_id
+// fingerprint, device_id); (c) a denormalized SOC/audit copy of an id kept as
+// text on purpose (the referenced row may be deleted; audit rows are immutable).
+// A NEW *_id TEXT column not in this list still fails the check — that's the
+// drift guard. Views (*_active) are excluded separately (BASE TABLE filter).
+var textIDColumnAllowlist = map[string]string{
+	// FK → TEXT-PK tables
+	"cameras.site_id":                       "→ sites.id (TEXT)",
+	"speakers.site_id":                      "→ sites.id (TEXT)",
+	"compliance_rules.site_id":              "→ sites.id (TEXT)",
+	"compliance_rules.organization_id":      "→ organizations.id (TEXT)",
+	"ppe_zones.site_id":                     "→ sites.id (TEXT)",
+	"ppe_zones.organization_id":             "→ organizations.id (TEXT)",
+	"pending_review_queue.site_id":          "→ sites.id (TEXT)",
+	"pending_review_queue.organization_id":  "→ organizations.id (TEXT)",
+	"person_track_frames.site_id":           "→ sites.id (TEXT)",
+	"person_track_frames.organization_id":   "→ organizations.id (TEXT)",
+	"person_track_buckets.site_id":          "→ sites.id (TEXT)",
+	"person_track_buckets.organization_id":  "→ organizations.id (TEXT)",
+	"support_tickets.site_id":               "→ sites.id (TEXT)",
+	"support_tickets.organization_id":       "→ organizations.id (TEXT)",
+	"users.organization_id":                 "→ organizations.id (TEXT)",
+	"digest_sends.org_id":                   "→ organizations.id (TEXT)",
+	"evidence_manifests.organization_id":    "→ organizations.id (TEXT)",
+	"device_assignments.site_id":            "→ sites.id (TEXT)",
+	"shift_handoffs.from_operator_id":       "→ operators.id (TEXT)",
+	"shift_handoffs.to_operator_id":         "→ operators.id (TEXT)",
+	// Polymorphic / non-record ids
+	"audit_log.target_id":          "polymorphic audit target (any entity type)",
+	"evidence_manifests.artifact_id": "polymorphic (report_id / event_id / share token)",
+	"evidence_manifests.key_id":      "ed25519 public-key fingerprint, not a record id",
+	"device_assignments.device_id":   "polymorphic device reference (camera/speaker/etc.)",
+	// Denormalized SOC/audit copies (referenced row may be deleted; audit is immutable)
+	"alarm_queue.alarm_id":        "denormalized SOC queue copy of active_alarms.id (TEXT)",
+	"alarm_queue.site_id":         "denormalized SOC queue copy of sites.id (TEXT)",
+	"alarm_queue.camera_id":       "denormalized SOC queue copy of camera id (TEXT, not enforced FK)",
+	"deterrence_audits.alarm_id":  "denormalized audit copy of active_alarms.id (TEXT)",
+	"deterrence_audits.user_id":   "denormalized audit copy of user id (TEXT, immutable audit row)",
+	"playback_audits.user_id":     "denormalized audit copy of user id (TEXT, immutable audit row)",
+}
+
 // TestSchemaIDConventions asserts that:
 //
 //  1. No table outside the allowlist has a TEXT primary key.
@@ -165,14 +210,19 @@ func TestSchemaIDConventions(t *testing.T) {
 	// Also exclude goose's own bookkeeping table.
 	allowlistNames = append(allowlistNames, "'goose_db_version'")
 
+	// BASE TABLE only — the soft-delete *_active VIEWS mirror their base
+	// tables' columns and would double-report. We check the base tables.
 	query := fmt.Sprintf(`
-		SELECT table_name, column_name, data_type
-		FROM information_schema.columns
-		WHERE table_schema = 'public'
-		  AND table_name NOT IN (%s)
-		  AND column_name LIKE '%%_id'
-		  AND data_type IN ('text', 'character varying')
-		ORDER BY table_name, column_name
+		SELECT c.table_name, c.column_name, c.data_type
+		FROM information_schema.columns c
+		JOIN information_schema.tables t
+		  ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+		WHERE c.table_schema = 'public'
+		  AND t.table_type = 'BASE TABLE'
+		  AND c.table_name NOT IN (%s)
+		  AND c.column_name LIKE '%%_id'
+		  AND c.data_type IN ('text', 'character varying')
+		ORDER BY c.table_name, c.column_name
 	`, strings.Join(allowlistNames, ", "))
 
 	idRows, err := db.Pool.Query(ctx, query)
@@ -186,6 +236,11 @@ func TestSchemaIDConventions(t *testing.T) {
 		var tbl, col, dtype string
 		if err := idRows.Scan(&tbl, &col, &dtype); err != nil {
 			t.Fatalf("scan _id column row: %v", err)
+		}
+		// Skip documented-legitimate TEXT *_id columns (FK to TEXT-PK tables,
+		// polymorphic ids, or denormalized audit copies).
+		if _, ok := textIDColumnAllowlist[tbl+"."+col]; ok {
+			continue
 		}
 		check2Failures = append(check2Failures,
 			fmt.Sprintf("  %s.%s (type=%s)", tbl, col, dtype))
