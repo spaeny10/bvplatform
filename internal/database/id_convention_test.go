@@ -113,6 +113,12 @@ var textIDColumnAllowlist = map[string]string{
 	"vlm_label_jobs.site_id":                "→ sites.id (TEXT)",
 	"vlm_label_jobs.organization_id":        "→ organizations.id (TEXT)",
 	"vlm_label_jobs.alarm_id":               "→ active_alarms.id (TEXT)",
+	// P4-SCHEMA-01 detections foundation — TEXT FKs → TEXT-PK tables
+	"model_versions.organization_id":        "→ organizations.id (TEXT)",
+	"analysis_runs.organization_id":         "→ organizations.id (TEXT)",
+	"detections.organization_id":            "→ organizations.id (TEXT)",
+	"detections.site_id":                    "→ sites.id (TEXT)",
+	"detection_reviews.organization_id":     "→ organizations.id (TEXT)",
 	// Polymorphic / non-record ids
 	"audit_log.target_id":          "polymorphic audit target (any entity type)",
 	"evidence_manifests.artifact_id": "polymorphic (report_id / event_id / share token)",
