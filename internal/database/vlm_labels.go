@@ -13,10 +13,13 @@ import (
 // VLMLabelJob is one entry in the active-learning labeling queue.
 // Created passively whenever Qwen produces a description for an alarm frame;
 // drained by internal annotators via /admin/labeling (never by SOC operators).
+//
+// camera_id is uuid.UUID following migration 0027 (P3-INFRA-04), which
+// converted the column from TEXT to UUID and added a FK to cameras(id).
 type VLMLabelJob struct {
 	ID             int64      `json:"id"`
 	AlarmID        string     `json:"alarm_id"`
-	CameraID       string     `json:"camera_id"`
+	CameraID       uuid.UUID  `json:"camera_id"`
 	SiteID         string     `json:"site_id"`
 	SnapshotURL    string     `json:"snapshot_url"`
 	VLMDescription string     `json:"vlm_description"`
@@ -58,7 +61,10 @@ type LabelingStats struct {
 // EnqueueLabelJob inserts a new pending job into the labeling queue.
 // Called by the alarm pipeline after a successful Qwen inference.
 // Idempotent on alarm_id: if a job already exists for this alarm we skip.
-func (db *DB) EnqueueLabelJob(ctx context.Context, alarmID, cameraID, siteID, snapshotURL, description, threat, model string, detectionsJSON []byte) error {
+//
+// cameraID is uuid.UUID — the column was converted from TEXT to UUID in
+// migration 0027 (P3-INFRA-04).
+func (db *DB) EnqueueLabelJob(ctx context.Context, alarmID string, cameraID uuid.UUID, siteID, snapshotURL, description, threat, model string, detectionsJSON []byte) error {
 	if detectionsJSON == nil {
 		detectionsJSON = []byte("[]")
 	}

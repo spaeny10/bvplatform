@@ -912,7 +912,7 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										// Non-blocking best-effort: a failure here must never affect
 										// the alarm pipeline. Operators see nothing; internal staff
 										// drain this queue via /admin/labeling.
-										go func(alarmID, camID, siteID, snapURL, desc, threat, model string, det []byte) {
+										go func(alarmID string, camID uuid.UUID, siteID, snapURL, desc, threat, model string, det []byte) {
 											defer func() {
 												if rec := recover(); rec != nil {
 													log.Printf("[LABELING] PANIC in enqueue goroutine for alarm %s: %v", alarmID, rec)
@@ -924,7 +924,7 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 											); err != nil {
 												log.Printf("[LABELING] enqueue failed for alarm %s: %v", alarmID, err)
 											}
-										}(snapAlarmID, snapCameraID, siteID, snapshotURL,
+										}(snapAlarmID, cameraID, siteID, snapshotURL,
 											aiResult.Description, aiResult.ThreatLevel, aiResult.QwenModel, detectionsJSON)
 
 										// ── Video enrichment pass ──

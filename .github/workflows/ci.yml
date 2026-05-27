@@ -171,6 +171,65 @@ jobs:
         # missing-precondition failure.
         run: goose -dir migrations postgres "$DATABASE_URL" up
 
+  # ── Backend integration tests (Go + TimescaleDB) ───────────────────
+  # Runs the Go integration-test suite (testutil.IntegrationDB tests) against
+  # a real TimescaleDB container with all migrations applied.  This job is
+  # separate from the `backend` job because it needs a DB service container
+  # and the database-less unit tests should stay fast.
+  #
+  # Key test in this job: TestSchemaIDConventions (P3-INFRA-04 CI lint).
+  # It introspects the live post-migration schema via information_schema and
+  # fails if any new TEXT-PK table appears outside the grandfathered allowlist,
+  # or if any *_id column in a UUID-convention table is declared as TEXT.
+  # Any new migration that introduces ID-type drift will fail this gate.
+  backend-integration:
+    name: Backend integration tests (Go + TimescaleDB)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/testdb?sslmode=disable
+      IRONSIGHT_INTEGRATION_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U postgres; then
+              echo "db ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "db never came up"
+          exit 1
+
+      - name: go test integration suite
+        # -count=1 disables the test cache so the schema lint always re-runs.
+        # -race is included to keep parity with the unit-test backend job.
+        # IRONSIGHT_INTEGRATION_REQUIRED=1 converts t.Skip into t.Fatal if
+        # DATABASE_URL is somehow missing — ensures the lint is not silently
+        # skipped in this job.
+        run: go test -count=1 -race ./internal/testutil/... ./internal/database/... ./internal/api/...
+
   # ── Security: secret scanning ───────────────────────────────────────
   gitleaks:
     name: Secret scan (gitleaks)

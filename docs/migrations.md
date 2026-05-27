@@ -1,5 +1,9 @@
 # Database migrations
 
+See [id-conventions.md](id-conventions.md) for the canonical ID-type policy
+(UUID PKs for new tables, TEXT PKs grandfathered for org/site/SOC codes) and
+the CI lint that enforces it.
+
 Ironsight uses [`pressly/goose`](https://github.com/pressly/goose) v3 to
 manage Postgres / TimescaleDB schema changes. Migrations are SQL files
 in `migrations/` that are embedded into the api binary via
