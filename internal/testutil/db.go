@@ -22,6 +22,7 @@ package testutil
 
 import (
 	"context"
+	"crypto/sha256"
 	"os"
 	"sync"
 	"testing"
@@ -110,6 +111,13 @@ func initSharedDB() {
 		return
 	}
 	sharedDB = &database.DB{Pool: pool}
+
+	// Activate the P1-A-05 camera-credential encryption path. Without a key,
+	// CreateCamera stores plaintext and TestIntegration_CameraCRUD_EncryptsPasswordAtRest
+	// (correctly) fails. A fixed 32-byte test key is fine — these are throwaway
+	// integration rows, and encrypt-on-write + decrypt-on-read round-trips.
+	testKey := sha256.Sum256([]byte("ironsight-integration-test-credentials-key"))
+	sharedDB.SetCredentialsKey(testKey[:])
 }
 
 type sentinelErr string
