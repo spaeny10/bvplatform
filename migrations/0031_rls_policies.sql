@@ -94,6 +94,17 @@ AS $$
     SELECT current_setting('app.current_tenant', true)
 $$;
 
+-- Ensure the onvif role exists.  In production this role is the schema owner;
+-- in CI the container runs as 'postgres' and onvif does not exist by default.
+-- CREATE ROLE IF NOT EXISTS is not available in PG 15; use the DO block guard.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'onvif') THEN
+        CREATE ROLE onvif;
+    END IF;
+END
+$$;
+
 -- ─────────────────────────────────────────────────────────────────────────
 -- MACRO pattern (repeated per table):
 --   ALTER TABLE t ENABLE ROW LEVEL SECURITY;
