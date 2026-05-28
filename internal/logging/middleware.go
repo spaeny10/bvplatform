@@ -1,7 +1,10 @@
 package logging
 
 import (
+	"bufio"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -123,4 +126,17 @@ func (rw *recordingResponseWriter) Flush() {
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack passes through to the underlying ResponseWriter's Hijacker.
+// Required for the WS upgrade path (gorilla/websocket Upgrade) — without
+// this method on the wrapper, http.ResponseWriter.(http.Hijacker) type
+// assertion fails and the WS upgrade returns 500. The handler that
+// follows (HandleWebSocket) never even gets called because the upgrade
+// dies first.
+func (rw *recordingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, errors.New("recordingResponseWriter: underlying ResponseWriter is not a Hijacker")
 }
