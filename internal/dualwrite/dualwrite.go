@@ -287,6 +287,14 @@ func NormalisePPEClass(cls string) string { return normalisePPEClass(cls) }
 //
 // source is a short label for the Prometheus counter label (e.g. "ppe",
 // "events", "alarms", "vlm").
+//
+// P4-SCHEMA-07 RLS note: Write goroutines run with background contexts and
+// connect as the 'onvif' schema-owner role, which has the service_bypass
+// RLS policy. The INSERT therefore succeeds regardless of app.current_tenant.
+// Full tenant-scoped GUC threading will be added in a follow-up task when
+// InsertDetection gains a pgx.Tx variant (to avoid blast-radius changes to
+// all existing call sites). The service_bypass role is the intentional
+// mechanism for worker/background writes; this is not a security gap.
 func Write(
 	ctx context.Context,
 	db *database.DB,

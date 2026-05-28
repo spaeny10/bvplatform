@@ -23,6 +23,7 @@ package testutil
 import (
 	"context"
 	"crypto/sha256"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -118,6 +119,63 @@ func initSharedDB() {
 	// integration rows, and encrypt-on-write + decrypt-on-read round-trips.
 	testKey := sha256.Sum256([]byte("ironsight-integration-test-credentials-key"))
 	sharedDB.SetCredentialsKey(testKey[:])
+
+	// P4-SCHEMA-07 RLS test support. The CI/dev `postgres` user is a SUPERUSER
+	// (and therefore BYPASSRLS) — Postgres bypasses RLS for superusers regardless
+	// of FORCE ROW LEVEL SECURITY or policy grants. To verify RLS policies
+	// actually enforce tenant isolation, the rls_test.go suite drops to this
+	// non-superuser, no-bypass role via SET LOCAL ROLE inside its test
+	// transactions (see testutil.AcquireRLSTenantTx). This role is not used
+	// in production.
+	//
+	// pg_advisory_lock serialises concurrent test binaries (which each run
+	// initSharedDB once via sync.Once but share the same database). Without
+	// the lock, parallel binaries race on system-catalog updates triggered
+	// by GRANT/ALTER DEFAULT PRIVILEGES and hit "tuple concurrently updated".
+	// The arbitrary key 729384721234 is per-purpose; pick a different one if
+	// another setup path needs its own serialisation later.
+	if _, err := pool.Exec(ctx, `SELECT pg_advisory_lock(729384721234)`); err != nil {
+		sharedDBErr = fmt.Errorf("rls_test_user setup: advisory lock: %w", err)
+		return
+	}
+	defer pool.Exec(ctx, `SELECT pg_advisory_unlock(729384721234)`) //nolint:errcheck
+
+	for _, stmt := range []string{
+		`DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rls_test_user') THEN
+				CREATE ROLE rls_test_user NOSUPERUSER NOBYPASSRLS NOINHERIT NOCREATEDB NOCREATEROLE NOREPLICATION;
+			END IF;
+		END $$`,
+		`GRANT USAGE ON SCHEMA public TO rls_test_user`,
+		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO rls_test_user`,
+		`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO rls_test_user`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO rls_test_user`,
+		`ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO rls_test_user`,
+	} {
+		if _, err := pool.Exec(ctx, stmt); err != nil {
+			sharedDBErr = fmt.Errorf("rls_test_user setup: %s: %w", stmt, err)
+			return
+		}
+	}
+}
+
+// AcquireRLSTenantTx wraps database.AcquireWithTenant for the RLS integration
+// tests: it acquires a tenant-scoped transaction AND drops the connection's
+// effective role to rls_test_user via SET LOCAL ROLE so RLS policies actually
+// enforce (the bare pool runs as postgres-SUPERUSER which would otherwise
+// bypass RLS unconditionally). Caller still must defer conn.Release() and
+// tx.Rollback(ctx) per the database.AcquireWithTenant contract.
+func AcquireRLSTenantTx(ctx context.Context, db *database.DB, tenant string) (*pgxpool.Conn, pgx.Tx, error) {
+	conn, tx, err := database.AcquireWithTenant(ctx, db.Pool, tenant)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := tx.Exec(ctx, "SET LOCAL ROLE rls_test_user"); err != nil {
+		_ = tx.Rollback(ctx)
+		conn.Release()
+		return nil, nil, fmt.Errorf("set local role rls_test_user: %w", err)
+	}
+	return conn, tx, nil
 }
 
 type sentinelErr string
