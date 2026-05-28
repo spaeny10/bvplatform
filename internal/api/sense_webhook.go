@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	"ironsight/internal/dualwrite"
 )
 
 // HandleSenseWebhook is the inbound endpoint for Milesight Sense / SC4xx
@@ -121,6 +124,16 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 		}
 		if err := db.InsertEvent(r.Context(), evt); err != nil {
 			log.Printf("[SENSE] %s: insert event: %v", cam.Name, err)
+		} else {
+			// P4-SCHEMA-02: dual-write the sense event to detections.
+			// org is resolved from the camera's site inside the helper.
+			camIDForDW := cam.ID
+			siteIDForDW := cam.SiteID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				dualWriteSenseEvent(ctx, db, camIDForDW, siteIDForDW, eventType, now)
+			}()
 		}
 
 		// Build an active alarm. Sense cameras' confidence is high by
@@ -365,4 +378,55 @@ func senseDescription(eventType string, p *sensePayload) string {
 		parts = append(parts, "from "+p.DeviceName)
 	}
 	return strings.Join(parts, " ")
+}
+
+// dualWriteSenseEvent writes a detections row for a Milesight Sense webhook
+// event.  Non-fatal: logs + counts on failure; never propagates the error.
+//
+// Sense cameras are PIR/classifier devices — no YOLO model metadata is
+// available.  We register a "sense-pir" model version the first time we
+// encounter this org (org is resolved from the camera's site).
+func dualWriteSenseEvent(
+	ctx context.Context,
+	db *database.DB,
+	camID uuid.UUID,
+	siteID, eventType string,
+	detectedAt time.Time,
+) {
+	// Resolve organisation from camera→site.
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:sense] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("sense").Inc()
+		return
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "sense-pir", "v1", "", "security",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:sense] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("sense").Inc()
+		return
+	}
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+	dualwrite.Write(ctx, db, "sense", orgID, camID, run, dualwrite.MappedDetection{
+		DetectedAt:      detectedAt,
+		SiteID:          sitePtr,
+		DetectionClass:  dualwrite.NormaliseEventTypeToSecurityClass(eventType),
+		DetectionDomain: "security",
+		Confidence:      1.0, // PIR + on-device classifier = high confidence
+		BoundingBox:     nil,
+		ZoneID:          nil,
+		VCARuleID:       nil,
+	})
 }

@@ -1,0 +1,18 @@
+[Unit]
+Description=Ironsight P4-SCHEMA-02 daily consistency check (timer)
+Documentation=https://github.com/jetstreamsys/bigview-platform/blob/main/external/bvplatform-main/cmd/consistency-check/main.go
+Requires=ironsight-consistency-check.service
+
+[Timer]
+# Fire once daily at 04:00 UTC.  Chosen to be well after the 03:30 UTC
+# fred-backup.timer and well before business-hours traffic.
+OnCalendar=*-*-* 04:00:00 UTC
+# Spread up to 2 minutes so multiple timers don't all fire at :00.
+AccuracySec=1min
+RandomizedDelaySec=2min
+# Run immediately on boot if the previous window was missed.
+Persistent=true
+Unit=ironsight-consistency-check.service
+
+[Install]
+WantedBy=timers.target

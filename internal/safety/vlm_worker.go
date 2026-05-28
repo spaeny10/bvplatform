@@ -14,6 +14,7 @@ package safety
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -21,9 +22,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"ironsight/internal/ai"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	"ironsight/internal/dualwrite"
 )
 
 // VLMWorker is the async VLM validation polling worker.
@@ -243,4 +247,75 @@ func (w *VLMWorker) processRow(ctx context.Context, row database.VLMQueueRow) {
 
 	log.Printf("[VLM] row %s: verdict=%s attempts=%d model=%s",
 		row.ID, result.Verdict, row.Attempts+1, result.Model)
+
+	// P4-SCHEMA-02: dual-write to detections after the VLM verdict is
+	// persisted.  We write for all terminal verdicts (confirmed, dismissed,
+	// uncertain) so the detections table reflects the full VLM outcome set.
+	// Failure is non-fatal: log + count.
+	go w.dualWriteVLMVerdict(row, result)
+}
+
+// dualWriteVLMVerdict writes one detection row to the P4 detections table.
+// Called in a goroutine after UpdateVLMVerdict; failures are non-fatal.
+// We use a background context with a 10 s deadline so a slow DB write
+// does not block the next VLM cycle.
+func (w *VLMWorker) dualWriteVLMVerdict(
+	row database.VLMQueueRow,
+	result VLMValidationResult,
+) {
+	// Skip rows without the required FK fields (should not happen now that
+	// ListPendingVLM selects them, but guard defensively).
+	if row.OrganizationID == "" || row.CameraID == (uuid.UUID{}) {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Model: Qwen model name from the result; version tag = model string.
+	modelName := "qwen-vlm"
+	versionTag := result.Model
+	if versionTag == "" {
+		versionTag = "unknown"
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, w.db,
+		row.OrganizationID, modelName, versionTag, "", "vlm_validation",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:vlm] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("vlm").Inc()
+		return
+	}
+
+	run := dualwrite.NewRunHandle(w.db, row.OrganizationID, mvID)
+
+	// Confidence: use the PRQ Confidence field (the YOLO score), not a VLM
+	// floating-point score (Qwen produces a verdict string, not a score).
+	var bboxJSON []byte
+	if len(row.BoundingBoxes) > 0 {
+		bb := row.BoundingBoxes[0]
+		bboxJSON = dualwrite.BBoxFromX1Y1X2Y2(
+			bb.BBoxNorm.X1, bb.BBoxNorm.Y1, bb.BBoxNorm.X2, bb.BBoxNorm.Y2,
+		)
+	}
+
+	detailsMap := map[string]string{
+		"vlm_verdict":   string(result.Verdict),
+		"vlm_reasoning": result.Reasoning,
+	}
+	detailsJSON, _ := json.Marshal(detailsMap)
+
+	dualwrite.Write(ctx, w.db, "vlm", row.OrganizationID, row.CameraID, run, dualwrite.MappedDetection{
+		DetectedAt:      row.CreatedAt, // use the original detection time
+		SiteID:          row.SiteID,
+		DetectionClass:  dualwrite.NormalisePPEClass(row.DetectionClass),
+		DetectionDomain: "vlm_validation",
+		Confidence:      float32(row.Confidence),
+		BoundingBox:     bboxJSON,
+		ZoneID:          nil,
+		VCARuleID:       nil,
+		Details:         detailsJSON,
+	})
 }

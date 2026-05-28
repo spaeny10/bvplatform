@@ -21,8 +21,14 @@ import (
 // VLMQueueRow is the minimal row shape the VLM worker needs from
 // pending_review_queue. No organization PII is included — the worker
 // only reads frame evidence and detection metadata.
+//
+// P4-SCHEMA-02: OrganizationID, CameraID, and SiteID are now included
+// so the worker can dual-write to the detections table after a verdict.
 type VLMQueueRow struct {
 	ID             uuid.UUID
+	OrganizationID string    // P4-SCHEMA-02: added for dual-write
+	CameraID       uuid.UUID // P4-SCHEMA-02: added for dual-write
+	SiteID         *string   // P4-SCHEMA-02: added for dual-write (nullable)
 	FramePath      string
 	DetectionClass string
 	MissingLabel   string
@@ -50,7 +56,8 @@ func (db *DB) ListPendingVLM(ctx context.Context, limit, maxAttempts int) ([]VLM
 
 	rows, err := db.Pool.Query(ctx, `
 		SELECT
-		    id, frame_path, detection_class, missing_label,
+		    id, organization_id, camera_id, site_id,
+		    frame_path, detection_class, missing_label,
 		    confidence, bounding_boxes, vlm_attempts, created_at
 		FROM pending_review_queue
 		WHERE status = 'pending'
@@ -69,11 +76,16 @@ func (db *DB) ListPendingVLM(ctx context.Context, limit, maxAttempts int) ([]VLM
 	for rows.Next() {
 		var r VLMQueueRow
 		var bbRaw []byte
+		var camStr string
 		if err := rows.Scan(
-			&r.ID, &r.FramePath, &r.DetectionClass, &r.MissingLabel,
+			&r.ID, &r.OrganizationID, &camStr, &r.SiteID,
+			&r.FramePath, &r.DetectionClass, &r.MissingLabel,
 			&r.Confidence, &bbRaw, &r.Attempts, &r.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("ListPendingVLM scan: %w", err)
+		}
+		if id, err := uuid.Parse(camStr); err == nil {
+			r.CameraID = id
 		}
 		// Deserialize bounding_boxes JSONB into []ai.Detection.
 		if len(bbRaw) > 0 {

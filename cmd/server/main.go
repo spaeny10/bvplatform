@@ -24,6 +24,7 @@ import (
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
+	"ironsight/internal/dualwrite"
 	"ironsight/internal/export"
 	"ironsight/internal/indexer"
 	"ironsight/internal/logging"
@@ -303,6 +304,10 @@ func main() {
 			if err := db.InsertEvent(ctx, evt); err == nil {
 				id := evt.ID
 				eventID = &id
+
+				// P4-SCHEMA-02: dual-write the detection event to the new
+				// detections table.  Non-fatal on failure.
+				go dualWriteSecurityEvent(db, camUUID, siteID, alertType, time.UnixMilli(now), nil)
 			}
 
 			alarm := &database.ActiveAlarm{
@@ -565,6 +570,12 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 				}
 				if err := db.InsertEvent(dbCtx, evt); err != nil {
 					log.Printf("[EVENTS] Failed to store event: %v", err)
+				} else {
+					// P4-SCHEMA-02: dual-write the ONVIF event to detections.
+					// Use cam.SiteID captured at subscription time (safe:
+					// closures here capture the outer cam var).
+					camSiteID := cam.SiteID
+					go dualWriteSecurityEvent(db, cameraID, camSiteID, eventType, evt.EventTime, nil)
 				}
 
 				log.Printf("[EVENTS] %s from %s: %s", eventType, camName, details["topic"])
@@ -907,6 +918,16 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 											snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
 											aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
 
+										// P4-SCHEMA-02: dual-write AI PPE violations to detections.
+										// One detections row per violation bbox (DECISION-C).
+										if len(aiResult.PPEViolations) > 0 {
+											go dualWriteAlarmPPEViolations(
+												db, cameraID, siteID,
+												aiResult.PPEViolations, aiResult.PPEModel,
+												time.Now().UTC(),
+											)
+										}
+
 										// ── Passive labeling capture ──
 										// Enqueue the frame + VLM output for off-SOC annotation.
 										// Non-blocking best-effort: a failure here must never affect
@@ -1084,5 +1105,129 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 
 	if len(cameras) == 0 {
 		log.Println("[STARTUP] No cameras configured. Use the API or frontend to add cameras.")
+	}
+}
+
+// ── P4-SCHEMA-02 dual-write helpers ─────────────────────────────────────────
+
+// dualWriteSecurityEvent inserts one detection row of domain "security" after
+// a legacy events INSERT succeeds.  orgID is not available in the AlertEmitter
+// closure (the emitter only has cameraID + siteID from a goroutine that ran
+// before the ONVIF subscriber's site resolution); we look it up from the
+// camera row lazily.  Non-fatal: logs + increments counter on failure.
+func dualWriteSecurityEvent(
+	db *database.DB,
+	camID uuid.UUID,
+	siteID string,
+	eventType string,
+	detectedAt time.Time,
+	vcaRuleID *uuid.UUID,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Resolve the organisation for this camera.
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:events] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("events").Inc()
+		return
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "onvif-event", "v1", "", "security",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:events] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("events").Inc()
+		return
+	}
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+	dualwrite.Write(ctx, db, "events", orgID, camID, run, dualwrite.MappedDetection{
+		DetectedAt:      detectedAt,
+		SiteID:          sitePtr,
+		DetectionClass:  dualwrite.NormaliseEventTypeToSecurityClass(eventType),
+		DetectionDomain: "security",
+		Confidence:      0.8, // ONVIF analytic events are high-confidence by design
+		BoundingBox:     nil,
+		ZoneID:          nil,
+		VCARuleID:       vcaRuleID,
+	})
+}
+
+// dualWriteAlarmPPEViolations inserts one detections row per PPE violation
+// surfaced by the alarm AI pipeline (Qwen PPE pass on the alarm snapshot).
+// Each violation in the aiResult.PPEViolations array maps to one detection row
+// (DECISION-C: one bbox per row).  Non-fatal on any failure.
+func dualWriteAlarmPPEViolations(
+	db *database.DB,
+	camID uuid.UUID,
+	siteID string,
+	violations []ai.Detection,
+	ppeModel string,
+	detectedAt time.Time,
+) {
+	if len(violations) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:alarms] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("alarms").Inc()
+		return
+	}
+
+	versionTag := ppeModel
+	if versionTag == "" {
+		versionTag = "unknown"
+	}
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "yolo-ppe", versionTag, "", "ppe",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:alarms] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("alarms").Inc()
+		return
+	}
+
+	// One analysis_run shared across all violations from this alarm frame.
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+
+	for _, v := range violations {
+		bboxJSON := dualwrite.BBoxFromX1Y1X2Y2(
+			v.BBoxNorm.X1, v.BBoxNorm.Y1, v.BBoxNorm.X2, v.BBoxNorm.Y2,
+		)
+		dualwrite.Write(ctx, db, "alarms", orgID, camID, run, dualwrite.MappedDetection{
+			DetectedAt:      detectedAt,
+			SiteID:          sitePtr,
+			DetectionClass:  dualwrite.NormalisePPEClass(v.Class),
+			DetectionDomain: "ppe",
+			Confidence:      float32(v.Confidence),
+			BoundingBox:     bboxJSON,
+			ZoneID:          nil,
+			VCARuleID:       nil,
+		})
 	}
 }

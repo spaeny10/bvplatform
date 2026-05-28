@@ -33,6 +33,7 @@ import (
 	"ironsight/internal/auth"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
+	"ironsight/internal/dualwrite"
 	appmetrics "ironsight/internal/metrics"
 	"ironsight/internal/milesight"
 	"ironsight/internal/onvif"
@@ -470,6 +471,10 @@ func (w *Worker) persistViolation(
 		return fmt.Errorf("InsertPPEQueueEntry: %w", err)
 	}
 
+	// P4-SCHEMA-02: dual-write to detections after the legacy INSERT succeeds.
+	// Failure here is non-fatal — logged + counted but does not fail the caller.
+	go w.dualWritePPEViolation(ctx, cam, v, yolo, zoneID, now)
+
 	zoneLabel := ""
 	if zoneID != "" {
 		zoneLabel = fmt.Sprintf(" zone=%s", zoneID)
@@ -503,6 +508,67 @@ func (w *Worker) persistViolation(
 	}
 
 	return nil
+}
+
+// dualWritePPEViolation writes one detection row to the P4 detections table.
+// Called in a goroutine after InsertPPEQueueEntry; failures are non-fatal.
+// The context passed from persistViolation is the original request context —
+// we use a background context with a 10 s deadline so a cancelled parent
+// does not silently drop the write.
+func (w *Worker) dualWritePPEViolation(
+	parentCtx context.Context,
+	cam database.PPECamera,
+	v ai.Detection,
+	yolo *ai.YOLOResult,
+	zoneID string,
+	detectedAt time.Time,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Model: PPE model name + version tag from the YOLO result.
+	// WeightsHash is unknown at runtime (sidecar doesn't expose it); use "".
+	modelName := "yolo-ppe"
+	versionTag := yolo.PPEModel
+	if versionTag == "" {
+		versionTag = "unknown"
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, w.db,
+		cam.OrganizationID, modelName, versionTag, "", "ppe",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:ppe] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("ppe").Inc()
+		return
+	}
+
+	run := dualwrite.NewRunHandle(w.db, cam.OrganizationID, mvID)
+
+	var zoneIDPtr *uuid.UUID
+	if zoneID != "" {
+		if id, err := uuid.Parse(zoneID); err == nil {
+			zoneIDPtr = &id
+		}
+	}
+
+	siteIDPtr := &cam.SiteID
+	bboxJSON := dualwrite.BBoxFromX1Y1X2Y2(
+		v.BBoxNorm.X1, v.BBoxNorm.Y1, v.BBoxNorm.X2, v.BBoxNorm.Y2,
+	)
+
+	dualwrite.Write(ctx, w.db, "ppe", cam.OrganizationID, cam.CameraID, run, dualwrite.MappedDetection{
+		DetectedAt:      detectedAt,
+		SiteID:          siteIDPtr,
+		DetectionClass:  dualwrite.NormalisePPEClass(v.Class),
+		DetectionDomain: "ppe",
+		Confidence:      float32(v.Confidence),
+		BoundingBox:     bboxJSON,
+		ZoneID:          zoneIDPtr,
+		VCARuleID:       nil,
+	})
+	_ = parentCtx // suppress unused-variable lint; context lifetime noted above
 }
 
 // classToLabel converts a raw YOLO PPE violation class name to a human-readable label.
