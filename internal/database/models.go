@@ -9,17 +9,19 @@ import (
 // User represents a unified platform account
 // Roles: admin | soc_operator | soc_supervisor | site_manager | customer | viewer
 type User struct {
-	ID              uuid.UUID `json:"id"`
-	Username        string    `json:"username"`
-	PasswordHash    string    `json:"-"` // never expose
-	Role            string    `json:"role"`
-	DisplayName     string    `json:"display_name"`
-	Email           string    `json:"email"`
-	Phone           string    `json:"phone"`
-	OrganizationID  string    `json:"organization_id,omitempty"`
-	AssignedSiteIDs []string  `json:"assigned_site_ids"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	Username        string     `json:"username"`
+	PasswordHash    string     `json:"-"` // never expose
+	Role            string     `json:"role"`
+	DisplayName     string     `json:"display_name"`
+	Email           string     `json:"email"`
+	Phone           string     `json:"phone"`
+	OrganizationID  string     `json:"organization_id,omitempty"`
+	AssignedSiteIDs []string   `json:"assigned_site_ids"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteUser; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // Camera represents an ONVIF camera device
@@ -52,20 +54,23 @@ type Camera struct {
 	// means unassigned. Recording / retention settings are read from the
 	// site with this ID; a camera without a site falls back to engine
 	// defaults and storage-location-level retention.
-	SiteID            string    `json:"site_id"`
+	SiteID string `json:"site_id"`
 	// DeviceClass classifies how the platform interacts with the device.
 	//   "continuous"   — traditional always-on RTSP + ONVIF camera (default)
 	//   "sense_pushed" — battery/PIR Milesight Sense series; we only
 	//                    accept inbound webhook pushes from it, never
 	//                    pull RTSP or subscribe to events
-	DeviceClass       string    `json:"device_class"`
+	DeviceClass string `json:"device_class"`
 	// SenseWebhookToken is the per-camera secret in the inbound webhook
 	// URL (sense_pushed only). Returned to the operator post-create so
 	// they can paste the URL into the camera's Alarm Server config.
 	// Treated like a credential — never logged.
-	SenseWebhookToken string    `json:"sense_webhook_token,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	SenseWebhookToken string     `json:"sense_webhook_token,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteCamera; nil means the camera is live.
+	// Exposed in JSON so admin include_deleted responses surface the timestamp.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // CameraCreate is the input for creating a camera
@@ -77,7 +82,7 @@ type CameraCreate struct {
 	// DeviceClass selects the integration mode. Empty / "continuous" =
 	// traditional RTSP camera. "sense_pushed" = inbound webhook only;
 	// the platform skips RTSP / ONVIF event subscription / recording.
-	DeviceClass  string `json:"device_class,omitempty"`
+	DeviceClass string `json:"device_class,omitempty"`
 }
 
 // CameraUpdate is the input for updating camera settings
@@ -111,21 +116,23 @@ type Point struct {
 // VCARule is a zone/line analytics rule tied to a camera.
 // Rule types: intrusion, linecross, regionentrance, loitering.
 type VCARule struct {
-	ID           uuid.UUID `json:"id"`
-	CameraID     uuid.UUID `json:"camera_id"`
-	RuleType     string    `json:"rule_type"`
-	Name         string    `json:"name"`
-	Enabled      bool      `json:"enabled"`
-	Sensitivity  int       `json:"sensitivity"`
-	Region       []Point   `json:"region"`
-	Direction    string    `json:"direction"`
-	ThresholdSec int       `json:"threshold_sec"`
-	Schedule     string    `json:"schedule"`
-	Actions      []string  `json:"actions"`
-	Synced       bool      `json:"synced"`
-	SyncError    string    `json:"sync_error"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uuid.UUID  `json:"id"`
+	CameraID     uuid.UUID  `json:"camera_id"`
+	RuleType     string     `json:"rule_type"`
+	Name         string     `json:"name"`
+	Enabled      bool       `json:"enabled"`
+	Sensitivity  int        `json:"sensitivity"`
+	Region       []Point    `json:"region"`
+	Direction    string     `json:"direction"`
+	ThresholdSec int        `json:"threshold_sec"`
+	Schedule     string     `json:"schedule"`
+	Actions      []string   `json:"actions"`
+	Synced       bool       `json:"synced"`
+	SyncError    string     `json:"sync_error"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteVCARule; nil means live.
+	DeletedAt    *time.Time `json:"deleted_at,omitempty"`
 }
 
 // VCARuleCreate is the input for creating a VCA rule.
@@ -151,6 +158,13 @@ type Segment struct {
 	FileSize   int64     `json:"file_size"`
 	DurationMs int       `json:"duration_ms"`
 	HasAudio   bool      `json:"has_audio"`
+	// VideoCodec is the lowercase codec_name from ffprobe ("h264", "hevc",
+	// etc.) captured at index time. Empty string means "unknown / not
+	// probed yet" — typically only true for rows older than migration
+	// 0002. The recorded-playback serve handler uses this to decide
+	// whether to pass the file through or route it through transcoding;
+	// empty triggers a lazy probe-and-backfill on first request.
+	VideoCodec string `json:"video_codec,omitempty"`
 }
 
 // Event represents a metadata event (motion, LPR, object detection, etc.)
@@ -169,8 +183,26 @@ type Event struct {
 
 	// PlaybackURL is a convenience field computed at read time for clients
 	// that want a ready-to-use URL pointing at the segment and seeked to the
-	// event offset (e.g. /recordings/{camera}/seg_….mp4#t=12.5). Not stored.
+	// event offset (e.g. /media/v1/{token}#t=12.5). Not stored.
+	//
+	// As of P1-A-03 this is populated by the API handler (which has access
+	// to the caller's claims + JWT secret to mint a per-user signed token),
+	// not the DB layer. QueryEvents fills SegmentFilePath and SegmentStart
+	// instead so the handler can derive both the URL and the seek offset.
 	PlaybackURL string `json:"playback_url,omitempty"`
+
+	// SegmentFilePath is the absolute on-disk path the segmenter wrote for
+	// the segment containing this event (e.g. /data/storage/<cam>/seg_….mp4).
+	// Populated when the event row joins to a segment row. The API layer
+	// uses this + the camera UUID to mint a signed media URL. Excluded
+	// from the JSON payload — clients receive PlaybackURL, not the raw
+	// path, so the on-disk layout never leaves the server.
+	SegmentFilePath string `json:"-"`
+
+	// SegmentStart is the wall-clock start time of the linked segment;
+	// the handler subtracts EventTime to compute the #t= seek offset.
+	// Like SegmentFilePath, excluded from JSON.
+	SegmentStart time.Time `json:"-"`
 }
 
 // EventQuery is used to filter events for timeline search
@@ -265,6 +297,9 @@ type UserPublic struct {
 	AssignedSiteIDs []string  `json:"assigned_site_ids"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+	// DeletedAt is populated only by ListUsersIncludeDeleted (admin view);
+	// nil/omitted means the user is live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // UserCreate is the input DTO for creating a platform user
@@ -300,18 +335,20 @@ var ValidRoles = map[string]bool{
 
 // Speaker represents an ONVIF audio speaker device for talk-down
 type Speaker struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"` // "Front Gate Speaker"
-	OnvifAddress string    `json:"onvif_address"`
-	Username     string    `json:"username"`
-	Password     string    `json:"-"`
-	RTSPUri      string    `json:"rtsp_uri"` // backchannel RTSP URI
-	Zone         string    `json:"zone"`     // logical zone: "Perimeter"
-	Status       string    `json:"status"`   // online/offline
-	Manufacturer string    `json:"manufacturer"`
-	Model        string    `json:"model"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           uuid.UUID  `json:"id"`
+	Name         string     `json:"name"` // "Front Gate Speaker"
+	OnvifAddress string     `json:"onvif_address"`
+	Username     string     `json:"username"`
+	Password     string     `json:"-"`
+	RTSPUri      string     `json:"rtsp_uri"` // backchannel RTSP URI
+	Zone         string     `json:"zone"`     // logical zone: "Perimeter"
+	Status       string     `json:"status"`   // online/offline
+	Manufacturer string     `json:"manufacturer"`
+	Model        string     `json:"model"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeleteSpeaker; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
 // SpeakerCreate is the input for adding a speaker
@@ -367,4 +404,130 @@ type BookmarkCreate struct {
 	Label     string    `json:"label"`
 	Notes     string    `json:"notes"`
 	Severity  string    `json:"severity"`
+}
+
+// ── PPE Zones + Compliance Rules (P2-C-04) ───────────────────────────────────
+
+// PPEZone is a server-side polygon used to spatially filter YOLO violation
+// detections. Never pushed to camera firmware (unlike VCARules).
+// Coordinates: normalized floats 0.0-1.0, matching vca_rules.region convention.
+type PPEZone struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	CameraID       uuid.UUID  `json:"camera_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	ZoneType       string     `json:"zone_type"` // work_area | no_go | ppe_required | ppe_optional
+	Name           string     `json:"name"`
+	Region         []Point    `json:"region"`
+	Enabled        bool       `json:"enabled"`
+	Notes          *string    `json:"notes,omitempty"`
+	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	// DeletedAt is set by SoftDeletePPEZone; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+}
+
+// PPEZoneCreate is the input DTO for creating/updating a PPE zone.
+type PPEZoneCreate struct {
+	ZoneType string   `json:"zone_type"`
+	Name     string   `json:"name"`
+	Region   []Point  `json:"region"`
+	Enabled  bool     `json:"enabled"`
+	Notes    *string  `json:"notes,omitempty"`
+}
+
+// ComplianceRule binds a PPEZone to a PPE-required or no-go rule.
+// camera_id is nullable: NULL means site-wide (applies to all cameras at site_id).
+type ComplianceRule struct {
+	ID             uuid.UUID  `json:"id"`
+	OrganizationID string     `json:"organization_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	CameraID       *uuid.UUID `json:"camera_id,omitempty"` // nil = site-wide
+	ZoneID         uuid.UUID  `json:"zone_id"`
+	RuleType       string     `json:"rule_type"` // ppe_required | no_go
+	PPEClasses     []string   `json:"ppe_classes"`
+	Enabled        bool       `json:"enabled"`
+	Notes          *string    `json:"notes,omitempty"`
+	SiteWide       bool       `json:"site_wide"` // computed: camera_id IS NULL
+	CreatedBy      *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	// DeletedAt is set by SoftDeleteComplianceRule; nil means live.
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	// Joined fields — populated by list queries; not stored.
+	ZoneName string `json:"zone_name,omitempty"`
+	ZoneType string `json:"zone_type,omitempty"`
+}
+
+// ComplianceRuleCreate is the input DTO for creating/updating a compliance rule.
+type ComplianceRuleCreate struct {
+	ZoneID     uuid.UUID `json:"zone_id"`
+	RuleType   string    `json:"rule_type"`
+	PPEClasses []string  `json:"ppe_classes"`
+	Enabled    bool      `json:"enabled"`
+	Notes      *string   `json:"notes,omitempty"`
+	SiteWide   bool      `json:"site_wide"` // when true, camera_id stored as NULL
+}
+
+// ComplianceRuleWithZone is used by the PPE worker: a compliance rule with
+// its zone polygon joined in so the engine can do point-in-polygon without
+// a second query.
+type ComplianceRuleWithZone struct {
+	ComplianceRule
+	Zone PPEZone
+}
+
+// ── Person-tracking models (P2-C-02) ─────────────────────────────────────────
+
+// PersonTrackFrame is a raw per-frame occupancy row stored in the
+// person_track_frames hypertable. One row per PPE-worker poll cycle per camera.
+type PersonTrackFrame struct {
+	Time           time.Time  `json:"time"`
+	CameraID       uuid.UUID  `json:"camera_id"`
+	SiteID         *string    `json:"site_id,omitempty"`
+	OrganizationID string     `json:"organization_id"`
+	PersonCount    int        `json:"person_count"`
+	FrameSource    string     `json:"frame_source"`
+}
+
+// PersonTrackFrameInsert carries the data the tracking worker provides
+// when persisting a new raw frame row. OrganizationID is required.
+type PersonTrackFrameInsert struct {
+	Time           time.Time
+	CameraID       uuid.UUID
+	SiteID         *string
+	OrganizationID string
+	PersonCount    int
+	FrameSource    string
+}
+
+// PersonTrackBucket is a pre-aggregated 5-minute occupancy window.
+// Stored in the person_track_buckets regular table (90-day retention).
+type PersonTrackBucket struct {
+	CameraID         uuid.UUID `json:"camera_id"`
+	SiteID           *string   `json:"site_id,omitempty"`
+	OrganizationID   string    `json:"organization_id"`
+	BucketStart      time.Time `json:"bucket_start"`
+	BucketMinutes    int       `json:"bucket_minutes"`
+	PersonMinutes    float64   `json:"person_minutes"`
+	PeakPersonCount  int       `json:"peak_person_count"`
+	FrameCount       int       `json:"frame_count"`
+	ViolationCount   int       `json:"violation_count"`
+	RolledUpAt       time.Time `json:"rolled_up_at"`
+
+	// Joined fields — populated by ListTrackBuckets, not stored.
+	CameraName string `json:"camera_name,omitempty"`
+	SiteName   string `json:"site_name,omitempty"`
+}
+
+// TrackBucketFilter is the query filter for ListTrackBuckets.
+// OrganizationID is mandatory; all other fields are optional.
+type TrackBucketFilter struct {
+	OrganizationID string
+	CameraID       *uuid.UUID
+	SiteID         *string
+	Start          time.Time
+	End            time.Time
+	BucketMinutes  int
+	Limit          int
 }

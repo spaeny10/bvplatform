@@ -56,11 +56,11 @@ function HomeInner() {
         setPageKey(k => k + 1);
     }, []);
 
-    // Redirect to login if not authenticated; redirect soc_operator to their home
+    // Redirect soc_operator to their home; AuthContext + RouteGuard handle
+    // unauthenticated redirects (a stale localStorage token check here would
+    // mis-fire under header-trust SSO where no token is ever stored).
     useEffect(() => {
-        if (typeof window !== 'undefined' && !localStorage.getItem('ironsight_token')) {
-            router.replace('/login');
-        } else if (user?.role === 'soc_operator') {
+        if (user?.role === 'soc_operator') {
             router.replace('/operator');
         }
     }, [router, user]);
@@ -96,7 +96,7 @@ function HomeInner() {
     // Check if storage is configured
     useEffect(() => {
         fetch('/api/storage/status', {
-            headers: { 'Authorization': `Bearer ${localStorage.getItem('ironsight_token')}` },
+            credentials: 'include',
         })
             .then(r => r.ok ? r.json() : null)
             .then(data => { if (data) setStorageConfigured(data.configured); })
@@ -217,9 +217,8 @@ function HomeInner() {
         let reconnectDelay = 3000; // Start at 3s, exponential backoff up to 30s
         let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-        function connect() {
-            if (unmounted) return;
-            const ws = new WebSocket(`ws://${window.location.hostname}:8080/ws`);
+        function openWS(url: string) {
+            const ws = new WebSocket(url);
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -269,9 +268,31 @@ function HomeInner() {
             };
         }
 
+        function connect() {
+            if (unmounted) return;
+            // P1-A-04: fetch a short-lived WS ticket then open the socket.
+            // The ticket endpoint is GET (CSRF-exempt) behind RequireAuth
+            // (cookie auto-attached via credentials:include).
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const baseUrl = `${proto}//${window.location.host}/ws`;
+            fetch('/api/auth/ws-ticket', { credentials: 'include' })
+                .then(res => {
+                    if (!res.ok) throw new Error(`ws-ticket: ${res.status}`);
+                    return res.json() as Promise<{ ticket: string }>;
+                })
+                .then(({ ticket }) => {
+                    if (!unmounted) openWS(`${baseUrl}?ticket=${encodeURIComponent(ticket)}`);
+                })
+                .catch(() => {
+                    // Ticket fetch failed (401, network error). Fall back to ticketless
+                    // URL so SSO-path (X-Forwarded-Email) users still get a connection.
+                    if (!unmounted) openWS(baseUrl);
+                });
+        }
+
         connect();
 
-        return () => {
+                return () => {
             unmounted = true;
             if (reconnectTimer) clearTimeout(reconnectTimer);
             if (wsRef.current) wsRef.current.close();
@@ -284,8 +305,19 @@ function HomeInner() {
     // Load timeline data when time range changes
     const loadTimeline = useCallback(async () => {
         try {
+            // Timeline-density window is anchored at currentTime and looks
+            // backward 1 hour (operators are reviewing past activity).
             const end = isLive ? new Date() : playbackTime;
             const start = new Date(end.getTime() - 60 * 60 * 1000); // 1 hour window
+
+            // LOCAL-04: events query needs to look FORWARD as well as
+            // backward — otherwise Timeline's `skipToNextEvent` button
+            // never finds anything to seek to (`events` only ever has
+            // points <= currentTime, so every "next event" click falls
+            // through to the +60s jumpForward fallback). Live mode skips
+            // the forward half (the future has no events).
+            const eventsStart = start;
+            const eventsEnd = isLive ? end : new Date(end.getTime() + 60 * 60 * 1000);
 
             const activeFilters = Object.entries(filters)
                 .filter(([_, active]) => active)
@@ -304,11 +336,11 @@ function HomeInner() {
                     interval: 1,
                 }),
                 queryEvents({
-                    start: start.toISOString(),
-                    end: end.toISOString(),
+                    start: eventsStart.toISOString(),
+                    end: eventsEnd.toISOString(),
                     camera_id: isolatedCamera || selectedCamera || undefined,
                     types: activeFilters.join(','),
-                    limit: 100,
+                    limit: 200, // doubled for the wider window
                 }),
             ]);
 

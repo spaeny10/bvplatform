@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandleLabelingStats returns queue health counts (admin only).

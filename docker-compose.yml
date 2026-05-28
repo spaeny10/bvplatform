@@ -88,7 +88,11 @@ services:
       - mediamtx-config:/mediamtx-config
     ports:
       - "${MEDIAMTX_RTSP_PORT:-8554}:18554"   # RTSP relay (record engine pulls from this)
-      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"  # WHEP for browser WebRTC
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"  # WHEP for browser WebRTC (HTTP signaling)
+      - "${MEDIAMTX_WEBRTC_UDP_PORT:-8189}:8189/udp"  # WebRTC media (SRTP). Browsers
+                                                       # ICE here after WHEP — without this
+                                                       # mapping ICE never completes and
+                                                       # every session times out.
       # Port 9997 (control API) is intentionally not published to the host.
       # The Go API reaches it over the backplane network at mediamtx:9997.
     networks: [backplane]
@@ -194,6 +198,11 @@ services:
       MEDIAMTX_WEBRTC_ADDR: mediamtx:8889
       MEDIAMTX_RTSP_ADDR: mediamtx:18554
       MEDIAMTX_API_ADDR: mediamtx:9997
+      # Hosts/IPs to advertise in WebRTC ICE candidates beyond the docker
+      # bridge IP. Set this to the host's LAN IP and/or public hostname so
+      # browsers can actually reach the media port. Empty = bridge-only,
+      # which only works for clients running on the same host as MediaMTX.
+      WEBRTC_ADDITIONAL_HOSTS: "${WEBRTC_ADDITIONAL_HOSTS:-}"
       # AI services via docker DNS
       AI_YOLO_URL: http://yolo:8501
       AI_QWEN_URL: http://qwen:8502

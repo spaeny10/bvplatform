@@ -12,8 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HLSServer manages HLS live streams and playback playlist generation

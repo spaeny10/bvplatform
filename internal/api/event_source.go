@@ -5,10 +5,10 @@ import (
 	"log"
 	"strings"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/drivers"
-	msdriver "onvif-tool/internal/milesight"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/drivers"
+	msdriver "ironsight/internal/milesight"
+	"ironsight/internal/onvif"
 )
 
 // StartCameraEventSource attaches a vendor-appropriate event stream to

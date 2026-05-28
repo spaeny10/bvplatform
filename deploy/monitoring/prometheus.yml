@@ -1,0 +1,51 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Alert rules file produced by this repo (deploy/monitoring/alerts.yml).
+# The LXC operator copies this file alongside prometheus.yml.
+rule_files:
+  - 'alerts.yml'
+
+# Alertmanager integration — assumes alertmanager is running on localhost
+# of the same LXC (or on the same Docker network). Adjust the target if
+# alertmanager is on a different host.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - 'localhost:9093'
+
+scrape_configs:
+  # Ironsight API server — scrapes the /metrics endpoint exposed by P1-C-03.
+  # The endpoint sits behind SSO (METRICS_AUTH=sso by default), so Prom
+  # must present a long-lived service-account JWT as a Bearer token.
+  #
+  # bearer_token_file path: populate this file on the Prom LXC before
+  # starting Prometheus. See deploy/monitoring/README.md for instructions.
+  #
+  # If METRICS_AUTH=none is set on the Ironsight API and NPM restricts
+  # /metrics to the cluster network, remove the authorization block below.
+  - job_name: 'ironsight-api'
+    scrape_interval: 15s
+    scheme: https
+    # Target: fred's NPM-proxied public hostname. Replace with the actual
+    # hostname or internal IP of the Ironsight API server.
+    # Examples:
+    #   ironsight.bigviewsecurity.com   (NPM proxy, TLS terminated at NPM)
+    #   192.168.103.48:8080             (direct to container, no TLS)
+    static_configs:
+      - targets:
+          - 'ironsight.bigviewsecurity.com'
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      # File containing the service-account JWT (one line, no trailing newline).
+      # See README.md for how to generate and place this file.
+      credentials_file: /etc/prometheus/ironsight_bearer_token
+    # TLS config: if the target uses a self-signed cert or internal CA,
+    # set ca_file or insecure_skip_verify here. NPM with Let's Encrypt
+    # cert does not need this block.
+    # tls_config:
+    #   insecure_skip_verify: false
+    #   ca_file: /etc/prometheus/internal-ca.crt

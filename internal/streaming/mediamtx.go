@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 	"gopkg.in/yaml.v3"
 
-	"onvif-tool/internal/config"
+	"ironsight/internal/config"
 )
 
 // MediaMTXServer manages a MediaMTX process for WebRTC streaming
@@ -40,20 +40,21 @@ type streamInfo struct {
 
 // mediamtx YAML config structures
 type mtxConfig struct {
-	LogLevel          string              `yaml:"logLevel"`
-	LogDestinations   []string            `yaml:"logDestinations"`
-	API               bool                `yaml:"api"`
-	APIAddress        string              `yaml:"apiAddress"`
-	RTSP              bool                `yaml:"rtsp"`
-	RTSPAddress       string              `yaml:"rtspAddress"`
-	RTMP              bool                `yaml:"rtmp"`
-	RTMPAddress       string              `yaml:"rtmpAddress"`
-	HLS               bool                `yaml:"hls"`
-	HLSAddress        string              `yaml:"hlsAddress"`
-	WebRTC            bool                `yaml:"webrtc"`
-	WebRTCAddress     string              `yaml:"webrtcAddress"`
-	WebRTCICEServers2 []interface{}       `yaml:"webrtcICEServers2"`
-	Paths             map[string]*mtxPath `yaml:"paths"`
+	LogLevel              string              `yaml:"logLevel"`
+	LogDestinations       []string            `yaml:"logDestinations"`
+	API                   bool                `yaml:"api"`
+	APIAddress            string              `yaml:"apiAddress"`
+	RTSP                  bool                `yaml:"rtsp"`
+	RTSPAddress           string              `yaml:"rtspAddress"`
+	RTMP                  bool                `yaml:"rtmp"`
+	RTMPAddress           string              `yaml:"rtmpAddress"`
+	HLS                   bool                `yaml:"hls"`
+	HLSAddress            string              `yaml:"hlsAddress"`
+	WebRTC                bool                `yaml:"webrtc"`
+	WebRTCAddress         string              `yaml:"webrtcAddress"`
+	WebRTCAdditionalHosts []string            `yaml:"webrtcAdditionalHosts,omitempty"`
+	WebRTCICEServers2     []interface{}       `yaml:"webrtcICEServers2"`
+	Paths                 map[string]*mtxPath `yaml:"paths"`
 }
 
 type mtxPath struct {
@@ -79,7 +80,7 @@ func NewMediaMTXServer(cfg *config.Config) *MediaMTXServer {
 	// Reverse proxy to MediaMTX's WHEP endpoint — target host is whatever
 	// docker-compose / the operator configured (defaults to 127.0.0.1:8889
 	// for single-process dev).
-	targetURL := "http://" + cfg.MediaMTXWebRTCAddr
+	var targetURL string
 	if !strings.HasPrefix(cfg.MediaMTXWebRTCAddr, "http") {
 		targetURL = "http://" + cfg.MediaMTXWebRTCAddr
 	} else {
@@ -335,7 +336,7 @@ func (m *MediaMTXServer) Start(ctx context.Context) error {
 // HTTP API — this is the durability side of the same story.
 //
 // Prefer PersistConfig over Restart in the camera CRUD path: the old
-// behaviour was to fully restart the mediamtx process after every
+// behavior was to fully restart the mediamtx process after every
 // AddStream, which dropped every live WebRTC session on the floor for
 // no good reason now that paths register via API.
 func (m *MediaMTXServer) PersistConfig() error {
@@ -418,17 +419,18 @@ func (m *MediaMTXServer) writeConfig() error {
 		// Enable the HTTP control API so runtime path adds/removes go
 		// through apiAddPath/apiRemovePath instead of config-rewrite +
 		// reload. See internal/streaming/mediamtx_api.go.
-		API:             true,
-		APIAddress:      listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
-		RTSP:            true, // Local RTSP relay — recording engine pulls from here instead of opening new camera connections
-		RTSPAddress:     listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
-		RTMP:            false,
-		RTMPAddress:     ":11935",
-		HLS:             false, // We don't need HLS from MediaMTX
-		HLSAddress:      ":18888",
-		WebRTC:          true,
-		WebRTCAddress:   listenPortSuffix(m.cfg.MediaMTXWebRTCAddr, "8889"),
-		Paths:           paths,
+		API:                   true,
+		APIAddress:            listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
+		RTSP:                  true, // Local RTSP relay — recording engine pulls from here instead of opening new camera connections
+		RTSPAddress:           listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
+		RTMP:                  false,
+		RTMPAddress:           ":11935",
+		HLS:                   false, // We don't need HLS from MediaMTX
+		HLSAddress:            ":18888",
+		WebRTC:                true,
+		WebRTCAddress:         listenPortSuffix(m.cfg.MediaMTXWebRTCAddr, "8889"),
+		WebRTCAdditionalHosts: m.cfg.WebRTCAdditionalHosts,
+		Paths:                 paths,
 	}
 
 	data, err := yaml.Marshal(cfg)

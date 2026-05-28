@@ -12,11 +12,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/avs"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/auth"
+	"ironsight/internal/avs"
+	"ironsight/internal/database"
+	"ironsight/internal/notify"
+	"ironsight/internal/recording"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -30,6 +30,23 @@ func HandleListOrganizations(db *database.DB) http.HandlerFunc {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		// Admin-only: ?include_deleted=true returns orgs including soft-deleted.
+		// Still enforces org scoping for non-admin callers below.
+		if r.URL.Query().Get("include_deleted") == "true" {
+			if claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			orgs, err := db.ListOrganizationsIncludeDeleted(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			writeJSON(w, orgs)
+			return
+		}
+
 		orgs, err := db.ListOrganizations(r.Context())
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -96,7 +113,7 @@ func HandleDeleteOrganization(db *database.DB) http.HandlerFunc {
 			return
 		}
 		id := chi.URLParam(r, "id")
-		if err := db.DeleteOrganization(r.Context(), id); err != nil {
+		if err := db.SoftDeleteOrganization(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -133,6 +150,21 @@ func callerScope(r *http.Request, db *database.DB) database.CallerScope {
 
 func HandleListSites(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Admin-only: ?include_deleted=true returns all sites including soft-deleted.
+		if r.URL.Query().Get("include_deleted") == "true" {
+			claims := claimsFromRequest(r)
+			if claims == nil || claims.Role != "admin" {
+				http.Error(w, "forbidden: admin only", http.StatusForbidden)
+				return
+			}
+			sites, err := db.ListSitesIncludeDeleted(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			writeJSON(w, sites)
+			return
+		}
 		sites, err := db.ListSitesScoped(r.Context(), callerScope(r, db))
 		if err != nil {
 			http.Error(w, err.Error(), 500)
@@ -202,7 +234,7 @@ func HandleDeleteSiteP(db *database.DB) http.HandlerFunc {
 			return
 		}
 		id := chi.URLParam(r, "id")
-		if err := db.DeleteSite(r.Context(), id); err != nil {
+		if err := db.SoftDeleteSite(r.Context(), id); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
 		}
@@ -723,7 +755,7 @@ func isInformationalDisposition(code string) bool {
 
 // dispatchAlarmNotifications resolves recipients and hands off to the
 // channel mailers. Runs on its own goroutine with a fresh context — the
-// request context is already cancelled by the time we get here.
+// request context is already canceled by the time we get here.
 // Informational dispositions are suppressed; they only appear in the
 // customer's history and digest, never in real-time pushes.
 func dispatchAlarmNotifications(db *database.DB, notifier *notify.Dispatcher, ev *database.SecurityEvent, input *database.SecurityEventCreate) {

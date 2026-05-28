@@ -12,9 +12,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/notify"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
+	"ironsight/internal/notify"
 )
 
 // Customer ↔ SOC support ticket handlers.
@@ -298,13 +298,13 @@ func notifyNewTicket(db *database.DB, dispatcher *notify.Dispatcher, t *database
 		recipients = append(recipients, notify.Recipient{Email: e})
 	}
 	dispatcher.SupportTicketEvent(ctx, notify.SupportTicketEvent{
-		Kind:        "new",
-		TicketID:    t.ID,
-		Subject:     t.Subject,
-		Body:        body,
-		FromName:    fromUsername,
-		Org:         t.OrganizationID,
-		PortalPath:  fmt.Sprintf("/reports?support=%d", t.ID),
+		Kind:       "new",
+		TicketID:   t.ID,
+		Subject:    t.Subject,
+		Body:       body,
+		FromName:   fromUsername,
+		Org:        t.OrganizationID,
+		PortalPath: fmt.Sprintf("/reports?support=%d", t.ID),
 	}, recipients)
 }
 

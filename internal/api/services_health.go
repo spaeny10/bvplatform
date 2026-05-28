@@ -7,15 +7,14 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -58,8 +57,8 @@ func HandleServicesHealth(cfg *config.Config, db *database.DB, aiClient *ai.Clie
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
 
-		yoloURL := envOrDefault("AI_YOLO_URL", "http://127.0.0.1:8501")
-		qwenURL := envOrDefault("AI_QWEN_URL", "http://127.0.0.1:8502")
+		yoloURL := cfg.AIYOLOURL
+		qwenURL := cfg.AIQwenURL
 		mtxURL := "http://" + cfg.MediaMTXAPIAddr
 
 		// Each probe is independent — fan out, then collect.
@@ -262,26 +261,19 @@ func condenseErr(err error) string {
 	return s
 }
 
-func envOrDefault(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
-
 // AIMetricSample is one row in the time-series response. ts is RFC3339;
 // every other field is nullable because the sampler may have failed to
 // reach the AI service for that window.
 type AIMetricSample struct {
-	Ts                string `json:"ts"`
-	GPUUtilPct        *int   `json:"gpu_util_pct,omitempty"`
-	GPUMemoryUsedMB   *int   `json:"gpu_memory_used_mb,omitempty"`
-	GPUMemoryTotalMB  *int   `json:"gpu_memory_total_mb,omitempty"`
-	GPUTemperatureC   *int   `json:"gpu_temperature_c,omitempty"`
-	CallsDelta        int64  `json:"calls_delta"`
-	ConfirmedDelta    int64  `json:"confirmed_delta"`
-	FilteredDelta     int64  `json:"filtered_delta"`
-	AvgInferenceMs    *int   `json:"avg_inference_ms,omitempty"`
+	Ts               string `json:"ts"`
+	GPUUtilPct       *int   `json:"gpu_util_pct,omitempty"`
+	GPUMemoryUsedMB  *int   `json:"gpu_memory_used_mb,omitempty"`
+	GPUMemoryTotalMB *int   `json:"gpu_memory_total_mb,omitempty"`
+	GPUTemperatureC  *int   `json:"gpu_temperature_c,omitempty"`
+	CallsDelta       int64  `json:"calls_delta"`
+	ConfirmedDelta   int64  `json:"confirmed_delta"`
+	FilteredDelta    int64  `json:"filtered_delta"`
+	AvgInferenceMs   *int   `json:"avg_inference_ms,omitempty"`
 }
 
 // HandleAIMetricsTimeseries serves the recent samples for the AI
@@ -358,15 +350,15 @@ func HandleAIMetricsTimeseries(db *database.DB) http.HandlerFunc {
 
 // SiteUsageRow is one row of the per-site AI usage breakdown.
 type SiteUsageRow struct {
-	SiteID         string  `json:"site_id"`
-	SiteName       string  `json:"site_name"`
-	YOLOCalls      int64   `json:"yolo_calls"`
-	YOLOConfirmed  int64   `json:"yolo_confirmed"`
-	YOLOFiltered   int64   `json:"yolo_filtered"`
-	QwenCalls      int64   `json:"qwen_calls"`
-	QwenConfirmed  int64   `json:"qwen_confirmed"`
-	QwenFiltered   int64   `json:"qwen_filtered"`
-	EstimatedCost  float64 `json:"estimated_cost"`
+	SiteID        string  `json:"site_id"`
+	SiteName      string  `json:"site_name"`
+	YOLOCalls     int64   `json:"yolo_calls"`
+	YOLOConfirmed int64   `json:"yolo_confirmed"`
+	YOLOFiltered  int64   `json:"yolo_filtered"`
+	QwenCalls     int64   `json:"qwen_calls"`
+	QwenConfirmed int64   `json:"qwen_confirmed"`
+	QwenFiltered  int64   `json:"qwen_filtered"`
+	EstimatedCost float64 `json:"estimated_cost"`
 }
 
 // HandleAIUsageBySite serves the per-site usage breakdown for the
@@ -449,11 +441,11 @@ func HandleAIUsageBySite(db *database.DB) http.HandlerFunc {
 		}
 
 		writeJSON(w, map[string]interface{}{
-			"window_days":       days,
-			"cost_per_1k_yolo":  costYolo,
-			"cost_per_1k_qwen":  costQwen,
-			"total_cost":        totalCost,
-			"sites":             out,
+			"window_days":      days,
+			"cost_per_1k_yolo": costYolo,
+			"cost_per_1k_qwen": costQwen,
+			"total_cost":       totalCost,
+			"sites":            out,
 		})
 	}
 }

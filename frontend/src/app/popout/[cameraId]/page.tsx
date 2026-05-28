@@ -13,9 +13,8 @@ export default function PopoutPage() {
 
     useEffect(() => {
         if (!cameraId) return;
-        const token = localStorage.getItem('ironsight_token');
         fetch(`/api/cameras/${cameraId}`, {
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
+            credentials: 'include',
         })
             .then(res => {
                 if (!res.ok) throw new Error('Camera not found');

@@ -38,8 +38,44 @@ interface CameraGridProps {
     globalPaused?: boolean;
 }
 
-const STORAGE_KEY = 'onvif-tool-layouts';
-const ACTIVE_LAYOUT_KEY = 'onvif-tool-active-layout';
+// LOCAL-06: localStorage key namespace migration. P1-B-07 renamed the
+// Go module from `onvif-tool` → `ironsight`; the frontend's localStorage
+// keys still carried the old prefix, so any operator with saved camera
+// layouts had them under `onvif-tool-*`. Renaming the keys outright
+// would orphan every existing user's saved layouts. Instead: on first
+// run after deploy, copy old → new, then delete the old key. After
+// every user's session has rotated once, the migration is a no-op and
+// the shim could in principle be removed.
+const STORAGE_KEY = 'ironsight-layouts';
+const ACTIVE_LAYOUT_KEY = 'ironsight-active-layout';
+const LEGACY_STORAGE_KEY = 'onvif-tool-layouts';
+const LEGACY_ACTIVE_LAYOUT_KEY = 'onvif-tool-active-layout';
+
+// migrateLegacyLayoutKeys runs once at module load (idempotent — second
+// call is a no-op because the legacy keys are already gone). Wrapped in
+// try/catch because some browser contexts (Safari private mode, embedded
+// webview without storage permission) throw on every localStorage access
+// and a thrown error here would prevent the rest of the file from
+// initialising.
+function migrateLegacyLayoutKeys() {
+    if (typeof window === 'undefined') return; // Next.js SSR pass — no localStorage
+    try {
+        const oldLayouts = localStorage.getItem(LEGACY_STORAGE_KEY);
+        if (oldLayouts !== null && localStorage.getItem(STORAGE_KEY) === null) {
+            localStorage.setItem(STORAGE_KEY, oldLayouts);
+            localStorage.removeItem(LEGACY_STORAGE_KEY);
+        }
+        const oldActive = localStorage.getItem(LEGACY_ACTIVE_LAYOUT_KEY);
+        if (oldActive !== null && localStorage.getItem(ACTIVE_LAYOUT_KEY) === null) {
+            localStorage.setItem(ACTIVE_LAYOUT_KEY, oldActive);
+            localStorage.removeItem(LEGACY_ACTIVE_LAYOUT_KEY);
+        }
+    } catch {
+        // best-effort — if storage is unavailable the user gets a clean
+        // empty layout list, which is recoverable.
+    }
+}
+migrateLegacyLayoutKeys();
 
 function loadSavedLayouts(): SavedLayout[] {
     try {

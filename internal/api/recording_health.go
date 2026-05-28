@@ -2,13 +2,13 @@ package api
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // RecordingHealth is one row of the /api/recording/health response. Values are
@@ -19,7 +19,7 @@ type RecordingHealth struct {
 	CameraName     string     `json:"camera_name"`
 	SiteID         string     `json:"site_id,omitempty"`
 	Recording      bool       `json:"recording"`
-	RecorderType   string     `json:"recorder_type"`   // "ffmpeg" | "gort" | "off"
+	RecorderType   string     `json:"recorder_type"` // "ffmpeg" | "gort" | "off"
 	Segments24h    int        `json:"segments_24h"`
 	Bytes24h       int64      `json:"bytes_24h"`
 	LastSegmentAt  *time.Time `json:"last_segment_at,omitempty"`
@@ -34,11 +34,11 @@ type RecordingHealth struct {
 //
 // RBAC: same rules as the rest of the history endpoints — admins + SOC roles
 // see all cameras, customer-side roles only their assigned ones.
-func HandleRecordingHealth(db *database.DB) http.HandlerFunc {
-	// Build the set of cameras routed to the Go recorder from env once; the
-	// engine doesn't currently expose the mapping, and this env var is the
-	// authoritative source at startup time.
-	gortSet := parseGortSet(os.Getenv("GORT_CAMERAS"))
+func HandleRecordingHealth(cfg *config.Config, db *database.DB) http.HandlerFunc {
+	// Build the set of cameras routed to the Go recorder from the centralized
+	// config (env GORT_CAMERAS parsed at config-load time); the engine doesn't
+	// currently expose the mapping, and config is the authoritative source.
+	gortSet := parseGortSet(cfg.GortCameras)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
@@ -97,10 +97,10 @@ func HandleRecordingHealth(db *database.DB) http.HandlerFunc {
 			// Aggregate segments in the last 24h for this camera in one round
 			// trip. COALESCE the SUM to avoid NULL when there are no rows.
 			var (
-				count       int
-				bytes       int64
-				lastEnd     *time.Time
-				longestGap  float64
+				count      int
+				bytes      int64
+				lastEnd    *time.Time
+				longestGap float64
 			)
 			err := db.Pool.QueryRow(r.Context(), `
 				WITH seg AS (
@@ -159,12 +159,11 @@ func HandleRecordingHealth(db *database.DB) http.HandlerFunc {
 	}
 }
 
-// parseGortSet splits the GORT_CAMERAS env var into a set of tokens. Tokens
-// can be full UUIDs or 8-char prefixes; the caller checks via `hasPrefix`.
-func parseGortSet(s string) map[string]struct{} {
-	out := make(map[string]struct{})
-	for _, tok := range strings.Split(s, ",") {
-		tok = strings.TrimSpace(tok)
+// parseGortSet converts the parsed GORT_CAMERAS slice (full UUIDs or 8-char
+// prefixes) into a set for O(1) exact-match plus a slice walk for prefixes.
+func parseGortSet(tokens []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
 		if tok != "" {
 			out[tok] = struct{}{}
 		}

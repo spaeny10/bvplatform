@@ -1,0 +1,73 @@
+# Dependabot — keeps Go modules, npm packages, and GitHub Actions
+# pinned versions current. Configured here per the P1-B-03 security
+# acceptance criteria.
+#
+# Each ecosystem opens at most 5 PRs per week so we don't get flooded
+# during a quiet codebase week. Patch-level updates land more
+# aggressively than majors (limit-major-pr-count is implicit in the
+# 5-PR cap — a major from each dep would saturate the queue, so they
+# get held back).
+
+version: 2
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - go
+    commit-message:
+      prefix: deps(go)
+    # Group all stdlib-adjacent + low-risk libraries into one weekly PR
+    # so we don't get 8 separate PRs for tiny golang.org/x/* bumps.
+    groups:
+      golang-x:
+        patterns:
+          - golang.org/x/*
+      pgx-ecosystem:
+        patterns:
+          - github.com/jackc/*
+
+  # Frontend (npm)
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - frontend
+    commit-message:
+      prefix: deps(frontend)
+    groups:
+      next-ecosystem:
+        patterns:
+          - next
+          - "@next/*"
+          - react
+          - react-dom
+          - "@types/react*"
+
+  # GitHub Actions themselves — pinned tags inside .github/workflows/*.yml.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Chicago
+    open-pull-requests-limit: 2
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: deps(ci)

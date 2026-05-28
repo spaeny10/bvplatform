@@ -8,7 +8,7 @@ import (
 	"context"
 	"strings"
 
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/onvif"
 )
 
 // CameraDriver is the interface that manufacturer-specific drivers implement.
@@ -64,8 +64,8 @@ type PTZRefiner interface {
 	// RefineHasPTZ returns the corrected has_ptz value for a device.
 	// `profileSays` is what the ONVIF profile advertised (the existing
 	// PTZConfiguration-token check). Drivers can return `false` when
-	// they recognise the model as fixed or fisheye, return `true` when
-	// they recognise it as mechanical PTZ, or just return `profileSays`
+	// they recognize the model as fixed or fisheye, return `true` when
+	// they recognize it as mechanical PTZ, or just return `profileSays`
 	// when they're not sure.
 	RefineHasPTZ(info *onvif.DeviceInfo, profileSays bool) bool
 }

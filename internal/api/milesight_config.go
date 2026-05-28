@@ -13,8 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // Milesight's web UI exposes ~30 configuration panels, each backed by a

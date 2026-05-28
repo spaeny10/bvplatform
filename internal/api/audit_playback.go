@@ -7,8 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
 )
 
 // auditPlayback writes one row to playback_audits describing a user's access

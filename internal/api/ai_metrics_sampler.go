@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/database"
+	"ironsight/internal/ai"
+	"ironsight/internal/database"
 )
 
 // StartAIMetricsSampler runs a background loop that snapshots the AI
@@ -23,7 +23,7 @@ import (
 //
 // The sampler shares the api process so it can read ai.Client's
 // counters without any IPC, and it dies cleanly with the api when the
-// parent context is cancelled.
+// parent context is canceled.
 func StartAIMetricsSampler(parent context.Context, db *database.DB, aiClient *ai.Client, yoloURL, qwenURL string, interval time.Duration) {
 	if aiClient == nil || db == nil {
 		return

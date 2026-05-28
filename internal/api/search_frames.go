@@ -4,13 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // SearchFiltersRequest matches the shape the /search page POSTs. Kept
@@ -93,7 +93,7 @@ var ppeViolationLabelMap = map[string]string{
 //     that FTS alone can't cleanly express.
 //
 // RBAC-scoped identical to the rest of the history endpoints.
-func HandleSearchFrames(db *database.DB) http.HandlerFunc {
+func HandleSearchFrames(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -127,7 +127,7 @@ func HandleSearchFrames(db *database.DB) http.HandlerFunc {
 		start, end := parseDateRange(req.DateRange)
 
 		// ── Part 1: VLM segment descriptions (FTS rank) ──
-		vlmResults, err := searchVLMSegments(r, db, q, req, allowed, restricted, start, end)
+		vlmResults, err := searchVLMSegments(r, cfg, db, claims.UserID, q, req, allowed, restricted, start, end)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -188,7 +188,7 @@ func HandleSearchFrames(db *database.DB) http.HandlerFunc {
 // plus tag-overlap bonus. Returns zero rows if q is empty (tags-only filter
 // would need a different path — not today's scope).
 func searchVLMSegments(
-	r *http.Request, db *database.DB,
+	r *http.Request, cfg *config.Config, db *database.DB, userID string,
 	q string, req SearchFiltersRequest,
 	allowed []uuid.UUID, restricted bool,
 	start, end time.Time,
@@ -257,7 +257,7 @@ func searchVLMSegments(
 	if restricted {
 		where = append(where, fmt.Sprintf("d.camera_id = ANY($%d)", argN))
 		args = append(args, allowed)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	query := fmt.Sprintf(`
@@ -316,10 +316,11 @@ func searchVLMSegments(
 		if offset < 0 {
 			offset = 0
 		}
-		clipURL := "/recordings/" + cameraID.String() + "/" + filepath.Base(filePath)
-		if offset > 0 {
-			clipURL = fmt.Sprintf("%s#t=%.1f", clipURL, offset)
-		}
+		// P1-A-03: signed /media/v1/<token>#t=... bound to the caller.
+		// MintSegmentPlaybackURL derives the seek-fragment from
+		// eventTime-segStart; pass start+offset to recreate the
+		// "midpoint of the segment" semantics the original code used.
+		clipURL := MintSegmentPlaybackURL(cfg, userID, cameraID.String(), filePath, startTime, startTime.Add(time.Duration(offset*float64(time.Second))))
 
 		result := SearchFrameResult{
 			FrameID:        fmt.Sprintf("seg-%d", segID),
@@ -406,7 +407,7 @@ func searchAlarms(
 		// camera_id is stored as TEXT in active_alarms, so cast to match.
 		where = append(where, fmt.Sprintf("camera_id::uuid = ANY($%d)", argN))
 		args = append(args, allowed)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	query := fmt.Sprintf(`
@@ -431,11 +432,11 @@ func searchAlarms(
 	for rows.Next() {
 		var (
 			id, cameraID, cameraName, siteID, siteName string
-			ts                                          int64
-			alarmType, description, aiDesc              string
-			ppeJSON, detJSON                            []byte
-			snapshotURL, clipURL                        string
-			fpPct                                       float64
+			ts                                         int64
+			alarmType, description, aiDesc             string
+			ppeJSON, detJSON                           []byte
+			snapshotURL, clipURL                       string
+			fpPct                                      float64
 		)
 		if err := rows.Scan(&id, &cameraID, &cameraName, &siteID, &siteName,
 			&ts, &alarmType, &description, &aiDesc, &ppeJSON, &detJSON,

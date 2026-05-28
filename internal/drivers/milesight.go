@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/onvif"
 )
 
 // ═══════════════════════════════════════════════════════════════
@@ -52,9 +52,10 @@ func (d *MilesightDriver) Matches(info *onvif.DeviceInfo) bool {
 // SelectProfiles picks the optimal main and sub stream for Milesight cameras.
 //
 // Milesight cameras typically expose 3 profiles:
-//   Profile_1: Main stream (4K/5MP/8MP H.265)
-//   Profile_2: Sub stream  (D1/720p H.264)
-//   Profile_3: Third stream (optional, mobile-optimized)
+//
+//	Profile_1: Main stream (4K/5MP/8MP H.265)
+//	Profile_2: Sub stream  (D1/720p H.264)
+//	Profile_3: Third stream (optional, mobile-optimized)
 //
 // We prefer the highest-resolution stream for main and the lowest for sub,
 // but skip any profile without a stream URI. For Milesight AI cameras
@@ -138,19 +139,19 @@ func (d *MilesightDriver) NormalizeRTSPURI(uri string, username, password string
 // Milesight AI cameras emit proprietary analytics topics under the
 // tns1:RuleEngine namespace. Common topics:
 //
-//   tns1:RuleEngine/VCA/Intrusion         → intrusion
-//   tns1:RuleEngine/VCA/LineCross         → linecross
-//   tns1:RuleEngine/VCA/RegionEntrance    → intrusion
-//   tns1:RuleEngine/VCA/RegionExit        → intrusion
-//   tns1:RuleEngine/VCA/Loitering         → loitering
-//   tns1:RuleEngine/AI/HumanDetect        → human
-//   tns1:RuleEngine/AI/VehicleDetect      → vehicle
-//   tns1:RuleEngine/AI/FaceDetect         → face
-//   tns1:RuleEngine/AI/PeopleCount        → peoplecount
-//   tns1:RuleEngine/AI/MixedTargetDetect  → object
-//   tns1:RuleEngine/AI/LicensePlate       → lpr
-//   tns1:VideoSource/MotionAlarm          → motion
-//   tns1:Device/Trigger/DigitalInput      → tamper
+//	tns1:RuleEngine/VCA/Intrusion         → intrusion
+//	tns1:RuleEngine/VCA/LineCross         → linecross
+//	tns1:RuleEngine/VCA/RegionEntrance    → intrusion
+//	tns1:RuleEngine/VCA/RegionExit        → intrusion
+//	tns1:RuleEngine/VCA/Loitering         → loitering
+//	tns1:RuleEngine/AI/HumanDetect        → human
+//	tns1:RuleEngine/AI/VehicleDetect      → vehicle
+//	tns1:RuleEngine/AI/FaceDetect         → face
+//	tns1:RuleEngine/AI/PeopleCount        → peoplecount
+//	tns1:RuleEngine/AI/MixedTargetDetect  → object
+//	tns1:RuleEngine/AI/LicensePlate       → lpr
+//	tns1:VideoSource/MotionAlarm          → motion
+//	tns1:Device/Trigger/DigitalInput      → tamper
 //
 // Returns "" to fall through to the generic classifier.
 func (d *MilesightDriver) ClassifyEvent(topic string) string {
@@ -272,10 +273,7 @@ func (d *MilesightDriver) RefineHasPTZ(info *onvif.DeviceInfo, profileSays bool)
 		return profileSays
 	}
 	model := strings.ToUpper(info.Model)
-	if milesightZoomTokenRE.MatchString(model) {
-		return true
-	}
-	return false
+	return milesightZoomTokenRE.MatchString(model)
 }
 
 // DefaultSettings returns Milesight-recommended recording configuration.

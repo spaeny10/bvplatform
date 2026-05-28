@@ -1,0 +1,324 @@
+/* compliance.css — scoped to /portal/compliance route.
+   Uses only var(--*) tokens from portal.css. No hardcoded color values. */
+
+.compliance-page {
+  padding: 1.5rem 1rem 3rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+
+.compliance-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+
+.compliance-title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1 1 auto;
+}
+
+/* ── Period tabs ────────────────────────────────────────────── */
+
+.compliance-period-tabs {
+  display: flex;
+  gap: 0.25rem;
+  background: var(--surface-2, #f0ece6);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.compliance-period-tab {
+  padding: 0.3rem 0.75rem;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.compliance-period-tab.active {
+  background: var(--surface-1, #faf9f5);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+.compliance-period-select {
+  display: none;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border, #d8d0c4);
+  border-radius: 6px;
+  background: var(--surface-1, #faf9f5);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+/* ── Site filter + download ─────────────────────────────────── */
+
+.compliance-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1.25rem;
+}
+
+.compliance-site-select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border, #d8d0c4);
+  border-radius: 6px;
+  background: var(--surface-1, #faf9f5);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.compliance-download-btn {
+  padding: 0.4rem 1rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.compliance-download-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Stat cards ─────────────────────────────────────────────── */
+
+.compliance-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.compliance-card {
+  background: var(--surface-1, #faf9f5);
+  border: 1px solid var(--border, #d8d0c4);
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.compliance-card-label {
+  font-size: 0.75rem;
+  color: var(--text-dim, #a09080);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.4rem;
+}
+
+.compliance-card-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+
+.compliance-card-sub {
+  font-size: 0.8rem;
+  color: var(--text-dim, #a09080);
+  margin-top: 0.25rem;
+}
+
+.compliance-card--accent {
+  border-left: 3px solid var(--accent);
+}
+
+.compliance-card--green {
+  border-left: 3px solid #4caf70;
+}
+
+.compliance-card--blue {
+  border-left: 3px solid #5b8fd4;
+}
+
+/* ── Chart ──────────────────────────────────────────────────── */
+
+.compliance-section {
+  background: var(--surface-1, #faf9f5);
+  border: 1px solid var(--border, #d8d0c4);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.compliance-section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 0.75rem;
+}
+
+.compliance-chart-wrap {
+  overflow-x: auto;
+  min-height: 120px;
+}
+
+/* ── Tables ─────────────────────────────────────────────────── */
+
+.compliance-table-wrap {
+  overflow-x: auto;
+}
+
+.compliance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.compliance-table th {
+  text-align: left;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim, #a09080);
+  border-bottom: 1px solid var(--border, #d8d0c4);
+}
+
+.compliance-table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border-light, #ece8e0);
+  color: var(--text-primary);
+}
+
+.compliance-table tr:last-child td {
+  border-bottom: none;
+}
+
+.compliance-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: var(--accent-light, #fde8e3);
+  color: var(--accent);
+}
+
+/* ── Skeleton ───────────────────────────────────────────────── */
+
+.compliance-skeleton-card {
+  height: 88px;
+  border-radius: 10px;
+  background: linear-gradient(90deg,
+    var(--surface-2, #f0ece6) 25%,
+    var(--surface-3, #e8e2d8) 50%,
+    var(--surface-2, #f0ece6) 75%);
+  background-size: 200% 100%;
+  animation: compliance-shimmer 1.5s infinite;
+}
+
+.compliance-skeleton-chart {
+  height: 120px;
+  border-radius: 6px;
+  background: linear-gradient(90deg,
+    var(--surface-2, #f0ece6) 25%,
+    var(--surface-3, #e8e2d8) 50%,
+    var(--surface-2, #f0ece6) 75%);
+  background-size: 200% 100%;
+  animation: compliance-shimmer 1.5s infinite;
+}
+
+.compliance-skeleton-row {
+  height: 40px;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  background: linear-gradient(90deg,
+    var(--surface-2, #f0ece6) 25%,
+    var(--surface-3, #e8e2d8) 50%,
+    var(--surface-2, #f0ece6) 75%);
+  background-size: 200% 100%;
+  animation: compliance-shimmer 1.5s infinite;
+}
+
+@keyframes compliance-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── REDUCED MOTION ── Shimmer skeletons use a background-position
+   animation; the period tab / download-button transitions are also
+   neutralized. Skeleton elements fall back to a static muted fill
+   that still distinguishes them from real content. */
+@media (prefers-reduced-motion: reduce) {
+  .compliance-skeleton-card,
+  .compliance-skeleton-chart,
+  .compliance-skeleton-row {
+    animation: none;
+    background: var(--surface-2, #f0ece6);
+    background-size: unset;
+  }
+
+  .compliance-period-tab,
+  .compliance-download-btn {
+    transition: none;
+  }
+}
+
+/* ── Empty state ────────────────────────────────────────────── */
+
+.compliance-empty {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--text-dim, #a09080);
+  font-size: 0.9rem;
+}
+
+/* ── Mobile ─────────────────────────────────────────────────── */
+
+@media (max-width: 640px) {
+  .compliance-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .compliance-period-tabs {
+    display: none;
+  }
+
+  .compliance-period-select {
+    display: block;
+  }
+
+  .compliance-table thead {
+    display: none;
+  }
+
+  .compliance-table tr {
+    display: block;
+    border: 1px solid var(--border, #d8d0c4);
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+  }
+
+  .compliance-table td {
+    display: block;
+    border-bottom: none;
+    padding: 0.25rem 0.5rem;
+  }
+
+  .compliance-table td::before {
+    content: attr(data-label) ': ';
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--text-dim, #a09080);
+    display: inline;
+  }
+}

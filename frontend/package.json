@@ -1,5 +1,5 @@
 {
-    "name": "onvif-tool-frontend",
+    "name": "ironsight-frontend",
     "version": "1.0.0",
     "private": true,
     "scripts": {

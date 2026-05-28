@@ -7,6 +7,7 @@ import SLATimer from '@/components/operator/SLATimer';
 import { useOperatorStore } from '@/stores/operator-store';
 import { useState, useRef, useEffect } from 'react';
 import { claimAlert as apiClaimAlert, releaseAlert as apiReleaseAlert } from '@/lib/ironsight-api';
+import SignedImage from '@/components/shared/SignedImage';
 
 interface AlertFeedProps {
   alerts: AlertEvent[];
@@ -184,7 +185,7 @@ export default function AlertFeed({ alerts, onAlertClick, onIncidentClick }: Ale
                     aspectRatio: '16/9', background: '#080a06',
                     position: 'relative',
                   }}>
-                    <img
+                    <SignedImage
                       src={incident.snapshot_url}
                       alt="Event snapshot"
                       style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
@@ -288,7 +289,7 @@ export default function AlertFeed({ alerts, onAlertClick, onIncidentClick }: Ale
                     aspectRatio: '16/9', background: '#080a06',
                     position: 'relative',
                   }}>
-                    <img
+                    <SignedImage
                       src={alert.snapshot_url}
                       alt="Event snapshot"
                       style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}

@@ -216,7 +216,7 @@ Write-Host "  Database URL:" -ForegroundColor White
 Write-Host "  postgres://${PgUser}:${PgPassword}@localhost:${PgPort}/${PgDatabase}?sslmode=disable" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Cyan
-Write-Host "    1. Start the backend:  .\bin\onvif-tool.exe" -ForegroundColor White
+Write-Host "    1. Start the backend:  .\bin\ironsight.exe" -ForegroundColor White
 Write-Host "    2. Start the frontend: cd frontend && npm run dev" -ForegroundColor White
 Write-Host "    3. Open: http://localhost:3000" -ForegroundColor White
 Write-Host ""

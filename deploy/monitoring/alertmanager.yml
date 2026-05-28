@@ -1,0 +1,107 @@
+# Alertmanager configuration — P1-C-04
+#
+# OPERATOR: replace the ntfy topic placeholder below with your own private
+# topic before deploying. Generate one with:
+#   openssl rand -hex 16
+# Subscribe to the same topic in the ntfy iOS/Android app:
+#   https://ntfy.sh/<your-topic>
+#
+# The placeholder topic below is: 3f8a1c2e9d4b7f0e5a2c1d3e8f6b9a0c
+# It is intentionally public-looking but unguessable. Replace it.
+
+global:
+  # How long to wait before re-sending a resolved notification.
+  resolve_timeout: 5m
+
+# Template file for ntfy message formatting.
+templates:
+  - '/etc/alertmanager/ntfy-template.tpl'
+
+route:
+  # Default receiver for all alerts not matched by a sub-route.
+  receiver: ntfy-caleb
+
+  # Group alerts by alert name and route label so one notification
+  # covers multiple cameras/routes firing the same alert type.
+  group_by: ['alertname', 'route']
+
+  # Wait 30 seconds before sending the first notification for a new group,
+  # to batch rapid-fire alerts together.
+  group_wait: 30s
+
+  # After the first notification, wait 5 minutes before sending another
+  # for the same group (if new alerts arrive).
+  group_interval: 5m
+
+  # Re-send notifications for ongoing alerts every 4 hours (critical)
+  # or 12 hours (warning). Sub-routes override this per severity.
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts: repeat every 4 hours until resolved.
+    - match:
+        severity: critical
+      receiver: ntfy-caleb
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+
+    # Warning alerts: repeat every 12 hours (less urgent).
+    - match:
+        severity: warning
+      receiver: ntfy-caleb
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+
+# Inhibition rules: a critical alert suppresses warning-level alerts
+# for the same alertname so a full outage doesn't flood with warnings
+# while the critical is already firing.
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']
+
+receivers:
+  - name: ntfy-caleb
+    webhook_configs:
+      - url: 'https://ntfy.sh/3f8a1c2e9d4b7f0e5a2c1d3e8f6b9a0c'
+        send_resolved: true
+        http_config:
+          # ntfy expects the message in the POST body.
+          # Alertmanager's webhook sends JSON; ntfy reads the body as the
+          # message text when Content-Type is text/plain. We use the
+          # template file to format the body correctly and set ntfy headers
+          # via the http_config.headers block.
+          #
+          # ntfy priority mapping:
+          #   critical → urgent (5)
+          #   warning  → high (4)
+          #   default  → default (3)
+          headers:
+            # ntfy-specific headers — see https://ntfy.sh/docs/publish/
+            # Title: alert name, set via template
+            Title: '{{ template "ntfy.title" . }}'
+            # Priority: mapped from severity label via template
+            Priority: '{{ template "ntfy.priority" . }}'
+            # Tags: emoji tags for visual triage in the ntfy app
+            Tags: '{{ template "ntfy.tags" . }}'
+            # Click URL: deep-link to the runbook if runbook_url is set
+            Click: '{{ template "ntfy.click" . }}'
+        # The POST body is the formatted alert message.
+        # alertmanager sends the webhook payload as JSON by default;
+        # to send plain text, the template must be used and the
+        # Content-Type header set to text/plain.
+        # Note: alertmanager webhook_config sends JSON body; ntfy treats
+        # any POST body as the message. The ntfy-template.tpl formats the
+        # JSON body field that ntfy reads as the notification body.
+        # For plain-text ntfy messages, consider using a small proxy or
+        # the ntfy alertmanager integration (ntfy >= 2.6 supports
+        # alertmanager natively at /path?compat=alertmanager).
+        #
+        # Simpler alternative: use ntfy's alertmanager-compat URL:
+        # url: 'https://ntfy.sh/3f8a1c2e9d4b7f0e5a2c1d3e8f6b9a0c?compat=alertmanager'
+        # This lets ntfy parse the alertmanager webhook JSON natively.
+        max_alerts: 10

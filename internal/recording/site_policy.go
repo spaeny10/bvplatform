@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // SettingsForCamera resolves the recording policy a camera should run under.
@@ -12,11 +12,11 @@ import (
 // The policy lives on the camera's site (migrated out of per-camera columns
 // in 2026-04). Falling back in order:
 //
-//   1. If the camera is assigned to a site and the site row loads: use the
-//      site's retention/mode/buffers/triggers/schedule.
-//   2. If the camera has no site, or the site lookup fails: return zero-value
-//      RecordingSettings, which StartRecording treats as "engine defaults"
-//      (continuous mode, 10/30 buffers, motion+object triggers, no schedule).
+//  1. If the camera is assigned to a site and the site row loads: use the
+//     site's retention/mode/buffers/triggers/schedule.
+//  2. If the camera has no site, or the site lookup fails: return zero-value
+//     RecordingSettings, which StartRecording treats as "engine defaults"
+//     (continuous mode, 10/30 buffers, motion+object triggers, no schedule).
 //
 // The caller should treat this as best-effort — a missing site is not an
 // error, just an unusual configuration (e.g., a camera in onboarding that

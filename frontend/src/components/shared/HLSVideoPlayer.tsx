@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useState } from 'react';
 import Hls from 'hls.js';
+import { resolveMediaURL, createMediaRefresher } from '@/lib/media';
 
 interface Props {
   src?: string;
@@ -12,15 +13,56 @@ interface Props {
   onError?: () => void;
 }
 
+// matchLegacyHLS recognises the historical `/hls/<cam>/<file.m3u8>` URL
+// shape used by callers that haven't been ported to mintMediaToken yet.
+// Returning { cam, file } triggers the auto-refresh path that re-mints
+// the playlist token every ~4 minutes (TTL is 5 min). Anything else is
+// returned as a plain string and used as-is.
+function matchLegacyHLS(src: string): { cam: string; file: string } | null {
+  const m = src.match(/^\/hls\/([^/]+)\/([^/?#]+)$/);
+  if (!m) return null;
+  return { cam: m[1], file: m[2] };
+}
+
 export default function HLSVideoPlayer({ src, poster, autoPlay = true, muted = true, style, onError }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const hlsRef = useRef<Hls | null>(null);
   const [status, setStatus] = useState<'loading' | 'playing' | 'error' | 'no-src'>(!src ? 'no-src' : 'loading');
+  // resolvedSrc is the actual /media/v1/<token> URL we feed into the
+  // video element / hls.js. For legacy /hls/ inputs it's re-minted on a
+  // 4-min cadence so the parent playlist token never expires mid-stream.
+  const [resolvedSrc, setResolvedSrc] = useState<string>('');
+
+  // Resolve + (optionally) auto-refresh the source URL.
+  useEffect(() => {
+    if (!src) {
+      setResolvedSrc('');
+      return;
+    }
+    let cancelled = false;
+    const legacy = matchLegacyHLS(src);
+    if (legacy) {
+      // Auto-refresh path. createMediaRefresher schedules its own
+      // ticks; the first onRefresh fires synchronously after the
+      // first mint completes.
+      const refresher = createMediaRefresher(
+        { camera_id: legacy.cam, kind: 'hls', path: legacy.file },
+        (url) => { if (!cancelled) setResolvedSrc(url); },
+      );
+      refresher.start();
+      return () => { cancelled = true; refresher.dispose(); };
+    }
+    // Non-/hls/ input — single-shot resolve. resolveMediaURL handles
+    // both already-signed /media/v1/ URLs (passthrough) and legacy
+    // /recordings/ / /snapshots/ URLs (one-shot mint).
+    resolveMediaURL(src).then(u => { if (!cancelled) setResolvedSrc(u); });
+    return () => { cancelled = true; };
+  }, [src]);
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !src) {
-      setStatus('no-src');
+    if (!video || !resolvedSrc) {
+      setStatus(src ? 'loading' : 'no-src');
       return;
     }
 
@@ -28,7 +70,7 @@ export default function HLSVideoPlayer({ src, poster, autoPlay = true, muted = t
 
     // Native HLS support (Safari)
     if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = src;
+      video.src = resolvedSrc;
       video.addEventListener('loadedmetadata', () => {
         if (autoPlay) video.play().catch(() => {});
         setStatus('playing');
@@ -49,7 +91,7 @@ export default function HLSVideoPlayer({ src, poster, autoPlay = true, muted = t
       });
       hlsRef.current = hls;
 
-      hls.loadSource(src);
+      hls.loadSource(resolvedSrc);
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -76,7 +118,7 @@ export default function HLSVideoPlayer({ src, poster, autoPlay = true, muted = t
     }
 
     setStatus('error');
-  }, [src, autoPlay, onError]);
+  }, [resolvedSrc, autoPlay, onError, src]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000', ...style }}>

@@ -2,6 +2,7 @@ package api
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,11 +19,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/avs"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/evidence"
-	"onvif-tool/internal/recording"
+	"ironsight/internal/avs"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/evidence"
+	"ironsight/internal/recording"
 )
 
 // EvidenceManifest is serialized as event.json inside the downloaded ZIP.
@@ -64,11 +65,11 @@ type EvidenceManifest struct {
 // score travels with the bundle for any downstream consumer; covered
 // by SIGNATURE.txt's HMAC like the rest of the manifest.
 type EvidenceAVSSection struct {
-	Score          int         `json:"score"`
-	Label          string      `json:"label"`
-	RubricVersion  string      `json:"rubric_version"`
-	Factors        avs.Factors `json:"factors"`
-	DispatchEligible bool      `json:"dispatch_eligible"`
+	Score            int         `json:"score"`
+	Label            string      `json:"label"`
+	RubricVersion    string      `json:"rubric_version"`
+	Factors          avs.Factors `json:"factors"`
+	DispatchEligible bool        `json:"dispatch_eligible"`
 }
 
 type EvidenceAISection struct {
@@ -297,6 +298,30 @@ func HandleEvidenceExport(db *database.DB, cfg *config.Config) http.HandlerFunc 
 			log.Printf("[EVIDENCE] sign failed for event %d: %v", eventID, err)
 		}
 
+		// P3-INFRA-03: write a clip_export chain-of-custody manifest.
+		// Per decision 2: artifact_sha256 = SHA-256 of the event.json bytes.
+		// We re-serialize the (now-populated) manifest to get those exact bytes.
+		if eventJSONBytes, marshalErr := json.MarshalIndent(&manifest, "", "  "); marshalErr == nil {
+			createdByUUID, _ := uuid.Parse(claims.UserID)
+			var segIDsForManifest []string
+			if segID != nil {
+				segIDsForManifest = []string{strconv.FormatInt(*segID, 10)}
+			}
+			go writeManifest(
+				context.Background(), db, cfg,
+				"clip_export",
+				strconv.FormatInt(eventID, 10),
+				claims.OrganizationID,
+				createdByUUID,
+				[]string{cameraID},
+				segIDsForManifest,
+				nil, nil, // time range not available at this call site
+				nil,      // source_segment_hashes: no stored hash on segments table
+				eventJSONBytes,
+				uuid.Nil,
+			)
+		}
+
 		// Audit trail: evidence export is a high-value action; log it.
 		var segIDVal int64
 		if segID != nil {
@@ -515,4 +540,3 @@ func parseFloatParam(r *http.Request, key string, def, max float64) float64 {
 	}
 	return f
 }
-

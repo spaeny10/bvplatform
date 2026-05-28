@@ -1,0 +1,271 @@
+# Ironsight Prometheus alert rules — P1-C-04
+#
+# RUNBOOK_BASE_URL: file:///etc/runbooks
+# To switch to a web URL, run:
+#   sed -i 's|file:///etc/runbooks|https://docs.internal/runbooks|g' alerts.yml
+#
+# MIGRATION VERSION: update the threshold in IronsightMigrationBehind after
+# each goose migration release. The operator should bump the value in the
+# expr line below to match the latest migration version number.
+# Current version as of 2026-05-26: 1 (see migrations/ directory)
+#
+# Alert catalog summary (also in docs/alerting.md):
+#   IronsightAPIDown             critical  — API scrape target is down
+#   IronsightHighErrorRate       critical  — >5% 5xx error rate per route
+#   IronsightSlowRequests        warning   — p95 latency >2s per route
+#   IronsightRecordingStalled    critical  — segments not written despite active cameras
+#   IronsightCameraDropoff       warning   — ≥2 cameras dropped off in 10m
+#   IronsightFFmpegMismatch      warning   — active_cameras != ffmpeg_subprocesses
+#   IronsightDBPoolExhausted     critical  — all DB connections in use
+#   IronsightWSClientsLost       warning   — ≥5 WS clients disconnected in 5m
+#   IronsightRBACRefreshErrors   warning   — RBAC refresher hitting DB errors
+#   IronsightMigrationBehind     warning   — DB schema version below expected
+#   IronsightAppAlert            warning+  — discrete one-shot app-emitted alerts
+
+groups:
+  - name: ironsight.api
+    rules:
+      # ── API availability ──────────────────────────────────────────────────
+      - alert: IronsightAPIDown
+        expr: up{job="ironsight-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ironsight
+        annotations:
+          summary: "Ironsight API is unreachable from Prometheus"
+          description: |
+            The ironsight-api scrape target has been returning no data for >2
+            minutes. Prometheus cannot reach the /metrics endpoint. This could
+            indicate a process crash, container restart loop, network partition,
+            or NPM misconfiguration.
+            First action: SSH to fred and check `docker ps` / `systemctl status
+            ironsight` and the container logs.
+          runbook_url: "file:///etc/runbooks/ironsight-api-down.md"
+
+      # ── HTTP error rate ───────────────────────────────────────────────────
+      - alert: IronsightHighErrorRate
+        expr: |
+          sum(rate(ironsight_http_requests_total{status=~"5.."}[5m])) by (route)
+          /
+          sum(rate(ironsight_http_requests_total[5m])) by (route)
+          > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: ironsight
+        annotations:
+          summary: "High 5xx error rate on route {{ $labels.route }}"
+          description: |
+            More than 5% of requests to route {{ $labels.route }} are returning
+            5xx responses over the last 5 minutes. Current rate: {{ $value | humanizePercentage }}.
+            First action: check structured logs (`journalctl -u ironsight -n 200`
+            or `docker logs ironsight --tail 200`) for panic / DB error traces.
+          runbook_url: "file:///etc/runbooks/ironsight-ws-clients-disconnecting.md"
+
+      # ── Request latency ───────────────────────────────────────────────────
+      - alert: IronsightSlowRequests
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(ironsight_http_request_duration_seconds_bucket[5m])) by (le, route)
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "p95 request latency >2s on route {{ $labels.route }}"
+          description: |
+            The 95th-percentile response time for route {{ $labels.route }} has
+            exceeded 2 seconds for 10 consecutive minutes. Current p95: {{ $value | humanizeDuration }}.
+            First action: check DB pool saturation (ironsight_db_pool_idle) and
+            whether a slow query is blocking handlers.
+          runbook_url: "file:///etc/runbooks/ironsight-api-down.md"
+
+  - name: ironsight.recording
+    rules:
+      # ── Segment write stall ───────────────────────────────────────────────
+      - alert: IronsightRecordingStalled
+        expr: |
+          rate(ironsight_recording_segments_written_total[5m]) == 0
+          and ironsight_recording_active_cameras > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: ironsight
+        annotations:
+          summary: "Recording engine stalled — cameras active but no segments written"
+          description: |
+            ironsight_recording_active_cameras shows {{ $value }} active cameras
+            but ironsight_recording_segments_written_total has not incremented in
+            5 minutes. FFmpeg may be running but producing no output (stall
+            watchdog should have fired), or the segment watcher goroutine crashed.
+            First action: check recording engine logs for "Stream stall detected"
+            or "Failed to register segment" lines.
+          runbook_url: "file:///etc/runbooks/ironsight-recording-gap.md"
+
+      # ── Camera count drop ─────────────────────────────────────────────────
+      - alert: IronsightCameraDropoff
+        expr: delta(ironsight_recording_active_cameras[10m]) <= -2
+        for: 5m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "≥2 cameras dropped from recording engine"
+          description: |
+            ironsight_recording_active_cameras dropped by {{ $value | humanize }}
+            or more in the last 10 minutes. Multiple cameras going offline
+            simultaneously suggests a switch/network failure on the trailer LAN
+            (192.168.50.0/24) or a mass FFmpeg failure.
+            First action: check camera connectivity and the recording engine
+            logs for "Stopped recording" or "FFmpeg error" entries.
+          runbook_url: "file:///etc/runbooks/ironsight-camera-offline.md"
+
+      # ── FFmpeg / active camera mismatch ──────────────────────────────────
+      - alert: IronsightFFmpegMismatch
+        expr: |
+          ironsight_recording_active_cameras != ironsight_recording_ffmpeg_subprocesses
+        for: 5m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "Active cameras ({{ $value }}) != FFmpeg subprocesses"
+          description: |
+            ironsight_recording_active_cameras and
+            ironsight_recording_ffmpeg_subprocesses have diverged for 5 minutes.
+            A mismatch is expected when gortsplib recorders are in use (they
+            count toward active cameras but not FFmpeg subprocesses). This alert
+            fires only when the gap persists, which may indicate an orphaned
+            FFmpeg process or a gortsplib recorder that didn't register correctly.
+            First action: compare `docker exec ironsight ps aux | grep ffmpeg`
+            count against the metric value.
+          runbook_url: "file:///etc/runbooks/ironsight-ffmpeg-subprocess-crash.md"
+
+  - name: ironsight.database
+    rules:
+      # ── DB pool exhaustion ────────────────────────────────────────────────
+      - alert: IronsightDBPoolExhausted
+        expr: |
+          ironsight_db_pool_idle == 0
+          and ironsight_db_pool_acquire_count > 0
+        for: 2m
+        labels:
+          severity: critical
+          team: ironsight
+        annotations:
+          summary: "Database connection pool exhausted (0 idle connections)"
+          description: |
+            ironsight_db_pool_idle has been 0 for 2 minutes while acquire
+            attempts are ongoing. The pool is configured MaxConns=50. When
+            the pool is exhausted every new query blocks until a connection
+            is returned, causing cascading latency across all routes.
+            First action: check ironsight_db_pool_total and whether there
+            is a long-running query or transaction leak in the Postgres
+            pg_stat_activity view.
+          runbook_url: "file:///etc/runbooks/ironsight-db-connection-pool-exhausted.md"
+
+  - name: ironsight.websocket
+    rules:
+      # ── WS client mass disconnect ─────────────────────────────────────────
+      - alert: IronsightWSClientsLost
+        expr: delta(ironsight_ws_clients_connected[5m]) <= -5
+        for: 2m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "≥5 WebSocket clients disconnected in 5 minutes"
+          description: |
+            ironsight_ws_clients_connected dropped by {{ $value | humanize }}
+            within 5 minutes. A mass disconnect can indicate a hub goroutine
+            panic, a network interruption between clients and the server, or
+            a Redis pub/sub bridge failure causing the hub to stop fanning out.
+            First action: check the hub logs for "panic" or "broadcast error"
+            lines and verify the Redis bridge is connected.
+          runbook_url: "file:///etc/runbooks/ironsight-ws-clients-disconnecting.md"
+
+  - name: ironsight.rbac
+    rules:
+      # ── RBAC refresh errors ───────────────────────────────────────────────
+      - alert: IronsightRBACRefreshErrors
+        expr: rate(ironsight_rbac_cache_refresh_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "RBAC cache refresher hitting database errors"
+          description: |
+            ironsight_rbac_cache_refresh_errors_total is incrementing —
+            the RBAC background refresher is encountering DB errors and
+            falling back to the previous cached allow-set. Clients may
+            see stale permissions until the DB recovers.
+            First action: check Postgres connectivity and look for
+            "RBAC refresh error" log lines.
+          runbook_url: "file:///etc/runbooks/ironsight-rbac-deny-all.md"
+
+  - name: ironsight.migrations
+    rules:
+      # ── Migration version lag ─────────────────────────────────────────────
+      # OPERATOR: update the threshold (<CURRENT_VERSION>) after each
+      # migration release. As of 2026-05-26 the current version is 1.
+      # Set this to the highest migration number in migrations/ at deploy time.
+      - alert: IronsightMigrationBehind
+        expr: ironsight_goose_migration_version < 1
+        for: 5m
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "Ironsight DB schema is behind expected migration version"
+          description: |
+            ironsight_goose_migration_version is {{ $value }}, which is below
+            the expected version (1 as of 2026-05-26). This indicates either
+            goose.Up failed silently at boot, or a new binary was deployed
+            without running migrations first.
+            First action: check startup logs for "[MIGRATIONS]" lines and
+            run `docker exec ironsight /app/migrate up` if needed.
+          runbook_url: "file:///etc/runbooks/ironsight-migration-failed.md"
+
+  - name: ironsight.app_alerts
+    rules:
+      # ── Discrete app-emitted alerts ───────────────────────────────────────
+      # ironsight_app_alert_total is incremented by metrics.SetCustomAlert()
+      # for discrete one-shot events that are not naturally scrapeable
+      # (e.g. credential decrypt failures, goose migration failures,
+      # ffmpeg crash detection from the recording engine).
+      - alert: IronsightAppAlert
+        expr: increase(ironsight_app_alert_total{severity="critical"}[5m]) > 0
+        for: 0s
+        labels:
+          severity: critical
+          team: ironsight
+        annotations:
+          summary: "Ironsight app alert: {{ $labels.name }}"
+          description: |
+            The application emitted a critical-severity one-shot alert named
+            "{{ $labels.name }}" via metrics.SetCustomAlert. This counter
+            fires for events that are not surfaced through standard Prom
+            series (e.g. camera credential decrypt failure, goose migration
+            error, FFmpeg subprocess crash).
+            First action: search structured logs for the alert name and
+            "severity=critical" within the last 5 minutes.
+          runbook_url: "file:///etc/runbooks/ironsight-api-down.md"
+      - alert: IronsightAppAlertWarning
+        expr: increase(ironsight_app_alert_total{severity="warning"}[5m]) > 0
+        for: 0s
+        labels:
+          severity: warning
+          team: ironsight
+        annotations:
+          summary: "Ironsight app alert (warning): {{ $labels.name }}"
+          description: |
+            The application emitted a warning-severity one-shot alert named
+            "{{ $labels.name }}" via metrics.SetCustomAlert. Common sources:
+            camera credential decrypt failure (tolerated on first run during
+            key rotation), RBAC cache miss on cold start.
+            First action: search structured logs for the alert name.
+          runbook_url: "file:///etc/runbooks/ironsight-api-down.md"

@@ -6,10 +6,10 @@ import (
 	"runtime"
 	"time"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
 )
 
 var serverStartTime = time.Now()

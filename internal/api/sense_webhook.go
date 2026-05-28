@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,9 +14,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/dualwrite"
 )
 
 // HandleSenseWebhook is the inbound endpoint for Milesight Sense / SC4xx
@@ -67,8 +70,14 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 
 		// Persist the snapshot so the operator console can render it.
 		// Using the same on-disk layout as the continuous-camera path
-		// (snapshots/<camera_id>/<filename>) so the existing snapshot
-		// HTTP handler serves it without changes.
+		// (snapshots/<camera_id>/<filename>). The URL we store is the
+		// LEGACY /snapshots/<cam>/<file> shape — this is no longer a
+		// live file-server route (removed in P1-A-03), but the shape
+		// encodes camera_id + filename which is everything the frontend
+		// needs to call /api/media/mint and get a signed /media/v1/...
+		// URL. The frontend's snapshot resolver (see resolveMediaURL in
+		// frontend/src/lib/media.ts) handles the rewrite transparently
+		// for any UI surface that renders this stored URL.
 		var snapshotURL string
 		if len(snapshot) > 0 && cfg.StoragePath != "" {
 			snapDir := filepath.Join(filepath.Dir(cfg.StoragePath), "snapshots", cam.ID.String())
@@ -115,6 +124,16 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 		}
 		if err := db.InsertEvent(r.Context(), evt); err != nil {
 			log.Printf("[SENSE] %s: insert event: %v", cam.Name, err)
+		} else {
+			// P4-SCHEMA-02: dual-write the sense event to detections.
+			// org is resolved from the camera's site inside the helper.
+			camIDForDW := cam.ID
+			siteIDForDW := cam.SiteID
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				dualWriteSenseEvent(ctx, db, camIDForDW, siteIDForDW, eventType, now)
+			}()
 		}
 
 		// Build an active alarm. Sense cameras' confidence is high by
@@ -151,18 +170,18 @@ func HandleSenseWebhook(cfg *config.Config, db *database.DB, hub *Hub) http.Hand
 			alertMsg, _ := json.Marshal(map[string]interface{}{
 				"type": "alarm",
 				"data": map[string]interface{}{
-					"id":              alarm.ID,
-					"site_id":         alarm.SiteID,
-					"site_name":       alarm.SiteName,
-					"camera_id":       alarm.CameraID,
-					"camera_name":     alarm.CameraName,
-					"severity":        alarm.Severity,
-					"type":            alarm.Type,
-					"description":     alarm.Description,
-					"ts":              alarm.Ts,
-					"acknowledged":    alarm.Acknowledged,
+					"id":               alarm.ID,
+					"site_id":          alarm.SiteID,
+					"site_name":        alarm.SiteName,
+					"camera_id":        alarm.CameraID,
+					"camera_name":      alarm.CameraName,
+					"severity":         alarm.Severity,
+					"type":             alarm.Type,
+					"description":      alarm.Description,
+					"ts":               alarm.Ts,
+					"acknowledged":     alarm.Acknowledged,
 					"escalation_level": 0,
-					"snapshot_url":    alarm.SnapshotURL,
+					"snapshot_url":     alarm.SnapshotURL,
 				},
 			})
 			hub.Broadcast(alertMsg)
@@ -324,7 +343,7 @@ func base64Decode(s string) ([]byte, error) {
 // mapSenseEventType normalises the camera's raw event_type label into
 // the platform's existing event taxonomy (the same strings ONVIF
 // events produce, so downstream alarm-rules and AI prompts treat
-// pushed events identically). Anything we don't recognise falls
+// pushed events identically). Anything we don't recognize falls
 // through as the raw label, which the operator UI still renders.
 func mapSenseEventType(raw string) string {
 	r := strings.ToLower(raw)
@@ -359,4 +378,55 @@ func senseDescription(eventType string, p *sensePayload) string {
 		parts = append(parts, "from "+p.DeviceName)
 	}
 	return strings.Join(parts, " ")
+}
+
+// dualWriteSenseEvent writes a detections row for a Milesight Sense webhook
+// event.  Non-fatal: logs + counts on failure; never propagates the error.
+//
+// Sense cameras are PIR/classifier devices — no YOLO model metadata is
+// available.  We register a "sense-pir" model version the first time we
+// encounter this org (org is resolved from the camera's site).
+func dualWriteSenseEvent(
+	ctx context.Context,
+	db *database.DB,
+	camID uuid.UUID,
+	siteID, eventType string,
+	detectedAt time.Time,
+) {
+	// Resolve organisation from camera→site.
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:sense] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("sense").Inc()
+		return
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "sense-pir", "v1", "", "security",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:sense] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("sense").Inc()
+		return
+	}
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+	dualwrite.Write(ctx, db, "sense", orgID, camID, run, dualwrite.MappedDetection{
+		DetectedAt:      detectedAt,
+		SiteID:          sitePtr,
+		DetectionClass:  dualwrite.NormaliseEventTypeToSecurityClass(eventType),
+		DetectionDomain: "security",
+		Confidence:      1.0, // PIR + on-device classifier = high confidence
+		BoundingBox:     nil,
+		ZoneID:          nil,
+		VCARuleID:       nil,
+	})
 }

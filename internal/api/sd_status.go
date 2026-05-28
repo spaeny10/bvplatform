@@ -9,8 +9,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // SDStatusResponse is the shape the /api/cameras/{id}/sd/status endpoint

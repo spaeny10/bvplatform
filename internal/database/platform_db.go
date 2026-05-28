@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"onvif-tool/internal/avs"
+	"ironsight/internal/avs"
 )
 
 // scanSiteRows is the shared row → []Site reader used by both the
@@ -47,7 +47,46 @@ func scanSiteRows(rows pgx.Rows) ([]Site, error) {
 // Organization CRUD
 // ═══════════════════════════════════════════════════════════════
 
+// GetOrganizationByID fetches a single live organization row by ID.
+// Returns (nil, nil) when not found or soft-deleted.
+func (db *DB) GetOrganizationByID(ctx context.Context, id string) (*Organization, error) {
+	var o Organization
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, name, plan, contact_name, contact_email, COALESCE(logo_url, '') FROM organizations_active WHERE id = $1`, id,
+	).Scan(&o.ID, &o.Name, &o.Plan, &o.ContactName, &o.ContactEmail, &o.LogoURL)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("GetOrganizationByID: %w", err)
+	}
+	return &o, nil
+}
+
 func (db *DB) ListOrganizations(ctx context.Context) ([]Organization, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, plan, contact_name, contact_email, logo_url, created_at FROM organizations_active ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orgs []Organization
+	for rows.Next() {
+		var o Organization
+		if err := rows.Scan(&o.ID, &o.Name, &o.Plan, &o.ContactName, &o.ContactEmail, &o.LogoURL, &o.CreatedAt); err != nil {
+			return nil, err
+		}
+		orgs = append(orgs, o)
+	}
+	if orgs == nil {
+		orgs = []Organization{}
+	}
+	return orgs, nil
+}
+
+// ListOrganizationsIncludeDeleted returns all organizations including soft-deleted ones.
+// Admin-only. The deleted_at field is populated for soft-deleted rows.
+func (db *DB) ListOrganizationsIncludeDeleted(ctx context.Context) ([]Organization, error) {
 	rows, err := db.Pool.Query(ctx, `SELECT id, name, plan, contact_name, contact_email, logo_url, created_at FROM organizations ORDER BY name`)
 	if err != nil {
 		return nil, err
@@ -97,6 +136,54 @@ func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
 	return err
 }
 
+// SoftDeleteOrganization marks an organization and its sites (and transitively
+// their cameras, zones, rules) as deleted. Does NOT cascade to users — user
+// accounts outlive org deletions (decision: org → users, no cascade).
+//
+// Because SoftDeleteSite opens its own transaction (to cascade cameras/zones),
+// we collect the site IDs first, then call SoftDeleteSite per site, then
+// mark the org itself. The three-step sequence is not all-or-nothing but is
+// monotonically-safe: partial completion is always a valid intermediate state
+// (pre-launch volume; revisit with batching + compensation log in P4).
+func (db *DB) SoftDeleteOrganization(ctx context.Context, id string) error {
+	now := time.Now().UTC()
+
+	// Collect all live site IDs in this org.
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id FROM sites WHERE organization_id=$1 AND deleted_at IS NULL`, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteOrganization list sites: %w", err)
+	}
+	var siteIDs []string
+	for rows.Next() {
+		var sid string
+		if scanErr := rows.Scan(&sid); scanErr != nil {
+			rows.Close()
+			return fmt.Errorf("SoftDeleteOrganization scan site: %w", scanErr)
+		}
+		siteIDs = append(siteIDs, sid)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("SoftDeleteOrganization iterate sites: %w", err)
+	}
+
+	// Cascade-soft each site (each call is its own transaction).
+	for _, sid := range siteIDs {
+		if err := db.SoftDeleteSite(ctx, sid); err != nil {
+			return fmt.Errorf("SoftDeleteOrganization cascade site %s: %w", sid, err)
+		}
+	}
+
+	// Soft-delete the org row itself.
+	_, err = db.Pool.Exec(ctx,
+		`UPDATE organizations SET deleted_at=$1 WHERE id=$2 AND deleted_at IS NULL`, now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteOrganization: %w", err)
+	}
+	return nil
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Site CRUD
 // ═══════════════════════════════════════════════════════════════
@@ -111,12 +198,12 @@ func (db *DB) DeleteOrganization(ctx context.Context, id string) error {
 // notification_subscriptions; this flag drives the to-be-built
 // "non-account contact" SMS path).
 type CustomerContact struct {
-	Name           string `json:"name"`
-	Role           string `json:"role"`
-	Phone          string `json:"phone"`
-	Email          string `json:"email"`
-	NotifyOnAlarm  bool   `json:"notify_on_alarm"`
-	Notes          string `json:"notes,omitempty"`
+	Name          string `json:"name"`
+	Role          string `json:"role"`
+	Phone         string `json:"phone"`
+	Email         string `json:"email"`
+	NotifyOnAlarm bool   `json:"notify_on_alarm"`
+	Notes         string `json:"notes,omitempty"`
 }
 
 // GetCustomerContacts returns the contact list stored on the site
@@ -191,6 +278,9 @@ func (c CallerScope) IsUnscoped() bool {
 // reviewer (and any reasonable security review) wants the boundary
 // checked on every read, not assumed.
 func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, error) {
+	// Trap 1 fix: join must filter deleted cameras so counts are accurate.
+	// The cameras_active view is not used here because we need the explicit
+	// JOIN condition for aggregation — we add AND c.deleted_at IS NULL instead.
 	base := `
 		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
 		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
@@ -204,8 +294,8 @@ func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, e
 		       s.created_at,
 		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
 		       COUNT(c.id) AS cameras_total
-		FROM sites s
-		LEFT JOIN cameras c ON c.site_id = s.id`
+		FROM sites_active s
+		LEFT JOIN cameras c ON c.site_id = s.id AND c.deleted_at IS NULL`
 
 	var rows pgx.Rows
 	var err error
@@ -241,6 +331,59 @@ func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, e
 }
 
 func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
+	// Trap 1 fix: join must filter deleted cameras so counts are accurate.
+	rows, err := db.Pool.Query(ctx, `
+		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
+		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
+		       COALESCE(s.feature_mode, 'security_and_safety') AS feature_mode,
+		       COALESCE(s.retention_days, 30),
+		       COALESCE(s.recording_mode, 'continuous'),
+		       COALESCE(s.pre_buffer_sec, 10),
+		       COALESCE(s.post_buffer_sec, 30),
+		       COALESCE(s.recording_triggers, 'motion,object'),
+		       COALESCE(s.recording_schedule, ''),
+		       s.created_at,
+		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
+		       COUNT(c.id) AS cameras_total
+		FROM sites_active s
+		LEFT JOIN cameras c ON c.site_id = s.id AND c.deleted_at IS NULL
+		GROUP BY s.id
+		ORDER BY s.name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sites []Site
+	for rows.Next() {
+		var s Site
+		var notesJSON []byte
+		if err := rows.Scan(&s.ID, &s.Name, &s.Address, &s.OrganizationID, &s.Latitude, &s.Longitude, &s.Status, &s.MonitoringStart, &s.MonitoringEnd, &notesJSON, &s.FeatureMode,
+			&s.RetentionDays, &s.RecordingMode, &s.PreBufferSec, &s.PostBufferSec, &s.RecordingTriggers, &s.RecordingSchedule,
+			&s.CreatedAt, &s.CamerasOnline, &s.CamerasTotal); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(notesJSON, &s.SiteNotes)
+		if s.SiteNotes == nil {
+			s.SiteNotes = []string{}
+		}
+		s.ComplianceScore = 85
+		s.Trend = "flat"
+		s.LastActivity = time.Now().UTC().Format(time.RFC3339)
+		sites = append(sites, s)
+	}
+	if sites == nil {
+		sites = []Site{}
+	}
+	return sites, nil
+}
+
+// ListSitesIncludeDeleted returns all sites including soft-deleted ones.
+// Admin-only. Camera counts include only live cameras (consistent with ListSites
+// Trap 1 fix). Soft-deleted sites will have their camera counts reflect only
+// cameras that were still live at the time of the site deletion.
+func (db *DB) ListSitesIncludeDeleted(ctx context.Context) ([]Site, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
 		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
@@ -255,7 +398,7 @@ func (db *DB) ListSites(ctx context.Context) ([]Site, error) {
 		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
 		       COUNT(c.id) AS cameras_total
 		FROM sites s
-		LEFT JOIN cameras c ON c.site_id = s.id
+		LEFT JOIN cameras c ON c.site_id = s.id AND c.deleted_at IS NULL
 		GROUP BY s.id
 		ORDER BY s.name
 	`)
@@ -302,7 +445,7 @@ func (db *DB) GetSite(ctx context.Context, id string) (*Site, error) {
 		       COALESCE(recording_triggers, 'motion,object'),
 		       COALESCE(recording_schedule, ''),
 		       created_at
-		FROM sites WHERE id=$1`, id,
+		FROM sites_active WHERE id=$1`, id,
 	).Scan(&s.ID, &s.Name, &s.Address, &s.OrganizationID, &s.Latitude, &s.Longitude, &s.Status,
 		&s.MonitoringStart, &s.MonitoringEnd, &notesJSON, &s.FeatureMode,
 		&s.RetentionDays, &s.RecordingMode, &s.PreBufferSec, &s.PostBufferSec, &s.RecordingTriggers, &s.RecordingSchedule,
@@ -386,6 +529,76 @@ func (db *DB) DeleteSite(ctx context.Context, id string) error {
 	return err
 }
 
+// SoftDeleteSite marks a site and its cameras (and transitively their zones
+// and rules) as deleted. Does NOT cascade to users.
+func (db *DB) SoftDeleteSite(ctx context.Context, id string) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now().UTC()
+
+	// Cascade: compliance_rules for cameras at this site (camera-specific only).
+	_, err = tx.Exec(ctx,
+		`UPDATE compliance_rules SET deleted_at=$1
+		 WHERE camera_id IN (SELECT id FROM cameras WHERE site_id=$2 AND deleted_at IS NULL)
+		   AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite cascade compliance_rules (camera): %w", err)
+	}
+
+	// Cascade: site-wide compliance_rules.
+	_, err = tx.Exec(ctx,
+		`UPDATE compliance_rules SET deleted_at=$1
+		 WHERE site_id=$2 AND camera_id IS NULL AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite cascade compliance_rules (site-wide): %w", err)
+	}
+
+	// Cascade: ppe_zones at this site.
+	_, err = tx.Exec(ctx,
+		`UPDATE ppe_zones SET deleted_at=$1
+		 WHERE site_id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite cascade ppe_zones: %w", err)
+	}
+
+	// Cascade: vca_rules for cameras at this site.
+	_, err = tx.Exec(ctx,
+		`UPDATE vca_rules SET deleted_at=$1
+		 WHERE camera_id IN (SELECT id FROM cameras WHERE site_id=$2 AND deleted_at IS NULL)
+		   AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite cascade vca_rules: %w", err)
+	}
+
+	// Cascade: cameras at this site.
+	_, err = tx.Exec(ctx,
+		`UPDATE cameras SET deleted_at=$1 WHERE site_id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite cascade cameras: %w", err)
+	}
+
+	// Soft-delete the site itself.
+	tag, err := tx.Exec(ctx,
+		`UPDATE sites SET deleted_at=$1 WHERE id=$2 AND deleted_at IS NULL`, now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteSite: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // already deleted or not found
+	}
+
+	return tx.Commit(ctx)
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Site SOPs
 // ═══════════════════════════════════════════════════════════════
@@ -406,8 +619,12 @@ func (db *DB) ListSiteSOPs(ctx context.Context, siteID string) ([]SiteSOP, error
 		}
 		json.Unmarshal(stepsJSON, &s.Steps)
 		json.Unmarshal(contactsJSON, &s.Contacts)
-		if s.Steps == nil { s.Steps = []string{} }
-		if s.Contacts == nil { s.Contacts = []map[string]interface{}{} }
+		if s.Steps == nil {
+			s.Steps = []string{}
+		}
+		if s.Contacts == nil {
+			s.Contacts = []map[string]interface{}{}
+		}
 		sops = append(sops, s)
 	}
 	if sops == nil {
@@ -464,7 +681,9 @@ func (db *DB) ListCompanyUsers(ctx context.Context, orgID string) ([]CompanyUser
 			return nil, err
 		}
 		json.Unmarshal(siteIDsJSON, &u.AssignedSiteIDs)
-		if u.AssignedSiteIDs == nil { u.AssignedSiteIDs = []string{} }
+		if u.AssignedSiteIDs == nil {
+			u.AssignedSiteIDs = []string{}
+		}
 		users = append(users, u)
 	}
 	if users == nil {
@@ -1069,14 +1288,14 @@ func nullableUUID(id uuid.UUID) interface{} {
 // per-operator or per-day, depending on the grouping. Counts split by
 // whether the alarm was ack'd within the SLA deadline.
 type SLAReportRow struct {
-	Bucket          string  `json:"bucket"` // operator callsign or YYYY-MM-DD
-	TotalAlarms     int     `json:"total_alarms"`
-	AckedAlarms     int     `json:"acked_alarms"`
-	WithinSLA       int     `json:"within_sla"`
-	OverSLA         int     `json:"over_sla"`
-	AvgAckSec       float64 `json:"avg_ack_sec"`
-	P50AckSec       float64 `json:"p50_ack_sec"`
-	P95AckSec       float64 `json:"p95_ack_sec"`
+	Bucket      string  `json:"bucket"` // operator callsign or YYYY-MM-DD
+	TotalAlarms int     `json:"total_alarms"`
+	AckedAlarms int     `json:"acked_alarms"`
+	WithinSLA   int     `json:"within_sla"`
+	OverSLA     int     `json:"over_sla"`
+	AvgAckSec   float64 `json:"avg_ack_sec"`
+	P50AckSec   float64 `json:"p50_ack_sec"`
+	P95AckSec   float64 `json:"p95_ack_sec"`
 }
 
 // GetSLAReport aggregates response-time stats for alarms acknowledged
@@ -1212,9 +1431,10 @@ func (db *DB) SetAlarmAIFeedback(ctx context.Context, alarmID string, agreed boo
 // ComputeAICorrectness compares the AI threat assessment against the operator's
 // disposition and stores the result. Called when the alarm is resolved.
 // Logic: AI said high/critical + disposition is verified_* → AI was correct
-//        AI said high/critical + disposition is false_positive_* → AI was wrong
-//        AI said low/none + disposition is verified_* → AI was wrong (missed threat)
-//        AI said low/none + disposition is false_positive_* → AI was correct
+//
+//	AI said high/critical + disposition is false_positive_* → AI was wrong
+//	AI said low/none + disposition is verified_* → AI was wrong (missed threat)
+//	AI said low/none + disposition is false_positive_* → AI was correct
 func (db *DB) ComputeAICorrectness(ctx context.Context, alarmID, dispositionCode string) error {
 	var aiThreatLevel string
 	err := db.Pool.QueryRow(ctx,
@@ -1244,13 +1464,13 @@ func (db *DB) EscalateActiveAlarm(ctx context.Context, alarmID string, level int
 // GetSecurityEventByID fetches one security_event by ID and maps it to IncidentDetail.
 func (db *DB) GetSecurityEventByID(ctx context.Context, id string) (*IncidentDetail, error) {
 	var (
-		evtID, alarmID, siteID, cameraID                        string
-		severity, evtType, description                          string
-		dispositionCode, dispositionLabel                       string
-		operatorCallsign, operatorNotes                         string
-		actionLogJSON                                           []byte
-		clipURL                                                 string
-		ts, resolvedAt                                          int64
+		evtID, alarmID, siteID, cameraID  string
+		severity, evtType, description    string
+		dispositionCode, dispositionLabel string
+		operatorCallsign, operatorNotes   string
+		actionLogJSON                     []byte
+		clipURL                           string
+		ts, resolvedAt                    int64
 	)
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, COALESCE(alarm_id,''), site_id, COALESCE(camera_id,''),
@@ -1419,7 +1639,7 @@ func (db *DB) UnassignCameraFromSite(ctx context.Context, cameraID string) error
 }
 
 func (db *DB) GetSiteCameras(ctx context.Context, siteID string) ([]Camera, error) {
-	rows, err := db.Pool.Query(ctx, `SELECT id, name, onvif_address, status, manufacturer, model, rtsp_uri, recording, COALESCE(site_id, ''), COALESCE(location, '') FROM cameras WHERE site_id=$1`, siteID)
+	rows, err := db.Pool.Query(ctx, `SELECT id, name, onvif_address, status, manufacturer, model, rtsp_uri, recording, COALESCE(site_id, ''), COALESCE(location, '') FROM cameras_active WHERE site_id=$1`, siteID)
 	if err != nil {
 		return nil, err
 	}
@@ -1449,7 +1669,7 @@ func (db *DB) ListAllPlatformCameras(ctx context.Context) ([]PlatformCamera, err
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id::text, name, COALESCE(onvif_address,''), COALESCE(manufacturer,''),
 		       COALESCE(model,''), status, COALESCE(site_id,''), COALESCE(location,''), recording
-		FROM cameras ORDER BY name`)
+		FROM cameras_active ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1479,7 +1699,7 @@ func (db *DB) ListAllPlatformSpeakers(ctx context.Context) ([]PlatformSpeaker, e
 		SELECT id::text, name, COALESCE(onvif_address,''), COALESCE(zone,''),
 		       COALESCE(location,''), status, COALESCE(site_id,''),
 		       COALESCE(manufacturer,''), COALESCE(model,'')
-		FROM speakers ORDER BY name`)
+		FROM speakers_active ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}

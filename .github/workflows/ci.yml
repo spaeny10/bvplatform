@@ -1,0 +1,278 @@
+# Ironsight CI — runs on every PR to main and on direct pushes to main.
+# See docs/ci.md for the local-reproduction recipe + failure-mode triage.
+#
+# Acceptance gates: this workflow must complete cleanly before a PR can
+# merge. Branch protection is configured on the upstream repo
+# (spaeny10/bvplatform) to require: backend, frontend, migrations,
+# gitleaks — all four — green.
+#
+# Performance target: <10 minutes wall-clock for a typical PR. The
+# jobs run in parallel; the longest pole is the frontend build
+# (next build is ~3 min on the GitHub runner) so total is bounded by
+# that plus the migration container spin-up time.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch when a new push lands —
+# saves runner minutes when a developer force-pushes a fix while a
+# previous CI run is still in flight.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Backend (Go) ────────────────────────────────────────────────────
+  backend:
+    name: Backend (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        # ADVISORY (non-blocking): golangci-lint v1.64.8's prebuilt binary is
+        # built with go1.24 and refuses to run against this repo's go1.25.7
+        # directive ("language version go1.24 ... lower than targeted 1.25.7").
+        # A v1 release built with go1.25 doesn't exist; v2.x needs a
+        # .golangci.yml schema rewrite. Until that v2 migration is batched,
+        # this style-lint is advisory — the real correctness gates (go vet,
+        # go test -race, the integration suite) still hard-fail the build.
+        # TODO: migrate to golangci-lint v2 + rewrite .golangci.yml, then drop
+        # continue-on-error.
+        continue-on-error: true
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # v1.64.8 is the last v1 release that builds cleanly under
+          # Go 1.25 (older versions fail at x/tools/internal/tokeninternal
+          # constant-overflow). v2.x has a different config schema that
+          # would require rewriting .golangci.yml — pin v1 until we
+          # batch a v2 migration.
+          version: v1.64.8
+          # Use the repo-local .golangci.yml — sets the actual linter
+          # set + per-rule tuning so we don't drown in false positives
+          # the first time CI runs.
+          args: --timeout=5m
+
+      - name: go build (all binaries)
+        run: go build ./cmd/server ./cmd/worker ./cmd/migrate ./cmd/seed
+
+      - name: go test -race
+        run: go test ./... -race -count=1
+        # Suppress the data-race warnings emitted by third-party libs
+        # we don't control. Add real fixes to the codebase rather than
+        # widening this allowlist.
+        env:
+          GORACE: halt_on_error=0
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────
+  frontend:
+    name: Frontend (Next.js)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      - name: TypeScript type-check
+        # tsc --noEmit is the strongest static-check we have for the
+        # frontend short of running the actual app. Catches every
+        # `any`-laundered prop drift, mis-typed API response, etc.
+        # Faster than next build and surfaces errors closer to the line.
+        run: npx tsc --noEmit -p .
+
+      - name: Lint
+        # ADVISORY (non-blocking): `next lint` has no committed ESLint config,
+        # so in CI's non-interactive shell it prompts "How would you like to
+        # configure ESLint?" and exits 1. The frontend has never had an eslintrc
+        # (not in git, not on fred). Setting one up + fixing the resulting lint
+        # across ~179 never-linted files is a separate task. Until then this is
+        # advisory — the real gates (tsc --noEmit above, and the next-build
+        # type-check below) still hard-fail. TODO: add .eslintrc + clean lint,
+        # then drop continue-on-error.
+        continue-on-error: true
+        run: npm run lint
+
+      - name: Production build
+        # next build runs its own type-check + ESLint pass too, but
+        # those are downstream of the dedicated `tsc --noEmit` and
+        # `npm run lint` steps above — keeping them separate produces
+        # better failure isolation (a tsc error doesn't get hidden
+        # inside the build log).
+        run: npm run build
+
+  # ── Migrations (Postgres + TimescaleDB) ─────────────────────────────
+  migrations:
+    name: Migrations (up/down/up round-trip)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        # GitHub's service-container health-check default polls every
+        # 10s but a TimescaleDB container is ready in ~3s on the
+        # standard runner. Override to keep the job start fast.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/testdb?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install goose
+        run: go install github.com/pressly/goose/v3/cmd/goose@latest
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U postgres; then
+              echo "db ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "db never came up"
+          exit 1
+
+      - name: Migrations up
+        # The operation production actually performs: apply the full chain
+        # to an empty DB. Must reach the head version cleanly.
+        run: goose -dir migrations postgres "$DATABASE_URL" up
+
+      - name: Migrations head down/up round-trip
+        # Reverse + re-apply ONLY the newest migration. This catches a broken
+        # Down section in the migration a PR just added — the common, real
+        # failure mode — without attempting a full `reset` to version 0.
+        #
+        # Why not a full reset: 0001_baseline is a SNAPSHOT of fred's live
+        # schema, taken after migrations 0005-0020 were already applied there.
+        # So the baseline and 0005-0020 deliberately overlap (the latter are
+        # ADD COLUMN IF NOT EXISTS no-ops on a baseline DB). A full down-reset
+        # makes the later Down sections drop baseline-owned objects, leaving an
+        # inconsistent schema that re-up can't reconcile — an artifact of the
+        # snapshot-baseline design, not a real bug. Production is forward-only
+        # and never rolls back through the baseline, so we don't test that.
+        run: |
+          goose -dir migrations postgres "$DATABASE_URL" down
+          goose -dir migrations postgres "$DATABASE_URL" up
+
+  # ── Backend integration tests (Go + TimescaleDB) ───────────────────
+  # Runs the Go integration-test suite (testutil.IntegrationDB tests) against
+  # a real TimescaleDB container with all migrations applied.  This job is
+  # separate from the `backend` job because it needs a DB service container
+  # and the database-less unit tests should stay fast.
+  #
+  # Key test in this job: TestSchemaIDConventions (P3-INFRA-04 CI lint).
+  # It introspects the live post-migration schema via information_schema and
+  # fails if any new TEXT-PK table appears outside the grandfathered allowlist,
+  # or if any *_id column in a UUID-convention table is declared as TEXT.
+  # Any new migration that introduces ID-type drift will fail this gate.
+  backend-integration:
+    name: Backend integration tests (Go + TimescaleDB)
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: timescale/timescaledb:latest-pg15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:test@localhost:5432/testdb?sslmode=disable
+      IRONSIGHT_INTEGRATION_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Wait for Postgres
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -U postgres; then
+              echo "db ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "db never came up"
+          exit 1
+
+      - name: go test integration suite
+        # -count=1 disables the test cache so the schema lint always re-runs.
+        # -race is included to keep parity with the unit-test backend job.
+        # IRONSIGHT_INTEGRATION_REQUIRED=1 converts t.Skip into t.Fatal if
+        # DATABASE_URL is somehow missing — ensures the lint is not silently
+        # skipped in this job.
+        # -p 1 runs the package test binaries SERIALLY. testutil.IntegrationDB
+        # shares one TimescaleDB across packages (per-test schema isolation
+        # isn't viable — the baseline hardcodes the public schema). Without
+        # -p 1, the three packages' goose.UpContext calls run concurrently on
+        # the same DB and race (duplicate pg_type / goose_db_version missing).
+        run: go test -p 1 -count=1 -race ./internal/testutil/... ./internal/database/... ./internal/api/...
+
+  # ── Security: secret scanning ───────────────────────────────────────
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs full history to detect secrets in older
+          # commits; shallow clone (the actions/checkout default)
+          # would miss anything past HEAD~1.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Allowlist for known-safe patterns lives in .gitleaks.toml.
+        # Edit that file when you need to ignore a false positive —
+        # don't widen the action's own ignore-rules.

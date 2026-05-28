@@ -155,9 +155,11 @@ function PortalInner() {
           {hasSafety && (
             <>
               <div className="portal-nav-label">Safety Analytics</div>
-              <button className="portal-nav-item">
-                <span className="portal-nav-icon">🦺</span> PPE Compliance
-              </button>
+              <Link href="/portal/compliance" style={{ textDecoration: 'none', color: 'inherit' }}>
+                <button className="portal-nav-item">
+                  <span className="portal-nav-icon">🦺</span> PPE Compliance
+                </button>
+              </Link>
               <button className="portal-nav-item">
                 <span className="portal-nav-icon">📈</span> Trends
               </button>

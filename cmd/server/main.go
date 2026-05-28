@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -15,31 +15,59 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/indexer"
-	"onvif-tool/internal/api"
-	authpkg "onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/detection"
-	"onvif-tool/internal/export"
-	msdriver "onvif-tool/internal/milesight"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/onvif"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/ai"
+	"ironsight/internal/api"
+	authpkg "ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/detection"
+	"ironsight/internal/dualwrite"
+	"ironsight/internal/export"
+	"ironsight/internal/indexer"
+	"ironsight/internal/logging"
+	appmetrics "ironsight/internal/metrics"
+	msdriver "ironsight/internal/milesight"
+	"ironsight/internal/notify"
+	"ironsight/internal/onvif"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
+	"ironsight/migrations"
 	"strings"
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
-	log.Println("============================================")
-	log.Println("  ONVIF Tool - Starting Server")
-	log.Println("============================================")
-
-	// Load configuration
+	// Load configuration first so the log level is available before
+	// any log lines fire. Pre-config startup messages go to stderr via
+	// the stdlib log defaults; once InstallAsDefault runs, every
+	// subsequent log.Printf and slog call emits JSON.
 	cfg := config.Load()
+
+	// P1-C-02: Sentry/GlitchTip error reporting. Init BEFORE the
+	// logger so the first Error-level line (if any) gets captured.
+	// Empty SENTRY_DSN = no-op — the default until the GlitchTip LXC
+	// is provisioned. FlushSentry is deferred so events near shutdown
+	// are delivered before the process exits.
+	if err := logging.InitSentry(cfg.SentryDSN, cfg.SentryEnvironment); err != nil {
+		log.Printf("[WARN] sentry init failed: %v", err)
+	}
+	defer logging.FlushSentry()
+
+	// P1-C-01: structured logging. JSON to stderr, level from
+	// LOG_LEVEL env (info default). Also bridges the stdlib log
+	// package so the 300+ legacy log.Printf call sites emit
+	// structured lines too, migrate-as-touched. P1-C-02: use
+	// NewWithSentry so Error-level records are also forwarded to
+	// Sentry (no-op when DSN is empty).
+	logger := logging.NewWithSentry(cfg.LogLevel)
+	logging.InstallAsDefault(logger)
+	logger.Info("server_starting",
+		slog.String("product", cfg.ProductName),
+		slog.String("port", cfg.ServerPort),
+		slog.String("log_level", cfg.LogLevel),
+	)
 
 	// Ensure storage directories exist
 	for _, dir := range []string{cfg.StoragePath, cfg.HLSPath, cfg.ExportPath, cfg.ThumbnailPath} {
@@ -55,875 +83,43 @@ func main() {
 	}
 	defer db.Close()
 
-	// Auto-migrate: add new columns if they don't exist
-	_, err = db.Pool.Exec(context.Background(), `
-		-- Camera device class: 'continuous' = traditional always-on IP
-		-- camera (RTSP stream + ONVIF subscription, current behavior),
-		-- 'sense_pushed' = battery-powered PIR-triggered cameras like
-		-- the Milesight SC4xx Sense series that POST event payloads to
-		-- our webhook instead of streaming. Default 'continuous' so
-		-- the migration is a no-op for existing rows.
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS device_class TEXT DEFAULT 'continuous';
-		-- Per-camera secret for the inbound webhook URL we hand to the
-		-- camera's Alarm Server config. Only populated for sense_pushed
-		-- cameras; null for continuous.
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS sense_webhook_token TEXT;
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_cameras_sense_token
-			ON cameras(sense_webhook_token) WHERE sense_webhook_token IS NOT NULL;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS recording_mode TEXT DEFAULT 'continuous';
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS pre_buffer_sec INT DEFAULT 10;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS post_buffer_sec INT DEFAULT 30;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS recording_triggers TEXT DEFAULT 'motion,object';
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS has_ptz BOOLEAN DEFAULT false;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS events_enabled BOOLEAN DEFAULT true;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS audio_enabled BOOLEAN DEFAULT true;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS camera_group TEXT DEFAULT '';
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS schedule TEXT DEFAULT '';
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS privacy_mask BOOLEAN DEFAULT false;
-		ALTER TABLE segments ADD COLUMN IF NOT EXISTS has_audio BOOLEAN DEFAULT false;
-		CREATE TABLE IF NOT EXISTS users (
-			id UUID PRIMARY KEY,
-			username TEXT UNIQUE NOT NULL,
-			password_hash TEXT NOT NULL,
-			role TEXT NOT NULL DEFAULT 'operator',
-			created_at TIMESTAMPTZ NOT NULL,
-			updated_at TIMESTAMPTZ NOT NULL
-		);
-		CREATE TABLE IF NOT EXISTS storage_locations (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			label TEXT NOT NULL,
-			path TEXT NOT NULL,
-			purpose TEXT NOT NULL DEFAULT 'recordings',
-			retention_days INT DEFAULT 3,
-			max_gb INT DEFAULT 0,
-			priority INT DEFAULT 0,
-			enabled BOOLEAN DEFAULT true,
-			created_at TIMESTAMPTZ DEFAULT NOW(),
-			updated_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS discovery_subnet TEXT DEFAULT '';
-		ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS discovery_ports TEXT DEFAULT '';
-		ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS notification_webhook_url TEXT DEFAULT '';
-		ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS notification_email TEXT DEFAULT '';
-		ALTER TABLE system_settings ADD COLUMN IF NOT EXISTS notification_triggers TEXT DEFAULT '';
-		CREATE TABLE IF NOT EXISTS speakers (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			name TEXT NOT NULL,
-			onvif_address TEXT NOT NULL,
-			username TEXT DEFAULT '',
-			password TEXT DEFAULT '',
-			rtsp_uri TEXT DEFAULT '',
-			zone TEXT DEFAULT '',
-			status TEXT DEFAULT 'offline',
-			manufacturer TEXT DEFAULT '',
-			model TEXT DEFAULT '',
-			created_at TIMESTAMPTZ DEFAULT NOW(),
-			updated_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE TABLE IF NOT EXISTS audio_messages (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			name TEXT NOT NULL,
-			category TEXT NOT NULL DEFAULT 'custom',
-			file_name TEXT NOT NULL,
-			duration REAL DEFAULT 0,
-			file_size BIGINT DEFAULT 0,
-			created_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE TABLE IF NOT EXISTS audit_log (
-			id BIGSERIAL PRIMARY KEY,
-			user_id UUID,
-			username TEXT NOT NULL DEFAULT '',
-			action TEXT NOT NULL,
-			target_type TEXT DEFAULT '',
-			target_id TEXT DEFAULT '',
-			details TEXT DEFAULT '',
-			ip_address TEXT DEFAULT '',
-			created_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE TABLE IF NOT EXISTS bookmarks (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			camera_id UUID REFERENCES cameras(id) ON DELETE CASCADE,
-			event_time TIMESTAMPTZ NOT NULL,
-			label TEXT NOT NULL,
-			notes TEXT DEFAULT '',
-			severity TEXT DEFAULT 'info',
-			created_by UUID,
-			created_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS map_x REAL DEFAULT 0;
-		ALTER TABLE cameras ADD COLUMN IF NOT EXISTS map_y REAL DEFAULT 0;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT '';
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT NOT NULL DEFAULT '';
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS organization_id TEXT;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_site_ids JSONB NOT NULL DEFAULT '[]';
-		-- UL 827B: account lockout state. failed_login_attempts tracks
-		-- consecutive failures; resets to 0 on any successful login.
-		-- locked_until holds a future timestamp after the threshold is
-		-- breached; the login handler rejects auth while NOW() < locked_until.
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS failed_login_attempts INT NOT NULL DEFAULT 0;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ;
-		ALTER TABLE operators ADD COLUMN IF NOT EXISTS user_id UUID;
-		UPDATE users SET role='soc_operator' WHERE role='operator';
-
-		-- Device site assignment for speakers
-		ALTER TABLE speakers ADD COLUMN IF NOT EXISTS site_id TEXT REFERENCES sites(id) ON DELETE SET NULL;
-		ALTER TABLE speakers ADD COLUMN IF NOT EXISTS location TEXT DEFAULT '';
-
-		-- Device assignment history: tracks when each camera/speaker was at each site.
-		-- Used for temporal data isolation (Site B can't see recordings from Site A period).
-		CREATE TABLE IF NOT EXISTS device_assignments (
-			id BIGSERIAL PRIMARY KEY,
-			device_type TEXT NOT NULL,
-			device_id TEXT NOT NULL,
-			site_id TEXT NOT NULL,
-			location_label TEXT DEFAULT '',
-			assigned_at TIMESTAMPTZ DEFAULT NOW(),
-			removed_at TIMESTAMPTZ
-		);
-		CREATE INDEX IF NOT EXISTS idx_device_assignments_device ON device_assignments(device_type, device_id);
-		CREATE INDEX IF NOT EXISTS idx_device_assignments_site ON device_assignments(site_id);
-		CREATE INDEX IF NOT EXISTS idx_device_assignments_active ON device_assignments(device_id, removed_at) WHERE removed_at IS NULL;
-
-		-- Event-to-segment linkage: when a camera event fires we also record the
-		-- video segment file that contains the event moment so the UI can deep-
-		-- link an event row straight to the right clip. Nullable because events
-		-- can arrive while recording is down / not configured.
-		-- No FK to segments(id) here: both events and segments are TimescaleDB
-		-- hypertables, and Timescale rejects FKs between hypertables. Referential
-		-- integrity isn't load-bearing for this column — the backfill below
-		-- resolves it via camera_id + time range, and application code nulls out
-		-- stale references on segment deletion. A FK constraint would break the
-		-- migration outright on any fresh (non-grandfathered) database.
-		ALTER TABLE events ADD COLUMN IF NOT EXISTS segment_id BIGINT;
-		CREATE INDEX IF NOT EXISTS idx_events_segment ON events(segment_id);
-
-		-- Backfill: one-time population of segment_id for events that existed
-		-- before the column was added. Idempotent — only touches NULL rows,
-		-- which stay NULL if no covering segment exists (recording was down).
-		UPDATE events e
-		SET segment_id = (
-			SELECT s.id FROM segments s
-			WHERE s.camera_id = e.camera_id
-			  AND s.start_time <= e.event_time
-			  AND s.end_time   >= e.event_time
-			ORDER BY s.start_time DESC
-			LIMIT 1
-		)
-		WHERE e.segment_id IS NULL;
-
-		-- VLM-generated descriptions of recording segments. Populated by the
-		-- background indexer (internal/indexer) during idle hours; the segment
-		-- is gated by YOLO first so empty scenes don't burn VLM time. Enables
-		-- Postgres full-text and tag search over every minute of footage.
-		-- No FK to segments(id): segments is a Timescale hypertable, and
-		-- hypertables can't be the target of a FK constraint (the primary key
-		-- isn't enforced across chunks). Retention worker is responsible for
-		-- deleting descriptions when segments expire — see internal/retention.
-		CREATE TABLE IF NOT EXISTS segment_descriptions (
-			segment_id       BIGINT       PRIMARY KEY,
-			camera_id        UUID         NOT NULL,
-			description      TEXT         NOT NULL DEFAULT '',
-			tags             TEXT[]       NOT NULL DEFAULT '{}',
-			activity_level   TEXT         NOT NULL DEFAULT 'none',
-			entities         JSONB        NOT NULL DEFAULT '[]',
-			detections       JSONB        NOT NULL DEFAULT '[]',
-			indexer_version  INT          NOT NULL DEFAULT 1,
-			analysis_ms      INT          NOT NULL DEFAULT 0,
-			indexed_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_segment_descriptions_camera
-			ON segment_descriptions(camera_id, indexed_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_segment_descriptions_tags
-			ON segment_descriptions USING GIN(tags);
-		-- GIN on the tsvector expression lets /api/search/semantic rank results
-		-- with to_tsquery() and english stemming (so "runs"/"running"/"ran" match).
-		CREATE INDEX IF NOT EXISTS idx_segment_descriptions_fts
-			ON segment_descriptions USING GIN(to_tsvector('english', description));
-		CREATE INDEX IF NOT EXISTS idx_segment_descriptions_activity
-			ON segment_descriptions(activity_level) WHERE activity_level != 'none';
-
-		-- Deterrence audit log: every time an operator fires a camera's
-		-- strobe / siren / alarm relay, a row lands here. This is a legal
-		-- must-have — a siren going off on someone's property needs a
-		-- precise "who, when, why" trail if it's ever challenged.
-		CREATE TABLE IF NOT EXISTS deterrence_audits (
-			id           BIGSERIAL   PRIMARY KEY,
-			user_id      TEXT        NOT NULL DEFAULT '',
-			username     TEXT        NOT NULL DEFAULT '',
-			role         TEXT        NOT NULL DEFAULT '',
-			camera_id    UUID        NOT NULL,
-			camera_name  TEXT        NOT NULL DEFAULT '',
-			action       TEXT        NOT NULL,        -- strobe | siren | both | alarm_out
-			duration_sec INT         NOT NULL DEFAULT 0,
-			reason       TEXT        NOT NULL DEFAULT '',  -- operator-entered justification
-			alarm_id     TEXT        NOT NULL DEFAULT '',  -- which alarm triggered it, if any
-			success      BOOLEAN     NOT NULL DEFAULT true,
-			error        TEXT        NOT NULL DEFAULT '',
-			fired_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			ip           TEXT        NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_deterrence_audits_camera
-			ON deterrence_audits(camera_id, fired_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_deterrence_audits_user
-			ON deterrence_audits(user_id, fired_at DESC);
-
-		-- Playback audit log: every access to a recording segment or playback
-		-- endpoint writes a row so we can answer "who watched what, when"
-		-- for compliance / discovery. Append-only; trimmed by retention job.
-		CREATE TABLE IF NOT EXISTS playback_audits (
-			id BIGSERIAL PRIMARY KEY,
-			user_id TEXT NOT NULL DEFAULT '',
-			username TEXT NOT NULL DEFAULT '',
-			role TEXT NOT NULL DEFAULT '',
-			camera_id UUID,
-			segment_id BIGINT,
-			event_id BIGINT,
-			endpoint TEXT NOT NULL DEFAULT '',
-			accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			ip TEXT NOT NULL DEFAULT ''
-		);
-		CREATE INDEX IF NOT EXISTS idx_playback_audits_user
-			ON playback_audits(user_id, accessed_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_playback_audits_camera
-			ON playback_audits(camera_id, accessed_at DESC);
-
-		-- Missing security_events columns (added incrementally)
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS severity TEXT DEFAULT 'medium';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS type TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS disposition_label TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS operator_id TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS operator_callsign TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS clip_url TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_description TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_threat_level TEXT DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_operator_agreed BOOLEAN DEFAULT NULL;
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS ai_was_correct BOOLEAN DEFAULT NULL;
-
-		-- UL 827B dual-operator verification ("four-eyes rule"). High-
-		-- severity dispositions that get escalated to law enforcement
-		-- need a second operator's sign-off. We capture verifier
-		-- identity + timestamp here; the supervisor endpoint enforces
-		-- "must not be the same user as the disposing operator." This
-		-- is also the structured-evidence trail TMA-AVS-01 wants for
-		-- the "video verified by SOC operator" factor.
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_user_id UUID;
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_by_callsign TEXT NOT NULL DEFAULT '';
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
-
-		-- TMA-AVS-01 Alarm Validation Score capture. Factors is the raw
-		-- attestation set the operator filled in at disposition; score is
-		-- the deterministic mapping computed by internal/avs at the time.
-		-- We store both (rather than just factors) so a list-events query
-		-- doesn't have to re-run the scoring function on every row, and
-		-- so an auditor can see the score that PSAP actually received
-		-- alongside the factors that produced it. rubric_version pins the
-		-- score to a specific algorithm release.
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_factors JSONB NOT NULL DEFAULT '{}'::jsonb;
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_score INT NOT NULL DEFAULT 0;
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS avs_rubric_version TEXT NOT NULL DEFAULT '';
-		-- Index for quick "show me all critical-score dispositions in the
-		-- last hour" queries; common on the supervisor dashboard.
-		CREATE INDEX IF NOT EXISTS idx_security_events_avs_score
-			ON security_events(avs_score DESC, ts DESC) WHERE avs_score >= 2;
-		-- The user who originally dispositioned the event. We had
-		-- operator_callsign already but not the user_id, which the
-		-- self-verification check needs to compare against.
-		ALTER TABLE security_events ADD COLUMN IF NOT EXISTS disposed_by_user_id UUID;
-		CREATE INDEX IF NOT EXISTS idx_security_events_unverified_high
-			ON security_events(ts DESC) WHERE severity IN ('critical', 'high') AND verified_at IS NULL;
-
-		-- Incidents: group related alarms from the same site within a correlation window.
-		-- The SOC dispatch queue shows incidents rather than individual alarms.
-		CREATE TABLE IF NOT EXISTS incidents (
-			id TEXT PRIMARY KEY,
-			site_id TEXT NOT NULL DEFAULT '',
-			site_name TEXT NOT NULL DEFAULT '',
-			severity TEXT NOT NULL DEFAULT 'medium',
-			status TEXT NOT NULL DEFAULT 'active',
-			alarm_count INT NOT NULL DEFAULT 1,
-			camera_ids TEXT[] DEFAULT '{}',
-			camera_names TEXT[] DEFAULT '{}',
-			types TEXT[] DEFAULT '{}',
-			latest_type TEXT NOT NULL DEFAULT '',
-			description TEXT NOT NULL DEFAULT '',
-			snapshot_url TEXT DEFAULT '',
-			clip_url TEXT DEFAULT '',
-			first_alarm_ts BIGINT NOT NULL DEFAULT 0,
-			last_alarm_ts BIGINT NOT NULL DEFAULT 0,
-			sla_deadline_ms BIGINT DEFAULT 0,
-			created_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_incidents_active ON incidents(site_id, last_alarm_ts) WHERE status = 'active';
-
-		-- Active alarms: live queue from the NVR detection pipeline.
-		-- One row per alarm; linked to a parent incident for grouping.
-		CREATE TABLE IF NOT EXISTS active_alarms (
-			id TEXT PRIMARY KEY,
-			incident_id TEXT DEFAULT '' REFERENCES incidents(id) ON DELETE SET DEFAULT,
-			site_id TEXT NOT NULL DEFAULT '',
-			site_name TEXT NOT NULL DEFAULT '',
-			camera_id TEXT NOT NULL DEFAULT '',
-			camera_name TEXT NOT NULL DEFAULT '',
-			severity TEXT NOT NULL DEFAULT 'high',
-			type TEXT NOT NULL DEFAULT 'person_detected',
-			description TEXT NOT NULL DEFAULT '',
-			snapshot_url TEXT DEFAULT '',
-			clip_url TEXT DEFAULT '',
-			ts BIGINT NOT NULL DEFAULT 0,
-			acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
-			claimed_by TEXT DEFAULT '',
-			escalation_level INT DEFAULT 0,
-			sla_deadline_ms BIGINT DEFAULT 0,
-			created_at TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_active_alarms_unacked ON active_alarms(ts) WHERE acknowledged = false;
-		-- Migration: add incident_id if table already exists
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS incident_id TEXT DEFAULT '';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_description TEXT DEFAULT '';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_threat_level TEXT DEFAULT '';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_recommended_action TEXT DEFAULT '';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_false_positive_pct REAL DEFAULT 0;
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_detections JSONB DEFAULT '[]';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_ppe_violations JSONB DEFAULT '[]';
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_operator_agreed BOOLEAN DEFAULT NULL;
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS ai_was_correct BOOLEAN DEFAULT NULL;
-
-		-- Shift handoffs: operator-to-operator shift change records.
-		CREATE TABLE IF NOT EXISTS shift_handoffs (
-			id BIGSERIAL PRIMARY KEY,
-			from_operator_id TEXT NOT NULL DEFAULT '',
-			from_operator_callsign TEXT NOT NULL DEFAULT '',
-			to_operator_id TEXT NOT NULL DEFAULT '',
-			to_operator_callsign TEXT NOT NULL DEFAULT '',
-			notes TEXT DEFAULT '',
-			site_locks JSONB DEFAULT '[]',
-			pending_alarms JSONB DEFAULT '[]',
-			status TEXT NOT NULL DEFAULT 'pending',
-			created_at TIMESTAMPTZ DEFAULT NOW(),
-			accepted_at TIMESTAMPTZ
-		);
-		CREATE INDEX IF NOT EXISTS idx_shift_handoffs_to ON shift_handoffs(to_operator_id, status);
-
-		-- Site feature mode: controls which product tier is active per site.
-		-- "security_only"       = cameras/recordings/SOC events/security reports
-		-- "security_and_safety" = + PPE compliance, OSHA, vLM safety engine
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS feature_mode TEXT NOT NULL DEFAULT 'security_and_safety';
-
-		-- Monitoring schedule (JSON array of time windows) and snooze state (JSON object)
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS monitoring_schedule JSONB DEFAULT '[]';
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS snooze JSONB DEFAULT NULL;
-
-		-- VCA (Video Content Analytics) rules: intrusion zones, tripwires, etc.
-		CREATE TABLE IF NOT EXISTS vca_rules (
-			id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			camera_id       UUID NOT NULL REFERENCES cameras(id) ON DELETE CASCADE,
-			rule_type       TEXT NOT NULL,
-			name            TEXT NOT NULL DEFAULT '',
-			enabled         BOOLEAN DEFAULT true,
-			sensitivity     INT DEFAULT 50,
-			region          JSONB NOT NULL DEFAULT '[]',
-			direction       TEXT DEFAULT 'both',
-			threshold_sec   INT DEFAULT 0,
-			schedule        TEXT DEFAULT 'always',
-			actions         JSONB DEFAULT '["record","notify"]',
-			synced          BOOLEAN DEFAULT false,
-			sync_error      TEXT DEFAULT '',
-			created_at      TIMESTAMPTZ DEFAULT NOW(),
-			updated_at      TIMESTAMPTZ DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_vca_rules_camera ON vca_rules(camera_id);
-
-		-- Recording / retention settings live at the site level. These were
-		-- previously per-camera columns on cameras. Keeping the old columns
-		-- in the DB for one release as a rollback cushion, but the engine
-		-- reads from sites after this migration. Backfill below copies a
-		-- reasonable default from the most-recently-updated camera on each
-		-- site on first run.
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS retention_days       INT  DEFAULT 3;
-		-- Tighten the default for any future site row inserted without
-		-- an explicit retention. Existing rows are unaffected; an admin
-		-- bumps a site to a higher tier (7/14/30/60/90) per contract.
-		ALTER TABLE sites ALTER COLUMN retention_days SET DEFAULT 3;
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_mode       TEXT DEFAULT 'continuous';
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS pre_buffer_sec       INT  DEFAULT 10;
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS post_buffer_sec      INT  DEFAULT 30;
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_triggers   TEXT DEFAULT 'motion,object';
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_schedule   TEXT DEFAULT '';
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS recording_backfilled BOOLEAN DEFAULT false;
-
-		-- Customer-maintained on-site contact list. Distinct from the
-		-- SOC-side site_sops.contacts (operators' call tree) — this is
-		-- what the site owner / site manager edits themselves to keep
-		-- their own contact info current. Stored as JSONB array of
-		-- {name, role, phone, email, notify_on_alarm, notes}; the
-		-- portal UI is the source of truth for customer-facing edits,
-		-- and the SOC can mirror the values into a SOP's call tree
-		-- when running through escalation.
-		ALTER TABLE sites ADD COLUMN IF NOT EXISTS customer_contacts JSONB NOT NULL DEFAULT '[]';
-
-		-- Lightweight customer-to-SOC support ticket system. The customer
-		-- creates a ticket from the portal; SOC supervisors / admins
-		-- respond from the /reports surface. Email fires on every new
-		-- message in either direction so neither side has to babysit
-		-- the UI.
-		--
-		-- Scoped by organization_id: a customer can only see their own
-		-- org's tickets. site_id is optional — most tickets attach to a
-		-- specific site, but "I have a billing question" doesn't.
-		--
-		-- status enum: open / answered / closed.
-		--   open      — customer's most recent message hasn't been
-		--               responded to yet
-		--   answered  — supervisor replied; ticket awaits customer
-		--               follow-up or closure
-		--   closed    — explicitly resolved by either party
-		CREATE TABLE IF NOT EXISTS support_tickets (
-			id                BIGSERIAL PRIMARY KEY,
-			organization_id   TEXT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
-			site_id           TEXT REFERENCES sites(id) ON DELETE SET NULL,
-			created_by        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			subject           TEXT NOT NULL,
-			status            TEXT NOT NULL DEFAULT 'open',
-			created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_message_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_message_by   TEXT NOT NULL DEFAULT 'customer'
-		);
-		CREATE INDEX IF NOT EXISTS idx_support_tickets_org_status
-			ON support_tickets(organization_id, status, last_message_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_support_tickets_open
-			ON support_tickets(last_message_at DESC) WHERE status = 'open';
-
-		CREATE TABLE IF NOT EXISTS support_messages (
-			id          BIGSERIAL PRIMARY KEY,
-			ticket_id   BIGINT NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
-			author_id   UUID NOT NULL REFERENCES users(id),
-			author_role TEXT NOT NULL,  -- 'customer' / 'site_manager' / 'soc_supervisor' / 'admin'
-			body        TEXT NOT NULL,
-			created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_support_messages_ticket
-			ON support_messages(ticket_id, created_at);
-
-		-- One-time backfill: for each site whose recording settings are still
-		-- at the default, adopt values from the most-recently-updated camera
-		-- on that site. The recording_backfilled flag prevents re-running
-		-- if an operator later resets a site to defaults on purpose.
-		UPDATE sites s
-		SET retention_days      = COALESCE(bf.retention_days, s.retention_days),
-		    recording_mode      = COALESCE(NULLIF(bf.recording_mode, ''), s.recording_mode),
-		    pre_buffer_sec      = COALESCE(bf.pre_buffer_sec, s.pre_buffer_sec),
-		    post_buffer_sec     = COALESCE(bf.post_buffer_sec, s.post_buffer_sec),
-		    recording_triggers  = COALESCE(NULLIF(bf.recording_triggers, ''), s.recording_triggers),
-		    recording_schedule  = COALESCE(NULLIF(bf.schedule, ''), s.recording_schedule),
-		    recording_backfilled = true
-		FROM (
-		    SELECT DISTINCT ON (site_id)
-		           site_id, retention_days, recording_mode, pre_buffer_sec,
-		           post_buffer_sec, recording_triggers, schedule
-		    FROM cameras
-		    WHERE site_id IS NOT NULL AND site_id <> ''
-		    ORDER BY site_id, updated_at DESC NULLS LAST
-		) bf
-		WHERE s.id = bf.site_id AND s.recording_backfilled = false;
-
-		-- Export worker: claim tracking. started_at records when a worker
-		-- atomically claimed a job (status pending→processing), so on startup
-		-- we can detect stuck jobs (status=processing for > N minutes) left
-		-- behind by a crashed worker and requeue them. Partial index makes
-		-- the poll-for-next-pending query touch only the short queue, not
-		-- the full historical exports table.
-		ALTER TABLE exports ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
-		CREATE INDEX IF NOT EXISTS idx_exports_pending
-			ON exports (created_at) WHERE status = 'pending';
-		CREATE INDEX IF NOT EXISTS idx_exports_processing
-			ON exports (started_at) WHERE status = 'processing';
-
-		-- ── SOC audit-trail upgrades ────────────────────────────────────
-		-- These columns and triggers turn the "demo-grade" audit surface
-		-- into something we can defend in a customer conversation or
-		-- discovery request. Each change is idempotent; the whole block is
-		-- safe to re-run on an existing database.
-
-		-- Phoneticizable per-alarm short code. The UUID-ish PK is fine in
-		-- URLs but unusable over a radio or phone bridge ("ack alarm
-		-- a-7-b-3-d-9-1-e-dash..."). ALM-YYMMDD-NNNN gives a 4-digit
-		-- daily sequence, readable aloud, and still unique. Legacy rows
-		-- stay NULL — the generator backfills on next write if needed.
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS alarm_code TEXT;
-		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_alarms_code
-			ON active_alarms(alarm_code) WHERE alarm_code IS NOT NULL;
-
-		-- Forensic linkage: which detection event actually fired this
-		-- alarm? Previously recoverable only by (camera_id, ts) join,
-		-- which is ambiguous when multiple events land on the same
-		-- second. BIGINT intentionally has no FK — events is a Timescale
-		-- hypertable and can't be the target of a FK constraint.
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS triggering_event_id BIGINT;
-		CREATE INDEX IF NOT EXISTS idx_active_alarms_event
-			ON active_alarms(triggering_event_id) WHERE triggering_event_id IS NOT NULL;
-
-		-- UL 827B SLA tracking. We already track sla_deadline_ms (the
-		-- deadline the alarm was created with); these columns capture the
-		-- *actual* response so a reviewer can compute "did we meet our
-		-- SLA?" with one SELECT instead of joining audit_log to alarms by
-		-- timestamp. acknowledged_by_callsign denormalizes the operator's
-		-- callsign at ack time so the report stays meaningful even if the
-		-- operator's callsign changes later.
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_by_user_id UUID;
-		ALTER TABLE active_alarms ADD COLUMN IF NOT EXISTS acknowledged_by_callsign TEXT NOT NULL DEFAULT '';
-		-- Index on (acknowledged_at, ts) so the SLA report can scan a date
-		-- range without touching un-acked alarms.
-		CREATE INDEX IF NOT EXISTS idx_active_alarms_ack_window
-			ON active_alarms(acknowledged_at, ts) WHERE acknowledged_at IS NOT NULL;
-
-		-- Polymorphic target on audit_log. target_type is one of a small
-		-- enum ("camera", "site", "user", "alarm", etc.) and target_id is
-		-- whatever format that entity uses. Lets us answer "who touched
-		-- this camera" with a single indexed query instead of LIKE-scans
-		-- over the route path.
-		ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS target_type TEXT NOT NULL DEFAULT '';
-		ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS target_id   TEXT NOT NULL DEFAULT '';
-		CREATE INDEX IF NOT EXISTS idx_audit_log_target
-			ON audit_log(target_type, target_id, created_at DESC)
-			WHERE target_id <> '';
-
-		-- Evidence share access log. One row per GET of a share URL.
-		-- This is the chain-of-custody bit courts want: not just who
-		-- generated the share, but every IP/agent that actually opened
-		-- it, timestamped. No FK to evidence_shares — a revoked share
-		-- should still show its access history.
-		CREATE TABLE IF NOT EXISTS evidence_share_opens (
-			id          BIGSERIAL PRIMARY KEY,
-			token       TEXT NOT NULL,
-			ip          TEXT NOT NULL DEFAULT '',
-			user_agent  TEXT NOT NULL DEFAULT '',
-			referrer    TEXT NOT NULL DEFAULT '',
-			opened_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_evidence_share_opens_token
-			ON evidence_share_opens(token, opened_at DESC);
-
-		-- UL 827B server-side logout / token revocation. The auth layer
-		-- adds a unique jti to every signed JWT; logout inserts that jti
-		-- here, and RequireAuth checks for membership before honoring a
-		-- token. expires_at is the original JWT exp — once it's past, the
-		-- row is harmless (token is invalid anyway) and a future cleanup
-		-- job can reclaim space.
-		CREATE TABLE IF NOT EXISTS revoked_tokens (
-			jti        TEXT PRIMARY KEY,
-			user_id    UUID,
-			revoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			expires_at TIMESTAMPTZ NOT NULL
-		);
-		CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires_at
-			ON revoked_tokens(expires_at);
-
-		-- Customer notification subscriptions. One row per (user, channel,
-		-- event_type) combo so a user can independently opt into "email
-		-- on critical alarms" + "sms on any alarm at site CS-547" + "no
-		-- monthly summary." event_type is a small enum:
-		--   alarm_disposition: per-event email/sms when SOC closes an alarm
-		--   monthly_summary:   the auto-emailed monthly performance report
-		-- channel is "email" or "sms"; future "push" / "webhook" slot in.
-		-- severity_min lets a user say "only critical+high" — events
-		-- below the threshold are filtered before send.
-		-- site_ids: NULL = all sites visible to user; otherwise array of
-		-- specific site ids the subscription applies to.
-		-- quiet hours: HH:MM in user's display timezone (stored UTC, the
-		-- match logic does the conversion). NULL = always on.
-		CREATE TABLE IF NOT EXISTS notification_subscriptions (
-			id           BIGSERIAL PRIMARY KEY,
-			user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			channel      TEXT NOT NULL,
-			event_type   TEXT NOT NULL,
-			severity_min TEXT NOT NULL DEFAULT 'low',
-			site_ids     JSONB,
-			quiet_start  TEXT DEFAULT '',
-			quiet_end    TEXT DEFAULT '',
-			enabled      BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			UNIQUE (user_id, channel, event_type)
-		);
-		CREATE INDEX IF NOT EXISTS idx_notification_subs_user
-			ON notification_subscriptions(user_id) WHERE enabled = true;
-		-- For each customer/site_manager user that doesn't already have
-		-- alarm_disposition subscriptions, seed defaults: email on any
-		-- alarm at any of their sites. Users opt OUT, not IN — the
-		-- monitoring relationship implies they want to know.
-		INSERT INTO notification_subscriptions (user_id, channel, event_type, severity_min)
-		SELECT u.id, 'email', 'alarm_disposition', 'low'
-		FROM users u
-		WHERE u.role IN ('customer', 'site_manager')
-		  AND COALESCE(u.email, '') <> ''
-		  AND NOT EXISTS (
-		    SELECT 1 FROM notification_subscriptions s
-		    WHERE s.user_id = u.id AND s.channel = 'email' AND s.event_type = 'alarm_disposition'
-		  );
-
-		-- UL 827B multi-factor authentication. TOTP only for the first
-		-- pass — WebAuthn / hardware keys can layer in later. We keep
-		-- the secret in plaintext at rest because the threat model here
-		-- is database-row exfiltration via a compromised app role, and a
-		-- column-level encryption that uses a key the same app can read
-		-- doesn't change that calculus. Production deployments that need
-		-- KMS-managed secrets (AWS KMS, HashiCorp Vault) can layer that
-		-- on without changing the schema.
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled BOOLEAN NOT NULL DEFAULT FALSE;
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret  TEXT NOT NULL DEFAULT '';
-		-- One-time recovery codes. Each entry is a bcrypt hash of the
-		-- code so a leak of this column doesn't immediately bypass MFA.
-		-- The login flow checks each hash, marks the matching one used,
-		-- and leaves the rest in place for future recovery attempts.
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recovery_hashes JSONB NOT NULL DEFAULT '[]';
-
-		-- UL 827B password rotation. password_changed_at is the source of
-		-- truth for "is this password too old"; the login handler reads it
-		-- and decides whether to flag the response with a forced-change
-		-- indicator. NOW() default keeps existing rows valid for 180 days
-		-- from the moment the migration runs (an operator-friendly grace
-		-- period rather than locking everyone out at deploy time).
-		ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-
-		-- ── VLM Active-Learning Labeling Queue ─────────────────────────
-		-- Passive capture: every time Qwen successfully analyses an alarm
-		-- frame, a row lands here so internal annotators can review the
-		-- VLM output and submit ground-truth labels for fine-tuning.
-		-- Operators never see this table; it is drained off-hours by
-		-- internal staff via /admin/labeling.
-		--
-		-- status lifecycle:
-		--   pending  → claimed (annotator opens the job)
-		--   claimed  → labeled | skipped
-		--
-		-- snapshot_url may be a relative /snapshots/… path or an
-		-- absolute URL depending on deployment.
-		CREATE TABLE IF NOT EXISTS vlm_label_jobs (
-			id              BIGSERIAL    PRIMARY KEY,
-			alarm_id        TEXT         NOT NULL,
-			camera_id       TEXT         NOT NULL DEFAULT '',
-			site_id         TEXT         NOT NULL DEFAULT '',
-			snapshot_url    TEXT         NOT NULL DEFAULT '',
-			vlm_description TEXT         NOT NULL DEFAULT '',
-			vlm_threat      TEXT         NOT NULL DEFAULT '',
-			vlm_model       TEXT         NOT NULL DEFAULT '',
-			yolo_detections JSONB        NOT NULL DEFAULT '[]',
-			status          TEXT         NOT NULL DEFAULT 'pending',
-			claimed_by      UUID,
-			claimed_at      TIMESTAMPTZ,
-			created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_vlm_label_jobs_status
-			ON vlm_label_jobs(status, created_at DESC);
-		CREATE INDEX IF NOT EXISTS idx_vlm_label_jobs_alarm
-			ON vlm_label_jobs(alarm_id);
-
-		-- Ground-truth labels submitted by internal annotators.
-		-- verdict: 'correct' | 'incorrect' | 'needs_correction'
-		-- corrected_description is non-empty only when verdict != correct.
-		-- Tags are free-form strings (e.g. 'false_positive', 'ppe_violation',
-		-- 'person_with_weapon') to seed the training dataset filter UI.
-		CREATE TABLE IF NOT EXISTS vlm_labels (
-			id                     BIGSERIAL    PRIMARY KEY,
-			job_id                 BIGINT       NOT NULL REFERENCES vlm_label_jobs(id) ON DELETE CASCADE,
-			annotator_id           UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-			verdict                TEXT         NOT NULL,
-			corrected_description  TEXT         NOT NULL DEFAULT '',
-			corrected_threat       TEXT         NOT NULL DEFAULT '',
-			tags                   TEXT[]       NOT NULL DEFAULT '{}',
-			notes                  TEXT         NOT NULL DEFAULT '',
-			labeled_at             TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-		);
-		CREATE INDEX IF NOT EXISTS idx_vlm_labels_job
-			ON vlm_labels(job_id);
-		CREATE INDEX IF NOT EXISTS idx_vlm_labels_annotator
-			ON vlm_labels(annotator_id, labeled_at DESC);
-
-		-- Append-only audit tables via trigger. We deliberately don't
-		-- REVOKE UPDATE/DELETE from the app role: the migration itself
-		-- and future scripted maintenance run as this role. Instead a
-		-- BEFORE trigger raises an exception on any mutation, which is
-		-- just as effective and leaves one obvious place to disable
-		-- (with comment, during a signed maintenance window) if a
-		-- GDPR right-to-erasure request ever comes through.
-		CREATE OR REPLACE FUNCTION ironsight_prevent_mutation()
-		RETURNS trigger AS $$
-		BEGIN
-			RAISE EXCEPTION 'audit table %.% is append-only (op=%)',
-				TG_TABLE_SCHEMA, TG_TABLE_NAME, TG_OP
-				USING ERRCODE = 'insufficient_privilege';
-		END;
-		$$ LANGUAGE plpgsql;
-
-		DROP TRIGGER IF EXISTS audit_log_append_only       ON audit_log;
-		DROP TRIGGER IF EXISTS playback_audits_append_only ON playback_audits;
-		DROP TRIGGER IF EXISTS deterrence_audits_append_only ON deterrence_audits;
-
-		CREATE TRIGGER audit_log_append_only
-			BEFORE UPDATE OR DELETE ON audit_log
-			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
-		CREATE TRIGGER playback_audits_append_only
-			BEFORE UPDATE OR DELETE ON playback_audits
-			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
-		CREATE TRIGGER deterrence_audits_append_only
-			BEFORE UPDATE OR DELETE ON deterrence_audits
-			FOR EACH ROW EXECUTE FUNCTION ironsight_prevent_mutation();
-
-		-- ════════════════════════════════════════════════════════════
-		-- Multi-tenant integrity backfill
-		-- ════════════════════════════════════════════════════════════
-		-- These ALTERs add the organization_id column and tenancy
-		-- indexes to tables that originally only had site_id. Until the
-		-- column is populated, queries still scope correctly via
-		-- site→org joins; the new column is for direct-filter perf and
-		-- defence-in-depth (a buggy join can't cross tenants if the
-		-- handler also filters by organization_id directly).
-		ALTER TABLE incidents       ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE active_alarms   ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE evidence_shares ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
-		ALTER TABLE vlm_label_jobs  ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT '';
-		CREATE INDEX IF NOT EXISTS idx_incidents_org       ON incidents(organization_id, last_alarm_ts DESC);
-		CREATE INDEX IF NOT EXISTS idx_active_alarms_org   ON active_alarms(organization_id, ts DESC);
-		CREATE INDEX IF NOT EXISTS idx_evidence_shares_org ON evidence_shares(organization_id);
-
-		-- Backfill organization_id from sites where it's still empty.
-		-- Idempotent: only updates rows that haven't been backfilled.
-		UPDATE incidents i
-		   SET organization_id = COALESCE(s.organization_id, '')
-		  FROM sites s
-		 WHERE i.site_id = s.id AND i.organization_id = '';
-		UPDATE active_alarms a
-		   SET organization_id = COALESCE(s.organization_id, '')
-		  FROM sites s
-		 WHERE a.site_id = s.id AND a.organization_id = '';
-
-		-- ════════════════════════════════════════════════════════════
-		-- Foreign key + uniqueness backfill
-		-- ════════════════════════════════════════════════════════════
-		-- Wrapped in DO blocks so re-running the migration is a no-op.
-		-- We catch undefined_table for tables only created by external
-		-- SQL files (evidence_shares lives in ironsight_platform.sql),
-		-- and duplicate_object for constraints already added.
-		DO $migrate$
-		BEGIN
-			-- vlm_label_jobs.alarm_id should be unique. The Go enqueue
-			-- path uses ON CONFLICT (alarm_id) DO NOTHING which silently
-			-- inserts duplicates without this constraint.
-			BEGIN
-				ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_alarm_id_key UNIQUE (alarm_id);
-			EXCEPTION WHEN duplicate_object THEN NULL;
-				WHEN duplicate_table THEN NULL;
-				WHEN unique_violation THEN
-					-- Existing duplicates would block the constraint. Drop
-					-- the older copies first, then retry.
-					DELETE FROM vlm_label_jobs a USING vlm_label_jobs b
-					 WHERE a.alarm_id = b.alarm_id AND a.id < b.id;
-					BEGIN
-						ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_alarm_id_key UNIQUE (alarm_id);
-					EXCEPTION WHEN duplicate_object THEN NULL;
-					END;
-			END;
-
-			-- evidence_shares.incident_id → incidents(id). Skip silently
-			-- if either side is missing (shouldn't happen in prod).
-			BEGIN
-				ALTER TABLE evidence_shares
-					ADD CONSTRAINT evidence_shares_incident_fk
-					FOREIGN KEY (incident_id) REFERENCES incidents(id) ON DELETE CASCADE
-					NOT VALID; -- NOT VALID skips backfill check; new rows enforced
-			EXCEPTION WHEN duplicate_object THEN NULL;
-				WHEN undefined_table THEN NULL;
-			END;
-		END;
-		$migrate$;
-
-		-- ════════════════════════════════════════════════════════════
-		-- CHECK constraints on TEXT enums
-		-- ════════════════════════════════════════════════════════════
-		-- Guards against typos in code creating orphan rows that no
-		-- query filter recognizes. NOT VALID = don't scan history (some
-		-- legacy rows may have been written with the old enum set).
-		DO $checks$
-		BEGIN
-			BEGIN
-				ALTER TABLE users ADD CONSTRAINT users_role_chk
-					CHECK (role IN ('admin','soc_operator','soc_supervisor','site_manager','customer','viewer','guard')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE incidents ADD CONSTRAINT incidents_status_chk
-					CHECK (status IN ('active','acknowledged','resolved','closed')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE incidents ADD CONSTRAINT incidents_severity_chk
-					CHECK (severity IN ('low','medium','high','critical')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE active_alarms ADD CONSTRAINT active_alarms_severity_chk
-					CHECK (severity IN ('low','medium','high','critical')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE support_tickets ADD CONSTRAINT support_tickets_status_chk
-					CHECK (status IN ('open','answered','closed')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-				WHEN undefined_table THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE vlm_labels ADD CONSTRAINT vlm_labels_verdict_chk
-					CHECK (verdict IN ('correct','incorrect','needs_correction')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-			BEGIN
-				ALTER TABLE vlm_label_jobs ADD CONSTRAINT vlm_label_jobs_status_chk
-					CHECK (status IN ('pending','claimed','labeled','skipped')) NOT VALID;
-			EXCEPTION WHEN duplicate_object THEN NULL;
-			END;
-		END;
-		$checks$;
-	`)
-	if err != nil {
-		log.Printf("[DB] Migration warning (non-fatal): %v", err)
-	} else {
-		log.Println("[DB] Schema migration check complete")
+	// Apply goose-tracked migrations before any other DB-touching startup
+	// runs. The 0001_baseline.sql migration is idempotent against fred's
+	// already-populated schema (every CREATE / ADD CONSTRAINT / TRIGGER
+	// is guarded), so on fred this just records "version 1 applied" in
+	// goose_db_version and changes nothing else. On a fresh DB it builds
+	// the full schema from scratch. Subsequent migrations (P1-B-02 onward)
+	// will land in migrations/000N_*.sql and be picked up automatically
+	// via the //go:embed directive in the migrations package.
+	//
+	// We bridge the existing pgxpool to database/sql via pgx's stdlib
+	// helper so goose (which is database/sql-only) shares the same pool
+	// rather than opening a second connection. The bridge *sql.DB is
+	// closed before we exit so we don't leak the wrapping handles.
+	gooseDB := stdlib.OpenDBFromPool(db.Pool)
+	if err := goose.SetDialect("postgres"); err != nil {
+		log.Fatalf("[FATAL] goose.SetDialect: %v", err)
 	}
-
-	// AI runtime metrics hypertable. One row per (service, sample_ts) tick;
-	// we record deltas (calls, confirmed, filtered) since the previous tick
-	// rather than cumulative counters, so range queries can SUM() without
-	// worrying about api restarts that reset in-process atomics. GPU
-	// fields are absolute readings sampled at tick time. Kept in its own
-	// migration block so a Timescale-specific failure (e.g. extension not
-	// loaded) doesn't cascade into the main schema migrations above.
-	if _, err := db.Pool.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS ai_runtime_metrics (
-			ts                  TIMESTAMPTZ NOT NULL,
-			service             TEXT NOT NULL,
-			site_id             UUID,
-			gpu_util_pct        INT,
-			gpu_memory_used_mb  INT,
-			gpu_memory_total_mb INT,
-			gpu_temperature_c   INT,
-			calls_delta         INT NOT NULL DEFAULT 0,
-			confirmed_delta     INT NOT NULL DEFAULT 0,
-			filtered_delta      INT NOT NULL DEFAULT 0,
-			avg_inference_ms    INT
-		);
-		ALTER TABLE ai_runtime_metrics ADD COLUMN IF NOT EXISTS site_id UUID;
-		SELECT create_hypertable('ai_runtime_metrics', 'ts', if_not_exists => TRUE);
-		CREATE INDEX IF NOT EXISTS idx_ai_metrics_service_ts
-			ON ai_runtime_metrics (service, ts DESC);
-		CREATE INDEX IF NOT EXISTS idx_ai_metrics_site_ts
-			ON ai_runtime_metrics (site_id, ts DESC) WHERE site_id IS NOT NULL;
-	`); err != nil {
-		log.Printf("[DB] ai_runtime_metrics migration warning (non-fatal): %v", err)
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.UpContext(context.Background(), gooseDB, "."); err != nil {
+		// P1-C-04: emit a discrete app alert before fatally exiting so that if
+		// the process is being restarted by a supervisor and briefly scrapes
+		// during the boot loop, the metric is visible to alertmanager.
+		appmetrics.SetCustomAlert("goose_migration_failure", "critical", err.Error())
+		gooseDB.Close()
+		log.Fatalf("[FATAL] goose.Up: %v", err)
 	}
+	// P1-C-03: record the applied migration version in Prometheus so
+	// alerts can cross-reference the schema state at incident time.
+	if v, verr := goose.GetDBVersion(gooseDB); verr == nil {
+		appmetrics.SetGooseMigrationVersion(v)
+	}
+	gooseDB.Close()
+	log.Println("[MIGRATIONS] goose up applied; see goose_db_version for current version")
+
+	// P1-B-02 cleanup (2026-05-26): inline DDL block removed.
+	// All schema lives in migrations/0005_camera_settings_columns.sql through
+	// 0020_ai_runtime_metrics.sql, applied by goose.UpContext above.
 
 	// Override config paths from DB storage locations (if any are configured)
 	storageConfigured := false
@@ -973,16 +169,14 @@ func main() {
 		}
 	}
 
-	// Seed the demo portfolio (orgs + sites + ~30 days of dispositioned
-	// events) BEFORE seedDemoUsers so users can be linked to existing
-	// orgs. Idempotent: skips entirely if any of the demo orgs already
-	// exists, so restarts don't pile on duplicate events.
-	seedDemoPortfolio(context.Background(), db)
+	// Demo data seeding (P1-B-09): the demo-portfolio + demo-users
+	// helpers, and the prior env-gate that wrapped them, live in the
+	// separate cmd/seed binary now. Server startup never seeds.
+	// Operators run `/app/seed --all` (or its --portfolio / --users
+	// variants) explicitly against a staging database when they need
+	// demo content. See internal/seed/ and cmd/seed/main.go.
 
-	// Seed demo platform users (SOC operators and portal users) if they don't exist
-	seedDemoUsers(context.Background(), db)
-
-	// Root context for all background goroutines. Cancelled on SIGINT /
+	// Root context for all background goroutines. Canceled on SIGINT /
 	// SIGTERM so the WS hub, recording engine, retention manager, and
 	// other long-runners exit cleanly. Defined here (before hub.Run)
 	// rather than down by the signal-wait so every spawn point can use it.
@@ -997,7 +191,20 @@ func main() {
 	if err := hub.AttachRedisBridge(rootCtx, cfg.RedisURL, cfg.RedisWSChannel); err != nil {
 		log.Printf("[WS] Redis bridge attach failed: %v — continuing in-memory only", err)
 	}
+	// P1-A-04: supply cfg + db so HandleWebSocket can do auth + RBAC
+	// before the WebSocket upgrade, and so the RBAC refresher can re-query
+	// assignments every 60 s without a reconnect.
+	hub.Configure(cfg, db)
 	go hub.Run(rootCtx)
+
+	// LOCAL-02: backfill any cameras whose profile_token was never
+	// populated (typical for SQL-seeded cameras that bypassed the
+	// /api/cameras create flow). Each empty-profile camera gets one
+	// ONVIF discovery round-trip up to profileBackfillPerCameraTimeout
+	// long, capped at profileBackfillConcurrency in parallel. Runs in
+	// a goroutine so a slow camera-fleet doesn't delay HTTP serving;
+	// PTZ remains broken for un-backfilled cameras only.
+	go api.BackfillProfileTokens(rootCtx, db)
 
 	recEngine := recording.NewEngine(cfg, db)
 	hlsServer := streaming.NewHLSServer(cfg, db)
@@ -1021,26 +228,20 @@ func main() {
 	det := detection.New(hub)
 	log.Println("[DET] ONVIF analytics detection enabled (Profile M cameras)")
 
-	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis
-	aiYOLO := os.Getenv("AI_YOLO_URL")
-	if aiYOLO == "" {
-		aiYOLO = "http://127.0.0.1:8501"
-	}
-	aiQwen := os.Getenv("AI_QWEN_URL")
-	if aiQwen == "" {
-		aiQwen = "http://127.0.0.1:8502"
-	}
+	// AI Pipeline — YOLO (detection) + Qwen (reasoning) for event-triggered analysis.
+	// Endpoints and the on/off switch come from cfg (env vars AI_YOLO_URL /
+	// AI_QWEN_URL / AI_ENABLED parsed at startup).
 	aiClient := ai.NewClient(ai.Config{
-		YOLOEndpoint: aiYOLO,
-		QwenEndpoint: aiQwen,
-		Enabled:      os.Getenv("AI_ENABLED") != "false",
+		YOLOEndpoint: cfg.AIYOLOURL,
+		QwenEndpoint: cfg.AIQwenURL,
+		Enabled:      cfg.AIEnabled,
 	})
 	aiClient.CheckHealth(context.Background())
 
 	// Persisted runtime metrics for the Services dashboard. Samples
 	// every 30s; rows go to the ai_runtime_metrics hypertable created
 	// during the migration block above.
-	api.StartAIMetricsSampler(context.Background(), db, aiClient, aiYOLO, aiQwen, 30*time.Second)
+	api.StartAIMetricsSampler(context.Background(), db, aiClient, cfg.AIYOLOURL, cfg.AIQwenURL, 30*time.Second)
 
 	// Background VLM indexer: enriches every recording segment with a
 	// searchable description during idle hours. Scales with INDEXER_CONCURRENCY
@@ -1103,6 +304,10 @@ func main() {
 			if err := db.InsertEvent(ctx, evt); err == nil {
 				id := evt.ID
 				eventID = &id
+
+				// P4-SCHEMA-02: dual-write the detection event to the new
+				// detections table.  Non-fatal on failure.
+				go dualWriteSecurityEvent(db, camUUID, siteID, alertType, time.UnixMilli(now), nil)
 			}
 
 			alarm := &database.ActiveAlarm{
@@ -1175,6 +380,29 @@ func main() {
 	})
 	notifier := notify.NewDispatcher(emailMailer, smsMailer, cfg.ProductName, cfg.PublicURL)
 
+	// P1-C-03: sync pgxpool stats into Prometheus gauges every 15 s.
+	// The pool exposes a Stat() snapshot (no blocking); we read it on a
+	// ticker so the Prom scraper always sees a reasonably fresh value.
+	if cfg.MetricsEnabled {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					s := db.Pool.Stat()
+					appmetrics.SyncDBPoolStats(appmetrics.DBPoolStat{
+						AcquireCount: s.AcquireCount(),
+						IdleConns:    s.IdleConns(),
+						TotalConns:   s.TotalConns(),
+					})
+				}
+			}
+		}()
+	}
+
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()
 	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier, aiClient)
@@ -1209,367 +437,20 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if err := http.ListenAndServe(addr, router); err != nil {
+	// Use an explicit *http.Server with ReadHeaderTimeout to defeat slowloris
+	// attacks (gosec G114 — http.ListenAndServe has no timeouts at all).
+	// Deliberately leaving WriteTimeout and IdleTimeout unset because the
+	// router serves WebSockets (/ws, /ws/alerts) and an HLS segment stream
+	// path whose write deadlines need to be open-ended; a global WriteTimeout
+	// would silently sever those long-lived connections after N seconds.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("[FATAL] Server failed: %v", err)
 	}
-}
-
-// seedDemoUsers creates demo user accounts for each platform role if they don't already exist.
-// Runs on every startup but only inserts rows that are missing.
-func seedDemoUsers(ctx context.Context, db *database.DB) {
-	type seed struct {
-		username    string
-		password    string
-		role        string
-		displayName string
-		email       string
-		phone       string
-		orgID       string
-		siteIDs     []string
-	}
-
-	demo := []seed{
-		// SOC operators — linked to operators table
-		{"jhayes", "demo123", "soc_operator", "Jordan Hayes", "jhayes@ironsight.io", "312-555-0111", "", nil},
-		{"ctorres", "demo123", "soc_operator", "Casey Torres", "ctorres@ironsight.io", "312-555-0122", "", nil},
-		{"rmorgan", "demo123", "soc_supervisor", "Riley Morgan", "rmorgan@ironsight.io", "312-555-0133", "", nil},
-		// Portal users — linked to organizations/sites
-		{"marcus.webb", "demo123", "site_manager", "Marcus Webb", "marcus.webb@apexcg.com", "312-555-0147", "co-alpha001", []string{"ACG-301", "ACG-302"}},
-		{"spierce", "demo123", "customer", "Sandra Pierce", "spierce@apexcg.com", "312-555-0198", "co-alpha001", []string{"ACG-301", "ACG-302"}},
-		{"priya.sharma", "demo123", "site_manager", "Priya Sharma", "priya@meridiandv.com", "512-555-0293", "co-beta002", []string{"MDV-501"}},
-		{"derek.lawson", "demo123", "site_manager", "Derek Lawson", "dlawson@ironcladsites.com", "602-555-0311", "co-gamma003", []string{"ISS-201"}},
-	}
-
-	for _, s := range demo {
-		// Skip if user already exists
-		existing, _ := db.GetUserByUsernameOrEmail(ctx, s.username)
-		if existing != nil {
-			continue
-		}
-		hash, err := authpkg.HashPassword(s.password)
-		if err != nil {
-			log.Printf("[SEED] Failed to hash password for %s: %v", s.username, err)
-			continue
-		}
-		u, err := db.CreateUser(ctx, &database.UserCreate{
-			Username:        s.username,
-			Role:            s.role,
-			DisplayName:     s.displayName,
-			Email:           s.email,
-			Phone:           s.phone,
-			OrganizationID:  s.orgID,
-			AssignedSiteIDs: s.siteIDs,
-		}, hash)
-		if err != nil {
-			log.Printf("[SEED] Could not create user %s: %v", s.username, err)
-			continue
-		}
-		log.Printf("[SEED] Created user %s (%s)", s.username, s.role)
-
-		// Link SOC users to their operators table row
-		switch s.username {
-		case "jhayes":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-001'`, u.ID)
-		case "ctorres":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-002'`, u.ID)
-		case "rmorgan":
-			db.Pool.Exec(ctx, `UPDATE operators SET user_id=$1 WHERE id='op-003'`, u.ID)
-		}
-	}
-}
-
-// seedDemoPortfolio creates a believable customer portfolio so the
-// portal's "what we handled for you" panel and incident-detail
-// "How the SOC handled this" block render with real numbers
-// instead of zeros on a clean install.
-//
-// Three orgs, five sites, a 30-day spread of dispositioned events
-// weighted toward false positives — that's the actual story the SOC
-// tells the customer ("most events are noise; we filtered them so
-// you didn't have to"). Operator callsigns match the SOC users that
-// seedDemoUsers creates so the same names appear consistently
-// across the portal and the operator console.
-//
-// Idempotent: bails out if the first demo org already exists, so
-// restarts don't append duplicate events.
-func seedDemoPortfolio(ctx context.Context, db *database.DB) {
-	var existing string
-	_ = db.Pool.QueryRow(ctx, `SELECT id FROM organizations WHERE id='co-alpha001'`).Scan(&existing)
-	if existing != "" {
-		return // already seeded
-	}
-
-	type orgSeed struct {
-		ID           string
-		Name         string
-		Plan         string
-		ContactName  string
-		ContactEmail string
-	}
-	type siteSeed struct {
-		ID      string
-		OrgID   string
-		Name    string
-		Address string
-		Lat     float64
-		Lng     float64
-	}
-
-	orgs := []orgSeed{
-		{"co-alpha001", "Apex Construction Group", "enterprise", "Sandra Pierce", "spierce@apexcg.com"},
-		{"co-beta002", "Meridian Development Ventures", "professional", "Priya Sharma", "priya@meridiandv.com"},
-		{"co-gamma003", "Ironclad Site Services", "professional", "Derek Lawson", "dlawson@ironcladsites.com"},
-	}
-	sites := []siteSeed{
-		{"ACG-301", "co-alpha001", "Apex Tower — Phase 2", "1450 N Wells St, Chicago, IL", 41.9089, -87.6342},
-		{"ACG-302", "co-alpha001", "Apex Riverside Plaza", "200 W Wacker Dr, Chicago, IL", 41.8870, -87.6350},
-		{"MDV-501", "co-beta002", "Meridian Industrial Park", "5500 E Riverside Dr, Austin, TX", 30.2389, -97.7197},
-		{"MDV-502", "co-beta002", "Meridian Logistics Hub", "10000 W Cesar Chavez St, Austin, TX", 30.2562, -97.7986},
-		{"ISS-201", "co-gamma003", "Ironclad HQ Yard", "4400 N 32nd St, Phoenix, AZ", 33.4938, -112.0118},
-	}
-
-	// Insert orgs and sites.
-	for _, o := range orgs {
-		if _, err := db.Pool.Exec(ctx, `
-			INSERT INTO organizations (id, name, plan, contact_name, contact_email)
-			VALUES ($1,$2,$3,$4,$5)
-			ON CONFLICT (id) DO NOTHING`,
-			o.ID, o.Name, o.Plan, o.ContactName, o.ContactEmail,
-		); err != nil {
-			log.Printf("[SEED] org %s: %v", o.ID, err)
-		}
-	}
-	for _, s := range sites {
-		if _, err := db.Pool.Exec(ctx, `
-			INSERT INTO sites (id, name, address, organization_id, latitude, longitude, status)
-			VALUES ($1,$2,$3,$4,$5,$6,'active')
-			ON CONFLICT (id) DO NOTHING`,
-			s.ID, s.Name, s.Address, s.OrgID, s.Lat, s.Lng,
-		); err != nil {
-			log.Printf("[SEED] site %s: %v", s.ID, err)
-		}
-	}
-	log.Printf("[SEED] %d demo orgs and %d sites created", len(orgs), len(sites))
-
-	// Generate 30 days of dispositioned events. The distribution is
-	// shaped to match what a real SOC tells customers: most alarms
-	// are noise (animals, weather, lighting), a smaller slice are
-	// activity-without-action (workers on schedule), and a thin
-	// minority are verified threats. Response times follow a
-	// log-normal-ish curve clamped to reasonable SOC SLAs.
-	type dispMix struct {
-		code   string
-		label  string
-		weight int
-	}
-	dispositions := []dispMix{
-		{"false-positive-shadow", "False Positive — Shadow / Light", 22},
-		{"false-positive-animal", "False Positive — Animal", 18},
-		{"false-positive-weather", "False Positive — Weather / Foliage", 14},
-		{"false-positive-vehicle", "False Positive — Authorized Vehicle", 8},
-		{"no-action-scheduled-activity", "Activity Within Schedule", 12},
-		{"activity-logs", "Logged Activity — No Action", 8},
-		{"verified-threat-trespasser", "Verified — Trespasser, Deterrence Fired", 8},
-		{"verified-threat-attempted-entry", "Verified — Attempted Entry, Police Dispatched", 4},
-		{"verified-threat-vandalism", "Verified — Vandalism in Progress", 3},
-		{"test-system-test", "Test — System Verification", 3},
-	}
-	totalWeight := 0
-	for _, d := range dispositions {
-		totalWeight += d.weight
-	}
-	pickDisp := func(r *rand.Rand) dispMix {
-		n := r.Intn(totalWeight)
-		for _, d := range dispositions {
-			if n < d.weight {
-				return d
-			}
-			n -= d.weight
-		}
-		return dispositions[0]
-	}
-
-	severityFor := func(code string, r *rand.Rand) string {
-		switch {
-		case strings.HasPrefix(code, "verified"):
-			if r.Intn(3) == 0 {
-				return "critical"
-			}
-			return "high"
-		case strings.HasPrefix(code, "activity-logs"), strings.HasPrefix(code, "no-action"):
-			return "low"
-		default:
-			// false-positives skew low/medium
-			if r.Intn(4) == 0 {
-				return "high"
-			}
-			if r.Intn(2) == 0 {
-				return "medium"
-			}
-			return "low"
-		}
-	}
-
-	eventTypes := []string{"intrusion", "linecross", "person", "vehicle", "loitering"}
-	operators := []struct {
-		ID, Callsign string
-	}{
-		{"op-001", "JHAYES"},
-		{"op-002", "CTORRES"},
-		{"op-003", "RMORGAN"},
-	}
-
-	r := rand.New(rand.NewSource(42)) // deterministic seed → stable demo
-	now := time.Now()
-	startWindow := now.Add(-30 * 24 * time.Hour)
-
-	// Roughly 6 events per site per day, more during business hours.
-	// Total: 5 sites × 30 days × ~6 = ~900 events. Plenty for the
-	// "we handled X events" panel to show convincing numbers.
-	eventCount := 0
-	alarmCount := 0
-	for _, s := range sites {
-		// Per-site volume varies — bigger sites get more events.
-		dailyAvg := 4 + r.Intn(5) // 4-8 events/day per site
-		for day := 0; day < 30; day++ {
-			eventsToday := dailyAvg + r.Intn(4) - 2 // ±2 jitter
-			if eventsToday < 0 {
-				eventsToday = 0
-			}
-			for i := 0; i < eventsToday; i++ {
-				// Time of day: bias toward 18:00-06:00 (active monitoring window).
-				// 70% events at night, 30% during the day.
-				var hour int
-				if r.Intn(10) < 7 {
-					// Night hours: 18-23 or 0-5
-					if r.Intn(2) == 0 {
-						hour = 18 + r.Intn(6)
-					} else {
-						hour = r.Intn(6)
-					}
-				} else {
-					hour = 6 + r.Intn(12) // 6-17
-				}
-				dayBase := startWindow.Add(time.Duration(day) * 24 * time.Hour)
-				eventTime := time.Date(dayBase.Year(), dayBase.Month(), dayBase.Day(),
-					hour, r.Intn(60), r.Intn(60), 0, time.UTC)
-				if eventTime.After(now) {
-					continue // don't seed events in the future
-				}
-
-				disp := pickDisp(r)
-				sev := severityFor(disp.code, r)
-				op := operators[r.Intn(len(operators))]
-				evType := eventTypes[r.Intn(len(eventTypes))]
-
-				// Response time: log-ish curve. Most under 60s; tail to ~5min.
-				// Verified threats get faster response; informational slower.
-				baseSec := 20 + r.Intn(60)
-				if strings.HasPrefix(disp.code, "verified") {
-					baseSec = 8 + r.Intn(25) // 8-33s
-				} else if strings.HasPrefix(disp.code, "test") {
-					baseSec = 3 + r.Intn(8)
-				}
-				// Long-tail: 10% of responses run 2-5min
-				if r.Intn(10) == 0 {
-					baseSec = 120 + r.Intn(180)
-				}
-				ackTime := eventTime.Add(time.Duration(baseSec) * time.Second)
-
-				// Resolved-at trails ack by another 30-180s while the
-				// operator finishes notes / disposition.
-				resolvedAt := ackTime.Add(time.Duration(30+r.Intn(150)) * time.Second)
-
-				alarmID := fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), eventCount+1)
-				eventID := fmt.Sprintf("EVT-%s-%04d", eventTime.Format("060102"), eventCount+1)
-				camID := fmt.Sprintf("%s-CAM-%02d", s.ID, 1+r.Intn(6))
-
-				// Active alarm row — needed for the response-time
-				// metrics (acknowledged_at - ts).
-				_, err := db.Pool.Exec(ctx, `
-					INSERT INTO active_alarms
-					  (id, alarm_code, site_id, site_name, camera_id, camera_name,
-					   severity, type, description, ts, acknowledged, acknowledged_at,
-					   acknowledged_by_callsign, sla_deadline_ms, organization_id, created_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true,$11,$12,$13,$14,$15)
-					ON CONFLICT (id) DO NOTHING`,
-					alarmID,
-					fmt.Sprintf("ALM-%s-%04d", eventTime.Format("060102"), alarmCount+1),
-					s.ID, s.Name,
-					camID, fmt.Sprintf("%s Camera %d", s.Name, 1+r.Intn(6)),
-					sev, evType,
-					fmt.Sprintf("%s detected at %s", evType, s.Name),
-					eventTime.UnixMilli(),
-					ackTime,
-					op.Callsign,
-					eventTime.UnixMilli()+90_000, // 90s SLA
-					s.OrgID,
-					eventTime,
-				)
-				if err != nil {
-					log.Printf("[SEED] active_alarm: %v", err)
-					continue
-				}
-
-				// Action log: 2-4 entries per event so the timeline panel renders.
-				actionLog := []map[string]interface{}{
-					{"ts": eventTime.UnixMilli(), "text": "Alarm received", "auto": true},
-					{"ts": ackTime.Add(-2 * time.Second).UnixMilli(), "text": fmt.Sprintf("Operator %s engaged", op.Callsign), "auto": false},
-					{"ts": ackTime.UnixMilli(), "text": fmt.Sprintf("Disposition: %s", disp.label), "auto": false},
-				}
-				if strings.HasPrefix(disp.code, "verified-threat-trespasser") {
-					actionLog = append(actionLog, map[string]interface{}{
-						"ts": ackTime.Add(15 * time.Second).UnixMilli(), "text": "Audio deterrence fired (3x)", "auto": false,
-					})
-				}
-				if disp.code == "verified-threat-attempted-entry" {
-					actionLog = append(actionLog, map[string]interface{}{
-						"ts": ackTime.Add(20 * time.Second).UnixMilli(), "text": "Police dispatched (911)", "auto": false,
-					})
-				}
-				actionLogJSON, _ := json.Marshal(actionLog)
-
-				notes := ""
-				switch {
-				case disp.code == "verified-threat-trespasser":
-					notes = "Single subject in restricted zone. Deterrence audio fired; subject left within 30s."
-				case disp.code == "verified-threat-attempted-entry":
-					notes = "Two subjects testing perimeter gate. PD dispatched; arrived in 6m."
-				case disp.code == "false-positive-animal":
-					notes = "Confirmed wildlife (deer / coyote pattern). No action."
-				case disp.code == "false-positive-shadow":
-					notes = "Tree shadow movement triggered detection. False positive."
-				}
-
-				_, err = db.Pool.Exec(ctx, `
-					INSERT INTO security_events
-					  (id, alarm_id, site_id, camera_id, severity, type, description,
-					   disposition_code, disposition_label, operator_id, operator_callsign,
-					   operator_notes, action_log, ts, resolved_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-					ON CONFLICT (id) DO NOTHING`,
-					eventID, alarmID, s.ID, camID,
-					sev, evType,
-					fmt.Sprintf("%s detected at %s", evType, s.Name),
-					disp.code, disp.label,
-					op.ID, op.Callsign, notes,
-					actionLogJSON,
-					eventTime.UnixMilli(),
-					resolvedAt.UnixMilli(),
-				)
-				if err != nil {
-					log.Printf("[SEED] security_event: %v", err)
-					continue
-				}
-
-				eventCount++
-				alarmCount++
-			}
-		}
-	}
-
-	log.Printf("[SEED] %d alarms + %d dispositioned events seeded across %d sites",
-		alarmCount, eventCount, len(sites))
 }
 
 // autoStartCameras initializes recording and HLS for cameras with recording enabled
@@ -1689,6 +570,12 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 				}
 				if err := db.InsertEvent(dbCtx, evt); err != nil {
 					log.Printf("[EVENTS] Failed to store event: %v", err)
+				} else {
+					// P4-SCHEMA-02: dual-write the ONVIF event to detections.
+					// Use cam.SiteID captured at subscription time (safe:
+					// closures here capture the outer cam var).
+					camSiteID := cam.SiteID
+					go dualWriteSecurityEvent(db, cameraID, camSiteID, eventType, evt.EventTime, nil)
 				}
 
 				log.Printf("[EVENTS] %s from %s: %s", eventType, camName, details["topic"])
@@ -1888,12 +775,12 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 								"description": alarm.Description, "ts": now,
 								"acknowledged": false, "escalation_level": 0,
 								"sla_deadline_ms": alarm.SlaDeadlineMs,
-								"snapshot_url": "",
-								"clip_url":     clipURL,
-								"ai_score":       aiScore,
-								"obj_type":       objType,
-								"rule_name":      ruleName,
-								"bounding_boxes": details["bounding_boxes"],
+								"snapshot_url":    "",
+								"clip_url":        clipURL,
+								"ai_score":        aiScore,
+								"obj_type":        objType,
+								"rule_name":       ruleName,
+								"bounding_boxes":  details["bounding_boxes"],
 							},
 						})
 						hub.Broadcast(alertMsg)
@@ -2006,20 +893,20 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										aiMsg, _ := json.Marshal(map[string]interface{}{
 											"type": "alarm_ai",
 											"data": map[string]interface{}{
-												"alarm_id":             snapAlarmID,
-												"incident_id":          snapIncidentID,
-												"ai_description":       aiResult.Description,
-												"ai_threat_level":      aiResult.ThreatLevel,
+												"alarm_id":              snapAlarmID,
+												"incident_id":           snapIncidentID,
+												"ai_description":        aiResult.Description,
+												"ai_threat_level":       aiResult.ThreatLevel,
 												"ai_recommended_action": aiResult.RecommendedAction,
 												"ai_false_positive_pct": aiResult.FalsePositivePct,
-												"ai_objects":           aiResult.AIObjects,
-												"ai_detections":        aiResult.Detections,
-												"ai_ppe_detections":    aiResult.PPEDetections,
-												"ai_ppe_violations":    aiResult.PPEViolations,
-												"ai_yolo_model":        aiResult.YOLOModel,
-												"ai_ppe_model":         aiResult.PPEModel,
-												"ai_qwen_model":        aiResult.QwenModel,
-												"ai_total_ms":          aiResult.TotalMs,
+												"ai_objects":            aiResult.AIObjects,
+												"ai_detections":         aiResult.Detections,
+												"ai_ppe_detections":     aiResult.PPEDetections,
+												"ai_ppe_violations":     aiResult.PPEViolations,
+												"ai_yolo_model":         aiResult.YOLOModel,
+												"ai_ppe_model":          aiResult.PPEModel,
+												"ai_qwen_model":         aiResult.QwenModel,
+												"ai_total_ms":           aiResult.TotalMs,
 											},
 										})
 										hub.Broadcast(aiMsg)
@@ -2027,16 +914,26 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 										// Persist AI results to DB for REST polling
 										detectionsJSON, _ := json.Marshal(aiResult.Detections)
 										ppeViolationsJSON, _ := json.Marshal(aiResult.PPEViolations)
-									_ = db.UpdateAlarmAI(context.Background(),
-										snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
-										aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
+										_ = db.UpdateAlarmAI(context.Background(),
+											snapAlarmID, aiResult.Description, aiResult.ThreatLevel,
+											aiResult.RecommendedAction, aiResult.FalsePositivePct, detectionsJSON, ppeViolationsJSON)
+
+										// P4-SCHEMA-02: dual-write AI PPE violations to detections.
+										// One detections row per violation bbox (DECISION-C).
+										if len(aiResult.PPEViolations) > 0 {
+											go dualWriteAlarmPPEViolations(
+												db, cameraID, siteID,
+												aiResult.PPEViolations, aiResult.PPEModel,
+												time.Now().UTC(),
+											)
+										}
 
 										// ── Passive labeling capture ──
 										// Enqueue the frame + VLM output for off-SOC annotation.
 										// Non-blocking best-effort: a failure here must never affect
 										// the alarm pipeline. Operators see nothing; internal staff
 										// drain this queue via /admin/labeling.
-										go func(alarmID, camID, siteID, snapURL, desc, threat, model string, det []byte) {
+										go func(alarmID string, camID uuid.UUID, siteID, snapURL, desc, threat, model string, det []byte) {
 											defer func() {
 												if rec := recover(); rec != nil {
 													log.Printf("[LABELING] PANIC in enqueue goroutine for alarm %s: %v", alarmID, rec)
@@ -2048,7 +945,7 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 											); err != nil {
 												log.Printf("[LABELING] enqueue failed for alarm %s: %v", alarmID, err)
 											}
-										}(snapAlarmID, snapCameraID, siteID, snapshotURL,
+										}(snapAlarmID, cameraID, siteID, snapshotURL,
 											aiResult.Description, aiResult.ThreatLevel, aiResult.QwenModel, detectionsJSON)
 
 										// ── Video enrichment pass ──
@@ -2208,5 +1105,129 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 
 	if len(cameras) == 0 {
 		log.Println("[STARTUP] No cameras configured. Use the API or frontend to add cameras.")
+	}
+}
+
+// ── P4-SCHEMA-02 dual-write helpers ─────────────────────────────────────────
+
+// dualWriteSecurityEvent inserts one detection row of domain "security" after
+// a legacy events INSERT succeeds.  orgID is not available in the AlertEmitter
+// closure (the emitter only has cameraID + siteID from a goroutine that ran
+// before the ONVIF subscriber's site resolution); we look it up from the
+// camera row lazily.  Non-fatal: logs + increments counter on failure.
+func dualWriteSecurityEvent(
+	db *database.DB,
+	camID uuid.UUID,
+	siteID string,
+	eventType string,
+	detectedAt time.Time,
+	vcaRuleID *uuid.UUID,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Resolve the organisation for this camera.
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:events] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("events").Inc()
+		return
+	}
+
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "onvif-event", "v1", "", "security",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:events] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("events").Inc()
+		return
+	}
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+	dualwrite.Write(ctx, db, "events", orgID, camID, run, dualwrite.MappedDetection{
+		DetectedAt:      detectedAt,
+		SiteID:          sitePtr,
+		DetectionClass:  dualwrite.NormaliseEventTypeToSecurityClass(eventType),
+		DetectionDomain: "security",
+		Confidence:      0.8, // ONVIF analytic events are high-confidence by design
+		BoundingBox:     nil,
+		ZoneID:          nil,
+		VCARuleID:       vcaRuleID,
+	})
+}
+
+// dualWriteAlarmPPEViolations inserts one detections row per PPE violation
+// surfaced by the alarm AI pipeline (Qwen PPE pass on the alarm snapshot).
+// Each violation in the aiResult.PPEViolations array maps to one detection row
+// (DECISION-C: one bbox per row).  Non-fatal on any failure.
+func dualWriteAlarmPPEViolations(
+	db *database.DB,
+	camID uuid.UUID,
+	siteID string,
+	violations []ai.Detection,
+	ppeModel string,
+	detectedAt time.Time,
+) {
+	if len(violations) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	var orgID string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT COALESCE(s.organization_id, '') FROM cameras c LEFT JOIN sites s ON s.id = c.site_id WHERE c.id = $1`,
+		camID,
+	).Scan(&orgID)
+	if err != nil || orgID == "" {
+		log.Printf("[DUALWRITE:alarms] cannot resolve org for camera %s: %v", camID, err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("alarms").Inc()
+		return
+	}
+
+	versionTag := ppeModel
+	if versionTag == "" {
+		versionTag = "unknown"
+	}
+	mvID, err := dualwrite.LookupOrCreateModelVersion(
+		ctx, db,
+		orgID, "yolo-ppe", versionTag, "", "ppe",
+	)
+	if err != nil {
+		log.Printf("[DUALWRITE:alarms] LookupOrCreateModelVersion: %v", err)
+		dualwrite.DualWriteFailuresTotal.WithLabelValues("alarms").Inc()
+		return
+	}
+
+	// One analysis_run shared across all violations from this alarm frame.
+	run := dualwrite.NewRunHandle(db, orgID, mvID)
+
+	var sitePtr *string
+	if siteID != "" {
+		sitePtr = &siteID
+	}
+
+	for _, v := range violations {
+		bboxJSON := dualwrite.BBoxFromX1Y1X2Y2(
+			v.BBoxNorm.X1, v.BBoxNorm.Y1, v.BBoxNorm.X2, v.BBoxNorm.Y2,
+		)
+		dualwrite.Write(ctx, db, "alarms", orgID, camID, run, dualwrite.MappedDetection{
+			DetectedAt:      detectedAt,
+			SiteID:          sitePtr,
+			DetectionClass:  dualwrite.NormalisePPEClass(v.Class),
+			DetectionDomain: "ppe",
+			Confidence:      float32(v.Confidence),
+			BoundingBox:     bboxJSON,
+			ZoneID:          nil,
+			VCARuleID:       nil,
+		})
 	}
 }

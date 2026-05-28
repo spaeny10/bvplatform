@@ -84,9 +84,9 @@ type AlarmDispositionContext struct {
 	// AI-generated narrative + assessment from the Qwen VLM pipeline.
 	// All fields are best-effort — empty when the indexer hasn't
 	// produced output yet for this incident.
-	AIDescription       string  // 1–2 sentence factual scene description
-	AIThreatLevel       string  // "low" | "medium" | "high" | "critical"
-	AIRecommendedAction string  // operator-facing recommendation, fine for customers too
+	AIDescription       string // 1–2 sentence factual scene description
+	AIThreatLevel       string // "low" | "medium" | "high" | "critical"
+	AIRecommendedAction string // operator-facing recommendation, fine for customers too
 }
 
 // AlarmDispositioned sends the disposition-summary notification to
@@ -398,6 +398,260 @@ func statTile(b *strings.Builder, label, value, sub string) {
 		fmt.Fprintf(b, `<div style="font-size:11px;color:#6b7280;margin-top:2px">%s</div>`, sub)
 	}
 	b.WriteString(`</div>`)
+}
+
+// WeeklyDigestContext carries the per-org PPE compliance data needed to
+// render the weekly digest email. Built by the worker's runWeeklyDigest
+// goroutine from the C-06 compliance query layer; passed verbatim to
+// Dispatcher.WeeklyDigest.
+//
+// Tenant isolation is enforced by the caller: every field here belongs
+// to exactly one organization. The dispatcher renders and sends without
+// any further org-scoping; the caller is responsible for not mixing data
+// from multiple orgs into one context object.
+type WeeklyDigestContext struct {
+	OrganizationName string
+	PeriodStart      time.Time // Monday 00:00:00 UTC of the digested week
+	PeriodEnd        time.Time // Sunday 23:59:59 UTC of the digested week
+
+	// Compliance metrics for the week.
+	TotalViolations int
+	TotalReviewed   int
+	PendingCount    int     // unreviewed rows at send time
+	ComplianceRate  float64 // (TotalReviewed - TotalViolations) / TotalReviewed * 100; 0 if no reviewed rows
+
+	// ViolationTrend is the delta vs. the previous week (positive = more
+	// violations, negative = fewer). Derived by the caller; 0 if
+	// comparison data is unavailable.
+	ViolationTrend int
+
+	// Top cameras by violation count (at most 5).
+	TopCameras []DigestTopCamera
+
+	// Occupancy / person-hours (zero when tracking is disabled).
+	PersonHoursAvailable bool
+	PersonHours          float64
+
+	// Deep-link URLs. Set by the caller from cfg.PublicURL.
+	ComplianceURL    string // /portal/compliance
+	PendingReviewURL string // /portal/compliance?tab=pending
+	UnsubscribeURL   string // /portal/notifications
+}
+
+// DigestTopCamera is one row in the top-cameras table inside the digest.
+type DigestTopCamera struct {
+	CameraName     string
+	ViolationCount int
+	PctOfTotal     float64
+}
+
+// WeeklyDigest emails the per-org PPE compliance digest to all subscribed
+// recipients. Email-only (no SMS — digest is too long for a text message).
+// Best-effort: a send failure is logged but does not propagate so one
+// org's bad SMTP address doesn't abort the whole run.
+//
+// HTML layout contract: ALL stat blocks use <table>/<tr>/<td> — never
+// statTile (which emits display:flex, unsafe in Outlook). Inline CSS only.
+func (d *Dispatcher) WeeklyDigest(ctx context.Context, digest WeeklyDigestContext, recipients []Recipient) {
+	if len(recipients) == 0 {
+		return
+	}
+	var emails []string
+	for _, r := range recipients {
+		if r.Email != "" {
+			emails = append(emails, r.Email)
+		}
+	}
+	if len(emails) == 0 {
+		return
+	}
+
+	weekRange := fmt.Sprintf("%s – %s",
+		digest.PeriodStart.Format("Jan 2"),
+		digest.PeriodEnd.Format("Jan 2, 2006"))
+	subject := fmt.Sprintf("[%s] Weekly PPE compliance digest — %s — %s",
+		d.productName, digest.OrganizationName, weekRange)
+
+	complianceURL := digest.ComplianceURL
+	if complianceURL == "" {
+		complianceURL = d.publicURL + "/portal/compliance"
+	}
+	pendingURL := digest.PendingReviewURL
+	if pendingURL == "" {
+		pendingURL = d.publicURL + "/portal/compliance?tab=pending"
+	}
+	unsubURL := digest.UnsubscribeURL
+	if unsubURL == "" {
+		unsubURL = d.publicURL + "/portal/notifications"
+	}
+
+	// ── Plain text body ───────────────────────────────────────────────────
+	var text strings.Builder
+	fmt.Fprintf(&text, "%s — Weekly PPE compliance digest\n", d.productName)
+	fmt.Fprintf(&text, "Organization: %s\n", digest.OrganizationName)
+	fmt.Fprintf(&text, "Period: %s\n\n", weekRange)
+
+	fmt.Fprintf(&text, "COMPLIANCE SUMMARY\n")
+	fmt.Fprintf(&text, "  Violations this week:  %d", digest.TotalViolations)
+	if digest.ViolationTrend != 0 {
+		sign := "+"
+		if digest.ViolationTrend < 0 {
+			sign = ""
+		}
+		fmt.Fprintf(&text, " (%s%d vs prior week)", sign, digest.ViolationTrend)
+	}
+	text.WriteString("\n")
+	fmt.Fprintf(&text, "  Reviewed findings:     %d\n", digest.TotalReviewed)
+	if digest.TotalReviewed > 0 {
+		fmt.Fprintf(&text, "  Compliance rate:       %.1f%%\n", digest.ComplianceRate)
+	}
+	fmt.Fprintf(&text, "  Unreviewed (pending):  %d\n", digest.PendingCount)
+	if digest.PersonHoursAvailable {
+		fmt.Fprintf(&text, "  Person-hours observed: %.1f h\n", digest.PersonHours)
+	}
+
+	if len(digest.TopCameras) > 0 {
+		text.WriteString("\nTOP CAMERAS BY VIOLATIONS\n")
+		for i, cam := range digest.TopCameras {
+			fmt.Fprintf(&text, "  %d. %s — %d violation(s) (%.0f%%)\n",
+				i+1, cam.CameraName, cam.ViolationCount, cam.PctOfTotal)
+		}
+	}
+
+	fmt.Fprintf(&text, "\nView full compliance dashboard: %s\n", complianceURL)
+	if digest.PendingCount > 0 {
+		fmt.Fprintf(&text, "Review pending findings:        %s\n", pendingURL)
+	}
+	fmt.Fprintf(&text, "\n— %s SOC\n\n", d.productName)
+	fmt.Fprintf(&text, "To stop receiving weekly digests, visit your notification preferences:\n%s\n", unsubURL)
+
+	// ── HTML body (table-based layout, inline CSS, no flex/grid) ─────────
+	// IMPORTANT: statTile uses display:flex — do NOT call it here.
+	// All stat blocks use <table>/<tr>/<td> so Outlook renders correctly.
+	var html strings.Builder
+
+	html.WriteString(`<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;color:#1a1a1a;background:#ffffff">`)
+
+	// Header
+	fmt.Fprintf(&html,
+		`<h2 style="margin:0 0 4px;font-size:20px;color:#0a0f08">%s weekly PPE digest</h2>`,
+		htmlEscape(d.productName))
+	fmt.Fprintf(&html,
+		`<div style="font-size:13px;color:#6b7280;margin-bottom:24px">%s &middot; %s</div>`,
+		htmlEscape(digest.OrganizationName), htmlEscape(weekRange))
+
+	// Stat block — TABLE layout (Outlook-safe, no flex).
+	// Four stat cells: Violations | Compliance rate | Pending | Person-hours.
+	// Each cell is a <td> with a fixed width and border.
+	html.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-bottom:24px">`)
+	html.WriteString(`<tr>`)
+
+	// Cell helper: writes one stat <td>.
+	statCell := func(label, value, sub string) {
+		fmt.Fprintf(&html,
+			`<td style="width:25%%;padding:12px 8px;background:#f9fafb;border:1px solid #e5e7eb;vertical-align:top">`)
+		fmt.Fprintf(&html,
+			`<div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">%s</div>`,
+			htmlEscape(label))
+		fmt.Fprintf(&html,
+			`<div style="font-size:22px;font-weight:700;color:#0a0f08;line-height:1.2">%s</div>`,
+			htmlEscape(value))
+		if sub != "" {
+			fmt.Fprintf(&html,
+				`<div style="font-size:11px;color:#6b7280;margin-top:4px">%s</div>`,
+				htmlEscape(sub))
+		}
+		html.WriteString(`</td>`)
+	}
+
+	// Violations cell with optional trend badge.
+	violationsSub := ""
+	if digest.ViolationTrend != 0 {
+		sign := "+"
+		if digest.ViolationTrend < 0 {
+			sign = ""
+		}
+		violationsSub = fmt.Sprintf("%s%d vs prior week", sign, digest.ViolationTrend)
+	}
+	statCell("Violations", fmt.Sprintf("%d", digest.TotalViolations), violationsSub)
+
+	// Compliance rate cell.
+	rateVal := "N/A"
+	rateSub := "no reviewed rows"
+	if digest.TotalReviewed > 0 {
+		rateVal = fmt.Sprintf("%.1f%%", digest.ComplianceRate)
+		rateSub = fmt.Sprintf("%d reviewed", digest.TotalReviewed)
+	}
+	statCell("Compliance rate", rateVal, rateSub)
+
+	// Pending cell.
+	pendingSub := "awaiting review"
+	if digest.PendingCount == 0 {
+		pendingSub = "queue clear"
+	}
+	statCell("Pending", fmt.Sprintf("%d", digest.PendingCount), pendingSub)
+
+	// Person-hours cell (shows "—" when tracking not available).
+	if digest.PersonHoursAvailable {
+		statCell("Person-hours", fmt.Sprintf("%.1f h", digest.PersonHours), "tracking enabled")
+	} else {
+		statCell("Person-hours", "—", "tracking disabled")
+	}
+
+	html.WriteString(`</tr>`)
+	html.WriteString(`</table>`)
+
+	// Top cameras section.
+	if len(digest.TopCameras) > 0 {
+		html.WriteString(`<h3 style="font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:#6b7280;margin:0 0 10px">Top cameras by violations</h3>`)
+		html.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin-bottom:24px">`)
+		for i, cam := range digest.TopCameras {
+			rowBg := "#ffffff"
+			if i%2 == 0 {
+				rowBg = "#f9fafb"
+			}
+			fmt.Fprintf(&html,
+				`<tr style="background:%s"><td style="padding:8px 10px;font-size:13px;border-bottom:1px solid #e5e7eb;color:#1a1a1a">%s</td><td style="padding:8px 10px;font-size:13px;border-bottom:1px solid #e5e7eb;color:#1a1a1a;text-align:right;white-space:nowrap">%d (%.0f%%)</td></tr>`,
+				rowBg,
+				htmlEscape(cam.CameraName),
+				cam.ViolationCount,
+				cam.PctOfTotal)
+		}
+		html.WriteString(`</table>`)
+	}
+
+	// CTA buttons.
+	fmt.Fprintf(&html,
+		`<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:24px"><tr>`)
+	fmt.Fprintf(&html,
+		`<td style="padding-right:8px"><a href="%s" style="display:inline-block;padding:10px 18px;background:#E8732A;color:#ffffff;text-decoration:none;border-radius:5px;font-weight:600;font-size:13px">View compliance dashboard</a></td>`,
+		complianceURL)
+	if digest.PendingCount > 0 {
+		fmt.Fprintf(&html,
+			`<td><a href="%s" style="display:inline-block;padding:10px 18px;background:#f3f4f6;color:#1a1a1a;text-decoration:none;border-radius:5px;font-weight:600;font-size:13px;border:1px solid #d1d5db">Review %d pending</a></td>`,
+			pendingURL, digest.PendingCount)
+	}
+	html.WriteString(`</tr></table>`)
+
+	// Footer.
+	fmt.Fprintf(&html,
+		`<div style="margin-top:8px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af">— %s SOC. To stop receiving the weekly digest, <a href="%s" style="color:#9ca3af">update your notification preferences</a>.</div>`,
+		htmlEscape(d.productName), unsubURL)
+	fmt.Fprintf(&html,
+		`<div style="font-size:10px;color:#d1d5db;margin-top:4px">CAN-SPAM: To unsubscribe, visit <a href="%s" style="color:#d1d5db">notification preferences</a> (login required).</div>`,
+		unsubURL)
+	html.WriteString(`</div>`)
+
+	if err := d.email.Send(ctx, Message{
+		To:       emails,
+		Subject:  subject,
+		TextBody: text.String(),
+		HTMLBody:  html.String(),
+		Tag:      "weekly_digest",
+	}); err != nil {
+		log.Printf("[DIGEST] email send failed (org=%s, n=%d): %v",
+			digest.OrganizationName, len(emails), err)
+	}
 }
 
 // SupportTicketEvent is the payload for the customer ↔ SOC support

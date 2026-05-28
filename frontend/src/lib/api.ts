@@ -1,13 +1,43 @@
-import { getStoredToken } from '@/contexts/AuthContext';
-
 const API_BASE = '/api';
 
-/** Fetch wrapper that injects the JWT Bearer token and redirects on 401 */
+/**
+ * Read the ironsight_csrf cookie value from document.cookie.
+ * Returns an empty string when running server-side (no document) or when
+ * the cookie is absent (e.g. pre-login, SSO-only session).
+ * Never throws — callers treat an empty string as "no CSRF token available".
+ *
+ * P1-A-02 part 2 — double-submit CSRF pattern. The backend CSRFMiddleware
+ * compares this value against the X-CSRF-Token request header.
+ */
+function getCSRFToken(): string {
+    if (typeof document === 'undefined') return '';
+    const pair = document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='));
+    return pair ? pair.split('=')[1] : '';
+}
+
+/**
+ * Fetch wrapper that:
+ *  - attaches credentials:'include' so the ironsight_session HttpOnly cookie
+ *    is sent automatically on every request
+ *  - injects X-CSRF-Token from the ironsight_csrf cookie on non-idempotent
+ *    requests (POST / PUT / PATCH / DELETE)
+ *  - redirects to /login on 401
+ *
+ * P1-A-02 PR3: Authorization: Bearer path has been retired. Sessions are
+ * maintained exclusively via the ironsight_session HttpOnly cookie.
+ *
+ * P1-A-02 part 2 — replaces the localStorage-based token injection.
+ */
 export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
-    const token = getStoredToken();
     const headers = new Headers(init.headers ?? {});
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-    const res = await fetch(input, { ...init, headers });
+    const method = (init.method ?? 'GET').toUpperCase();
+    // Inject CSRF header on state-changing requests. GET / HEAD / OPTIONS
+    // are exempt (mirrors the backend CSRFMiddleware exemption list).
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        const csrf = getCSRFToken();
+        if (csrf) headers.set('X-CSRF-Token', csrf);
+    }
+    const res = await fetch(input, { ...init, headers, credentials: 'include' });
     if (res.status === 401 && typeof window !== 'undefined') {
         window.location.href = '/login';
     }
@@ -1162,5 +1192,155 @@ export async function fetchPlaybackSegments(cameraId: string, time: string, sign
     const res = await authFetch(`${API_BASE}/playback/${cameraId}?t=${time}`, { signal });
     if (!res.ok) return [];
     return res.json();
+}
+
+// ── PPE Pending Review Queue (P2-C-01) ───────────────────────────────────────
+
+import type { PendingReviewEntry } from '@/types/ironsight';
+export type { PendingReviewEntry };
+
+export interface PendingReviewFilter {
+    status?: string;
+    camera_id?: string;
+    limit?: number;
+    before?: string;
+}
+
+export async function getPendingReview(filter: PendingReviewFilter = {}): Promise<{ entries: PendingReviewEntry[] }> {
+    const qs = new URLSearchParams();
+    if (filter.status) qs.set('status', filter.status);
+    if (filter.camera_id) qs.set('camera_id', filter.camera_id);
+    if (filter.limit) qs.set('limit', String(filter.limit));
+    if (filter.before) qs.set('before', filter.before);
+    const res = await authFetch(`${API_BASE}/v1/portal/pending-review?${qs.toString()}`);
+    if (!res.ok) throw new Error(`pending review: ${res.status}`);
+    return res.json();
+}
+
+export async function submitReview(
+    id: string,
+    body: { status: string; notes?: string }
+): Promise<void> {
+    const res = await authFetch(`${API_BASE}/v1/portal/pending-review/${id}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`submit review: ${res.status}`);
+}
+
+// ── PPE Zones + Compliance Rules (P2-C-04) ───────────────────────────────────
+
+import type { PPEZone, PPEZoneCreate, ComplianceRule, ComplianceRuleCreate } from '@/types/ironsight';
+export type { PPEZone, PPEZoneCreate, ComplianceRule, ComplianceRuleCreate };
+
+export async function listPPEZones(cameraId: string): Promise<PPEZone[]> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones`);
+    if (!res.ok) return [];
+    return res.json();
+}
+
+export async function createPPEZone(cameraId: string, data: PPEZoneCreate): Promise<PPEZone> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`create PPE zone: ${res.status}`);
+    return res.json();
+}
+
+export async function updatePPEZone(cameraId: string, zoneId: string, data: PPEZoneCreate): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones/${zoneId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`update PPE zone: ${res.status}`);
+}
+
+export async function deletePPEZone(cameraId: string, zoneId: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/ppe/zones/${zoneId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete PPE zone: ${res.status}`);
+}
+
+export async function listComplianceRules(cameraId: string): Promise<ComplianceRule[]> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules`);
+    if (!res.ok) return [];
+    return res.json();
+}
+
+export async function createComplianceRule(cameraId: string, data: ComplianceRuleCreate): Promise<ComplianceRule> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`create compliance rule: ${res.status}`);
+    return res.json();
+}
+
+export async function updateComplianceRule(cameraId: string, ruleId: string, data: ComplianceRuleCreate): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules/${ruleId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`update compliance rule: ${res.status}`);
+}
+
+export async function deleteComplianceRule(cameraId: string, ruleId: string): Promise<void> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/compliance-rules/${ruleId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete compliance rule: ${res.status}`);
+}
+
+// ── Compliance Dashboard (P2-C-06) ───────────────────────────────────────────
+
+import type { ComplianceSummary } from '@/types/ironsight';
+
+export interface ComplianceSummaryParams {
+    site_id?: string;
+    period: 'today' | 'week' | 'month' | '90days' | 'custom';
+    start_date?: string;
+    end_date?: string;
+    org?: string;
+}
+
+export async function getComplianceSummary(params: ComplianceSummaryParams): Promise<ComplianceSummary> {
+    const qs = new URLSearchParams();
+    qs.set('period', params.period);
+    if (params.site_id) qs.set('site_id', params.site_id);
+    if (params.start_date) qs.set('start_date', params.start_date);
+    if (params.end_date) qs.set('end_date', params.end_date);
+    if (params.org) qs.set('org', params.org);
+
+    const res = await authFetch(`${API_BASE}/v1/portal/compliance/summary?${qs.toString()}`);
+    if (!res.ok) throw new Error(`compliance summary: ${res.status}`);
+    return res.json();
+}
+
+export async function downloadComplianceReport(
+    params: ComplianceSummaryParams & { include_findings?: boolean }
+): Promise<void> {
+    const qs = new URLSearchParams();
+    qs.set('period', params.period);
+    if (params.site_id) qs.set('site_id', params.site_id);
+    if (params.start_date) qs.set('start_date', params.start_date);
+    if (params.end_date) qs.set('end_date', params.end_date);
+    if (params.org) qs.set('org', params.org);
+    if (params.include_findings === false) qs.set('include_findings', 'false');
+
+    const res = await authFetch(`${API_BASE}/v1/portal/compliance/report.pdf?${qs.toString()}`);
+    if (!res.ok) throw new Error(`compliance PDF: ${res.status}`);
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ironsight-compliance-${params.period}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 

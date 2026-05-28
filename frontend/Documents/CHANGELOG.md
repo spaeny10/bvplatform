@@ -21,6 +21,31 @@ phase**, and put the most recent phase at the top.
 
 ---
 
+## Phase 3 — Scaled rollout infra · 2026-05-27
+
+### `610ac7f` — P3-INFRA-07: Customer PWA polish
+**Date:** 2026-05-27
+**Branch:** feat/p3-infra-07-pwa-polish
+**Files:** `frontend/public/icon-192.png` (new), `frontend/public/icon-512.png` (new), `frontend/src/app/layout.tsx`, `frontend/src/app/portal/compliance/compliance.css`, `frontend/src/app/portal/notifications/page.tsx`, `frontend/src/app/portal/portal.css`, `frontend/src/components/portal/PortalMobileNav.tsx`, `frontend/src/components/shared/PWAManager.tsx`, `frontend/src/hooks/usePushNotifications.tsx` (deleted), `ironsight/backlog/phase-3.md` (10 files, +239/-340)
+
+Seven interrelated PWA and mobile-quality improvements shipped together because they collectively gate the Lighthouse PWA installability score:
+
+**`usePushNotifications` removal.** The hook was written but never wired — zero import sites in `src/`. The commented-out `/api/push/subscribe` backend endpoint was never implemented, and the SW has no `push` listener. Deleting it removes dead code and eliminates the risk of a future refactor accidentally importing it into a build path. Post-deletion grep confirms zero references.
+
+**PWA icons.** `frontend/public/` previously had only `sw.js`. The manifest and SW pre-cache both reference `icon-192.png` and `icon-512.png` which were missing, causing Lighthouse installability failures. Generated functional placeholder PNGs: solid brand-orange (`#E8732A`) background with a BV mark centered inside the maskable safe zone (inner 80%), both valid `image/png` files at the correct dimensions (192×192 and 512×512). Generated via Node.js `zlib`/raw-bytes — no extra dependency. These are intentional functional placeholders; swap for real branded assets before public launch.
+
+**iOS A2HS hint.** iOS Safari never fires `beforeinstallprompt`. `PWAManager` now detects iOS Safari via user-agent + `navigator.standalone` check and shows a dismissible banner instructing the user to tap the Share button then "Add to Home Screen." Dismissal persists to localStorage for 30 days. The existing Android/Chrome `beforeinstallprompt` path is fully preserved.
+
+**`viewport-fit=cover`.** Added to the `<meta name="viewport">` tag so `env(safe-area-inset-bottom)` resolves correctly on notched iPhones (X and later). Without this, safe-area-inset-bottom always reads 0 and the PortalMobileNav bottom-tab bar overlaps the iOS home indicator.
+
+**`prefers-reduced-motion` guards.** `portal.css` had `portal-fadeUp` animations and hover transitions with no reduced-motion fallback. `compliance.css` had `compliance-shimmer` skeleton animations with none. Added `@media (prefers-reduced-motion: reduce)` blocks to both files: animations are disabled (not just shortened), transitions set to `none`. Users with the accessibility setting active get instant redraws.
+
+**PortalMobileNav touch targets.** Tab links had `padding: 6px 4px` (~32px effective height) — below the 44×44px WCAG 2.5.5 / iOS HIG floor. Raised to `minHeight: 44, padding: 8px 4px`.
+
+**`/portal/notifications` warm-light conversion.** The page was built with operator-dark `--sg-*` tokens (dark backgrounds, bright text). It sits under `/portal/` (customer-facing) but rendered as if it were operator console UI — a palette mismatch the DESIGN.md explicitly prohibits. Converted every inline style to portal warm-light custom properties: `--bg`, `--bg-card`, `--bg-warm`, `--border`, `--text-primary`, `--text-secondary`, `--text-dim`, `--accent`, `--green`, `--shadow-sm`. Toggle buttons and the severity select now meet the 44px touch-target floor. Zero `--sg-*` tokens remain.
+
+---
+
 ## Phase G — Sense cameras, AI runtime metrics, retention tiers, dev-loop ops · 2026-04-29
 
 A multi-week working session collapsed into a single integration commit

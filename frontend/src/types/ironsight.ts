@@ -117,6 +117,134 @@ export interface PPEBreakdown {
   gloves: number;
 }
 
+// ── Portal Proof-of-Work Rollup ──
+
+export interface PortalSummary {
+  period_days: number;
+  period_start: string;
+  period_end: string;
+  events_handled: number;
+  verified_threats: number;
+  false_positives: number;
+  alarms_total: number;
+  avg_response_sec: number;
+  p95_response_sec: number;
+  within_sla: number;
+  over_sla: number;
+}
+
+// ── PPE Pending Review Queue (P2-C-01) ──
+
+export interface PendingReviewEntry {
+  id: string;
+  camera_id: string;
+  camera_name: string;
+  site_id?: string;
+  site_name?: string;
+  detection_class: string;
+  missing_label: string;
+  confidence: number;
+  bounding_boxes: { bbox_normalized: { x1: number; y1: number; x2: number; y2: number }; label?: string }[];
+  frame_url: string;
+  status: string;
+  created_at: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+  notes?: string;
+}
+
+// ── PPE Zones + Compliance Rules (P2-C-04) ──
+
+export interface PPEZone {
+  id: string;
+  camera_id: string;
+  name: string;
+  zone_type: string;
+  region: { x: number; y: number }[];
+  enabled: boolean;
+  notes?: string;
+  created_at: string;
+}
+
+export interface PPEZoneCreate {
+  name: string;
+  zone_type: string;
+  region: { x: number; y: number }[];
+  enabled?: boolean;
+  notes?: string;
+}
+
+export interface ComplianceRule {
+  id: string;
+  camera_id: string;
+  zone_id?: string;
+  zone_name?: string;
+  rule_type: string;
+  ppe_classes: string[];
+  enabled: boolean;
+  site_wide: boolean;
+  notes?: string;
+  schedule?: unknown;
+  created_at: string;
+}
+
+export interface ComplianceRuleCreate {
+  zone_id?: string;
+  rule_type: string;
+  ppe_classes: string[];
+  enabled: boolean;
+  site_wide: boolean;
+  notes?: string;
+  schedule?: unknown;
+}
+
+// ── Compliance Dashboard (P2-C-06) ──
+
+export type CompliancePeriod = 'today' | 'week' | 'month' | '90days' | 'custom';
+
+export interface ComplianceTimeBucket {
+  bucket: string;   // ISO timestamp
+  count: number;
+}
+
+export interface ComplianceCameraSummary {
+  camera_id: string;
+  camera_name: string;
+  violation_count: number;
+  pct_of_total: number;
+}
+
+export interface ComplianceFinding {
+  id: string;
+  camera_id: string;
+  camera_name: string;
+  site_id?: string;
+  site_name?: string;
+  detection_class: string;
+  missing_label: string;
+  confidence: number;
+  status: string;
+  created_at: string;
+}
+
+export interface ComplianceSummary {
+  period: {
+    label: string;
+    start: string;
+    end: string;
+  };
+  site_id: string | null;
+  total_violations: number;
+  total_reviewed: number;
+  pending_count: number;
+  compliance_rate: number | null;
+  person_hours: number | null;
+  person_hours_available: boolean;
+  violations_over_time: ComplianceTimeBucket[];
+  top_cameras: ComplianceCameraSummary[];
+  recent_findings: ComplianceFinding[];
+}
+
 // ── Alerts ──
 
 export interface AlertEvent {

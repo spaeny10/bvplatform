@@ -14,9 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/drivers"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/drivers"
+	"ironsight/internal/onvif"
 )
 
 // HandleListVCARules returns all VCA rules for a camera.
@@ -107,7 +107,7 @@ func HandleDeleteVCARule(db *database.DB) http.HandlerFunc {
 			http.Error(w, "invalid rule id", http.StatusBadRequest)
 			return
 		}
-		if err := db.DeleteVCARule(r.Context(), ruleID); err != nil {
+		if err := db.SoftDeleteVCARule(r.Context(), ruleID); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

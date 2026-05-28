@@ -5,18 +5,53 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"ironsight/internal/crypto"
 )
 
 // DB wraps the PostgreSQL connection pool and provides query methods
 type DB struct {
-	Pool *pgxpool.Pool
+	Pool           *pgxpool.Pool
+	credentialsKey []byte // set via SetCredentialsKey; used for camera credential encrypt/decrypt
+}
+
+// SetCredentialsKey installs the AES-256 key used to encrypt and decrypt
+// camera.password at rest. Call once after New() when CAMERA_CREDENTIALS_KEY
+// is configured. The key is held in memory only — never persisted.
+func (db *DB) SetCredentialsKey(key []byte) {
+	db.credentialsKey = key
+}
+
+// encryptCred returns the at-rest form of a camera credential. No key
+// configured, empty value, or already-encrypted value → returned unchanged
+// (so the field stays plaintext-compatible on deployments without a key, and
+// re-encryption is idempotent). P1-A-05.
+func (db *DB) encryptCred(plaintext string) (string, error) {
+	if db.credentialsKey == nil || plaintext == "" || crypto.IsEncrypted(plaintext) {
+		return plaintext, nil
+	}
+	return crypto.EncryptCredential(plaintext, db.credentialsKey)
+}
+
+// decryptCred reverses encryptCred for the read path so ONVIF/RTSP consumers
+// stay plaintext-facing. Tolerant: no key or a legacy plaintext row → returned
+// as-is; a decrypt failure (wrong key / tampered) → empty so auth fails closed
+// rather than leaking ciphertext as a password.
+func (db *DB) decryptCred(stored string) string {
+	if db.credentialsKey == nil || !crypto.IsEncrypted(stored) {
+		return stored
+	}
+	pt, err := crypto.DecryptCredential(stored, db.credentialsKey)
+	if err != nil {
+		return ""
+	}
+	return pt
 }
 
 // New creates a new database connection pool
@@ -82,6 +117,12 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 	if c.SenseWebhookToken != "" {
 		senseToken = c.SenseWebhookToken
 	}
+	// P1-A-05: encrypt the camera password at rest. No-op when no key is
+	// configured. The in-memory c.Password is left plaintext for the caller.
+	storedPassword, encErr := db.encryptCred(c.Password)
+	if encErr != nil {
+		return encErr
+	}
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO cameras (id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
@@ -90,7 +131,7 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 			device_class, sense_webhook_token,
 			created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
-		c.ID, c.Name, c.OnvifAddress, c.Username, c.Password, c.RTSPUri, c.SubStreamUri,
+		c.ID, c.Name, c.OnvifAddress, c.Username, storedPassword, c.RTSPUri, c.SubStreamUri,
 		c.RetentionDays, c.Recording, c.RecordingMode, c.PreBufferSec, c.PostBufferSec, c.RecordingTriggers,
 		c.EventsEnabled, c.AudioEnabled, c.CameraGroup, c.Schedule, c.PrivacyMask,
 		c.Status, c.ProfileToken, c.HasPTZ, c.Manufacturer, c.Model, c.Firmware,
@@ -100,7 +141,9 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 	return err
 }
 
-// GetCamera retrieves a single camera by ID
+// GetCamera retrieves a single live camera by ID.
+// Returns nil (no error) for soft-deleted cameras — callers treat that as 404.
+// Admin paths that need to see deleted cameras must query the base table directly.
 func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	c := &Camera{}
 	var senseToken *string
@@ -113,7 +156,7 @@ func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
 			created_at, updated_at
-		FROM cameras WHERE id = $1`, id,
+		FROM cameras_active WHERE id = $1`, id,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
@@ -126,10 +169,41 @@ func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 	return c, err
 }
 
-// ListCameras retrieves all cameras
+// GetCameraIncludeDeleted retrieves a camera by ID regardless of soft-delete status.
+// Only for admin include_deleted paths — normal reads use GetCamera.
+func (db *DB) GetCameraIncludeDeleted(ctx context.Context, id uuid.UUID) (*Camera, error) {
+	c := &Camera{}
+	var senseToken *string
+	err := db.Pool.QueryRow(ctx, `
+		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
+			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
+			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
+			status, profile_token, has_ptz, manufacturer, model, firmware,
+			COALESCE(site_id, ''),
+			COALESCE(device_class, 'continuous'),
+			sense_webhook_token,
+			created_at, updated_at, deleted_at
+		FROM cameras WHERE id = $1`, id,
+	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
+		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
+		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
+		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model,
+		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt)
+	if senseToken != nil {
+		c.SenseWebhookToken = *senseToken
+	}
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05
+	return c, err
+}
+
+// ListCameras retrieves all live cameras (deleted_at IS NULL).
 func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
@@ -140,7 +214,7 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
 			created_at, updated_at
-		FROM cameras ORDER BY name`)
+		FROM cameras_active ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -163,14 +237,58 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 		if senseToken != nil {
 			c.SenseWebhookToken = *senseToken
 		}
+		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 		cameras = append(cameras, c)
 	}
 	return cameras, nil
 }
 
-// GetCameraBySenseToken looks up a camera by its inbound webhook token.
+// ListCamerasIncludeDeleted returns all cameras including soft-deleted ones.
+// Admin-only; tenant scope is NOT applied (global list). The deleted_at
+// field is populated for soft-deleted rows.
+func (db *DB) ListCamerasIncludeDeleted(ctx context.Context) ([]Camera, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
+			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
+			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
+			status, profile_token, has_ptz, manufacturer, model, firmware,
+			COALESCE(site_id, ''),
+			COALESCE(device_class, 'continuous'),
+			sense_webhook_token,
+			created_at, updated_at, deleted_at
+		FROM cameras ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cameras []Camera
+	for rows.Next() {
+		var c Camera
+		var senseToken *string
+		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri,
+			&c.SubStreamUri, &c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec,
+			&c.PostBufferSec, &c.RecordingTriggers,
+			&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
+			&c.Status, &c.ProfileToken, &c.HasPTZ,
+			&c.Manufacturer, &c.Model, &c.Firmware, &c.SiteID,
+			&c.DeviceClass, &senseToken,
+			&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
+			return nil, err
+		}
+		if senseToken != nil {
+			c.SenseWebhookToken = *senseToken
+		}
+		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
+		cameras = append(cameras, c)
+	}
+	return cameras, nil
+}
+
+// GetCameraBySenseToken looks up a live camera by its inbound webhook token.
 // Returns nil (no error) if no camera matches — callers should treat
-// that as auth failure on the webhook endpoint.
+// that as auth failure on the webhook endpoint. Soft-deleted cameras do not
+// receive events (their token slot is freed by the partial unique index).
 func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera, error) {
 	if token == "" {
 		return nil, nil
@@ -186,7 +304,7 @@ func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera,
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
 			created_at, updated_at
-		FROM cameras WHERE sense_webhook_token = $1`, token,
+		FROM cameras_active WHERE sense_webhook_token = $1`, token,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
@@ -198,6 +316,7 @@ func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera,
 	if senseToken != nil {
 		c.SenseWebhookToken = *senseToken
 	}
+	c.Password = db.decryptCred(c.Password) // P1-A-05
 	return c, err
 }
 
@@ -320,10 +439,59 @@ func (db *DB) UpdateCameraRTSP(ctx context.Context, id uuid.UUID, rtspUri, subSt
 	return err
 }
 
-// DeleteCamera removes a camera and all associated data
-func (db *DB) DeleteCamera(ctx context.Context, id uuid.UUID) error {
-	_, err := db.Pool.Exec(ctx, "DELETE FROM cameras WHERE id = $1", id)
-	return err
+// SoftDeleteCamera marks a camera and its dependent entities (ppe_zones,
+// compliance_rules, vca_rules) as deleted in a single transaction.
+// Hard FK ON DELETE CASCADE actions do NOT fire — the base-table row persists
+// with deleted_at set, preserving historical references in segments, events,
+// audit logs, etc. (the courtroom-verifiability principle).
+func (db *DB) SoftDeleteCamera(ctx context.Context, id uuid.UUID) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteCamera begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	now := time.Now().UTC()
+
+	// Cascade: compliance_rules scoped to this camera only.
+	_, err = tx.Exec(ctx,
+		`UPDATE compliance_rules SET deleted_at=$1
+		 WHERE camera_id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteCamera cascade compliance_rules: %w", err)
+	}
+
+	// Cascade: ppe_zones bound to this camera.
+	_, err = tx.Exec(ctx,
+		`UPDATE ppe_zones SET deleted_at=$1
+		 WHERE camera_id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteCamera cascade ppe_zones: %w", err)
+	}
+
+	// Cascade: vca_rules bound to this camera.
+	_, err = tx.Exec(ctx,
+		`UPDATE vca_rules SET deleted_at=$1
+		 WHERE camera_id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteCamera cascade vca_rules: %w", err)
+	}
+
+	// Soft-delete the camera itself.
+	tag, err := tx.Exec(ctx,
+		`UPDATE cameras SET deleted_at=$1 WHERE id=$2 AND deleted_at IS NULL`,
+		now, id)
+	if err != nil {
+		return fmt.Errorf("SoftDeleteCamera: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil // already deleted or not found — idempotent
+	}
+
+	return tx.Commit(ctx)
 }
 
 // ============================================================
@@ -334,7 +502,7 @@ func (db *DB) ListVCARules(ctx context.Context, cameraID uuid.UUID) ([]VCARule, 
 	rows, err := db.Pool.Query(ctx,
 		`SELECT id, camera_id, rule_type, name, enabled, sensitivity, region, direction,
 		        threshold_sec, schedule, actions, synced, sync_error, created_at, updated_at
-		 FROM vca_rules WHERE camera_id = $1 ORDER BY created_at`, cameraID)
+		 FROM vca_rules_active WHERE camera_id = $1 ORDER BY created_at`, cameraID)
 	if err != nil {
 		return nil, err
 	}
@@ -406,8 +574,18 @@ func (db *DB) UpdateVCARule(ctx context.Context, id uuid.UUID, c *VCARuleCreate)
 	return err
 }
 
+// DeleteVCARule performs a hard delete (retained for internal use).
+// API handlers use SoftDeleteVCARule.
 func (db *DB) DeleteVCARule(ctx context.Context, id uuid.UUID) error {
 	_, err := db.Pool.Exec(ctx, "DELETE FROM vca_rules WHERE id = $1", id)
+	return err
+}
+
+// SoftDeleteVCARule marks a single VCA rule as deleted.
+// Returns nil if the row was not found or already deleted (idempotent).
+func (db *DB) SoftDeleteVCARule(ctx context.Context, id uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE vca_rules SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, id)
 	return err
 }
 
@@ -422,19 +600,37 @@ func (db *DB) UpdateVCARuleSync(ctx context.Context, id uuid.UUID, synced bool, 
 // Segment Operations
 // ============================================================
 
-// InsertSegment records a new video segment
+// InsertSegment records a new video segment. video_codec is written when
+// non-empty; an empty VideoCodec field results in a NULL column value, which
+// the serve handler later replaces via lazy probe-on-first-request.
 func (db *DB) InsertSegment(ctx context.Context, s *Segment) error {
+	var codec interface{}
+	if s.VideoCodec != "" {
+		codec = s.VideoCodec
+	}
 	_, err := db.Pool.Exec(ctx, `
-		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio)
+		INSERT INTO segments (camera_id, start_time, end_time, file_path, file_size, duration_ms, has_audio, video_codec)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		s.CameraID, s.StartTime, s.EndTime, s.FilePath, s.FileSize, s.DurationMs, s.HasAudio, codec)
+	return err
+}
+
+// UpdateSegmentVideoCodec backfills the video_codec column for an existing
+// segment row. Used by the serve handler when it lazy-probes a segment that
+// was recorded before migration 0002 landed. No-op (no error) if the row
+// doesn't exist — that race is harmless; the next playback request will
+// re-probe.
+func (db *DB) UpdateSegmentVideoCodec(ctx context.Context, segmentID int64, codec string) error {
+	_, err := db.Pool.Exec(ctx, `
+		UPDATE segments SET video_codec = $1 WHERE id = $2 AND video_codec IS NULL`,
+		codec, segmentID)
 	return err
 }
 
 // GetSegments returns segments for a camera within a time range
 func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end time.Time) ([]Segment, error) {
 	rows, err := db.Pool.Query(ctx, `
-		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false)
+		SELECT id, camera_id, start_time, end_time, file_path, file_size, duration_ms, COALESCE(has_audio, false), COALESCE(video_codec, '')
 		FROM segments
 		WHERE camera_id = $1 AND start_time <= $2 AND end_time >= $3
 		ORDER BY start_time ASC`, cameraID, end, start)
@@ -446,7 +642,7 @@ func (db *DB) GetSegments(ctx context.Context, cameraID uuid.UUID, start, end ti
 	var segments []Segment
 	for rows.Next() {
 		var s Segment
-		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio); err != nil {
+		if err := rows.Scan(&s.ID, &s.CameraID, &s.StartTime, &s.EndTime, &s.FilePath, &s.FileSize, &s.DurationMs, &s.HasAudio, &s.VideoCodec); err != nil {
 			return nil, err
 		}
 		segments = append(segments, s)
@@ -646,7 +842,7 @@ func (db *DB) QueryEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 		}
 		where = append(where, fmt.Sprintf("e.camera_id = ANY($%d)", argN))
 		args = append(args, q.CameraIDs)
-		argN++
+		// argN not incremented: this is the last placeholder in this function.
 	}
 
 	limit := q.Limit
@@ -688,25 +884,18 @@ func (db *DB) QueryEvents(ctx context.Context, q EventQuery) ([]Event, error) {
 		}
 		e.SegmentID = segID
 		if segPath != nil && segStart != nil {
-			e.PlaybackURL = buildPlaybackURL(e.CameraID.String(), *segPath, *segStart, e.EventTime)
+			// Surface the raw segment info on the Event struct. The API
+			// layer (which has the caller's claims + JWT secret) mints
+			// the signed /media/v1/<token>#t=... URL and writes it back
+			// into PlaybackURL before the response is encoded. This
+			// keeps URL-signing out of the DB layer (it doesn't know
+			// about the auth package and shouldn't).
+			e.SegmentFilePath = *segPath
+			e.SegmentStart = *segStart
 		}
 		events = append(events, e)
 	}
 	return events, nil
-}
-
-// buildPlaybackURL returns a /recordings/... URL for a segment with a #t= seek
-// offset positioned at the event moment. segFilePath is the absolute filesystem
-// path the segmenter wrote (e.g. D:/recordings/<camera>/seg_…mp4); we drop the
-// directory and prefix with /recordings/<camera>/ so the static file server
-// can serve it.
-func buildPlaybackURL(cameraID, segFilePath string, segStart, eventTime time.Time) string {
-	base := filepath.Base(segFilePath)
-	offset := eventTime.Sub(segStart).Seconds()
-	if offset < 0 || offset > 7200 {
-		return fmt.Sprintf("/recordings/%s/%s", cameraID, base)
-	}
-	return fmt.Sprintf("/recordings/%s/%s#t=%.1f", cameraID, base, offset)
 }
 
 // GetTimelineBuckets returns aggregated event counts per time interval for the timeline UI
@@ -718,7 +907,7 @@ func (db *DB) GetTimelineBuckets(ctx context.Context, cameraIDs []uuid.UUID, sta
 	if len(cameraIDs) == 1 {
 		where = append(where, fmt.Sprintf("camera_id = $%d", argN))
 		args = append(args, cameraIDs[0])
-		argN++
+		// argN not incremented: no further placeholders in this branch.
 	} else if len(cameraIDs) > 1 {
 		placeholders := make([]string, len(cameraIDs))
 		for i, id := range cameraIDs {
@@ -816,7 +1005,7 @@ func (db *DB) UpdateExportStatus(ctx context.Context, id uuid.UUID, status, file
 // The claim uses UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED)
 // so multiple workers (today: one; post-Phase-2: N) can poll concurrently
 // without collisions. Each row is visible to exactly one SELECT at a time;
-// losers skip that row and move on. Portable Postgres 9.5+ behaviour.
+// losers skip that row and move on. Portable Postgres 9.5+ behavior.
 //
 // started_at is set to NOW() so RequeueStuckExports can later identify
 // jobs that a crashed worker left in processing.
@@ -925,14 +1114,94 @@ func (db *DB) CreateUser(ctx context.Context, c *UserCreate, passwordHash string
 	return u, nil
 }
 
-// GetUserByUsernameOrEmail retrieves a user by username or email (case-insensitive email match)
+// GetOrCreateUserByEmail looks up a user by case-insensitive email; if not
+// found, creates a new user with the given role. Used by the reverse-proxy
+// header-trust SSO middleware: oauth2-proxy authenticates the user against
+// Google, NPM forwards X-Forwarded-Email, and on first sight we materialize
+// a row so downstream RBAC has something to attach permissions to.
+//
+// Username is derived from the email's local-part with the at-sign and
+// anything after stripped (caleb@example.com → caleb). DisplayName mirrors
+// it. Password hash is set to "!sso!" — a sentinel that can never validate
+// against bcrypt, so the row exists for ID/role purposes but cannot be used
+// for password login.
+//
+// Trap 2 (soft-delete): if the email matches a soft-deleted user, we
+// RESURRECT that row (clear deleted_at, reset role) rather than creating a
+// duplicate. Without this, the partial unique index on (username) WHERE
+// deleted_at IS NULL would reject the new INSERT and SSO login would 500.
+// Resurrection also preserves the user's original UUID — the audit trail
+// already references it.
+func (db *DB) GetOrCreateUserByEmail(ctx context.Context, email, role string) (*User, error) {
+	if email == "" {
+		return nil, nil
+	}
+
+	// First: check for a live user (active view).
+	if u, _ := db.GetUserByUsernameOrEmail(ctx, email); u != nil {
+		return u, nil
+	}
+
+	// Second: check for a soft-deleted user by email (base table, not active view).
+	// If found, resurrect — clear deleted_at and update role.
+	var deleted User
+	var siteIDsJSON []byte
+	var orgID *string
+	err := db.Pool.QueryRow(ctx,
+		`SELECT id, username, password_hash, role, display_name, email, phone, organization_id, assigned_site_ids, created_at, updated_at
+		 FROM users WHERE email != '' AND lower(email)=lower($1) AND deleted_at IS NOT NULL LIMIT 1`,
+		email).Scan(&deleted.ID, &deleted.Username, &deleted.PasswordHash, &deleted.Role, &deleted.DisplayName,
+		&deleted.Email, &deleted.Phone, &orgID, &siteIDsJSON, &deleted.CreatedAt, &deleted.UpdatedAt)
+	if err == nil {
+		// Resurrection: clear deleted_at, update role if supplied.
+		if orgID != nil {
+			deleted.OrganizationID = *orgID
+		}
+		json.Unmarshal(siteIDsJSON, &deleted.AssignedSiteIDs)
+		if deleted.AssignedSiteIDs == nil {
+			deleted.AssignedSiteIDs = []string{}
+		}
+		_, resErr := db.Pool.Exec(ctx,
+			`UPDATE users SET deleted_at=NULL, role=$2, updated_at=NOW() WHERE id=$1`,
+			deleted.ID, role)
+		if resErr != nil {
+			return nil, fmt.Errorf("GetOrCreateUserByEmail resurrect: %w", resErr)
+		}
+		deleted.Role = role
+		deleted.DeletedAt = nil
+		return &deleted, nil
+	}
+
+	// Third: no user at all — create fresh.
+	localPart := email
+	if i := strings.Index(email, "@"); i > 0 {
+		localPart = email[:i]
+	}
+	username := localPart
+	for tries := 0; tries < 5; tries++ {
+		if existing, _ := db.GetUserByUsernameOrEmail(ctx, username); existing == nil {
+			break
+		}
+		username = fmt.Sprintf("%s.%d", localPart, tries+1)
+	}
+	c := &UserCreate{
+		Username:    username,
+		Role:        role,
+		DisplayName: localPart,
+		Email:       email,
+	}
+	return db.CreateUser(ctx, c, "!sso!")
+}
+
+// GetUserByUsernameOrEmail retrieves a live user by username or email
+// (case-insensitive email match). Soft-deleted users are excluded.
 func (db *DB) GetUserByUsernameOrEmail(ctx context.Context, identifier string) (*User, error) {
 	var u User
 	var siteIDsJSON []byte
 	var orgID *string
 	err := db.Pool.QueryRow(ctx,
 		`SELECT id, username, password_hash, role, display_name, email, phone, organization_id, assigned_site_ids, created_at, updated_at
-		 FROM users WHERE username=$1 OR (email != '' AND lower(email)=lower($1)) LIMIT 1`,
+		 FROM users_active WHERE username=$1 OR (email != '' AND lower(email)=lower($1)) LIMIT 1`,
 		identifier).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &orgID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, nil // not found → nil
@@ -947,14 +1216,14 @@ func (db *DB) GetUserByUsernameOrEmail(ctx context.Context, identifier string) (
 	return &u, nil
 }
 
-// GetUserByID retrieves a user by UUID
+// GetUserByID retrieves a live user by UUID. Returns pgx.ErrNoRows for soft-deleted.
 func (db *DB) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	var u User
 	var siteIDsJSON []byte
 	var orgID *string
 	err := db.Pool.QueryRow(ctx,
 		`SELECT id, username, password_hash, role, display_name, email, phone, organization_id, assigned_site_ids, created_at, updated_at
-		 FROM users WHERE id=$1`, id).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &orgID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt)
+		 FROM users_active WHERE id=$1`, id).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &orgID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -968,18 +1237,19 @@ func (db *DB) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	return &u, nil
 }
 
-// UserExists returns true if any user row exists in the table
+// UserExists returns true if any live (non-deleted) user row exists.
+// Used for bootstrap detection (first-run setup). Soft-deleted rows do not count.
 func (db *DB) UserExists(ctx context.Context) (bool, error) {
 	var count int
-	err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM users`).Scan(&count)
+	err := db.Pool.QueryRow(ctx, `SELECT COUNT(*) FROM users_active`).Scan(&count)
 	return count > 0, err
 }
 
-// ListUsers returns all users without password hashes
+// ListUsers returns all live (non-deleted) users without password hashes.
 func (db *DB) ListUsers(ctx context.Context) ([]UserPublic, error) {
 	rows, err := db.Pool.Query(ctx,
 		`SELECT id, username, role, display_name, email, phone, COALESCE(organization_id, ''), assigned_site_ids, created_at, updated_at
-		 FROM users ORDER BY role, username ASC`)
+		 FROM users_active ORDER BY role, username ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1004,9 +1274,47 @@ func (db *DB) ListUsers(ctx context.Context) ([]UserPublic, error) {
 	return users, nil
 }
 
+// ListUsersIncludeDeleted returns all users including soft-deleted ones.
+// Admin-only. The deleted_at field is populated for soft-deleted rows.
+func (db *DB) ListUsersIncludeDeleted(ctx context.Context) ([]UserPublic, error) {
+	rows, err := db.Pool.Query(ctx,
+		`SELECT id, username, role, display_name, email, phone, COALESCE(organization_id, ''), assigned_site_ids, created_at, updated_at, deleted_at
+		 FROM users ORDER BY role, username ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []UserPublic
+	for rows.Next() {
+		var u UserPublic
+		var siteIDsJSON []byte
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.DisplayName, &u.Email, &u.Phone, &u.OrganizationID, &siteIDsJSON, &u.CreatedAt, &u.UpdatedAt, &u.DeletedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal(siteIDsJSON, &u.AssignedSiteIDs)
+		if u.AssignedSiteIDs == nil {
+			u.AssignedSiteIDs = []string{}
+		}
+		users = append(users, u)
+	}
+	if users == nil {
+		users = []UserPublic{}
+	}
+	return users, nil
+}
+
 // DeleteUser removes a user by ID
 func (db *DB) DeleteUser(ctx context.Context, id uuid.UUID) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	return err
+}
+
+// SoftDeleteUser marks a user as deleted. Does NOT cascade to org or sites
+// (users outlive org deletions — decision locked 2026-05-27).
+func (db *DB) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE users SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, id)
 	return err
 }
 
@@ -1455,27 +1763,30 @@ func (db *DB) CreateSpeaker(ctx context.Context, s *Speaker) error {
 	return err
 }
 
-// GetSpeaker retrieves a speaker by ID
+// GetSpeaker retrieves a live speaker by ID. Returns nil for soft-deleted speakers.
 func (db *DB) GetSpeaker(ctx context.Context, id uuid.UUID) (*Speaker, error) {
 	s := &Speaker{}
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, zone,
 			status, manufacturer, model, created_at, updated_at
-		FROM speakers WHERE id = $1`, id,
+		FROM speakers_active WHERE id = $1`, id,
 	).Scan(&s.ID, &s.Name, &s.OnvifAddress, &s.Username, &s.Password, &s.RTSPUri, &s.Zone,
 		&s.Status, &s.Manufacturer, &s.Model, &s.CreatedAt, &s.UpdatedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// ListSpeakers returns all configured speakers
+// ListSpeakers returns all live (non-deleted) configured speakers.
 func (db *DB) ListSpeakers(ctx context.Context) ([]Speaker, error) {
 	rows, err := db.Pool.Query(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, zone,
 			status, manufacturer, model, created_at, updated_at
-		FROM speakers ORDER BY name`)
+		FROM speakers_active ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,9 +1804,34 @@ func (db *DB) ListSpeakers(ctx context.Context) ([]Speaker, error) {
 	return speakers, rows.Err()
 }
 
-// DeleteSpeaker removes a speaker by ID
-func (db *DB) DeleteSpeaker(ctx context.Context, id uuid.UUID) error {
-	_, err := db.Pool.Exec(ctx, `DELETE FROM speakers WHERE id = $1`, id)
+// ListSpeakersIncludeDeleted returns all speakers including soft-deleted ones.
+// Admin-only. The deleted_at field is populated for soft-deleted rows.
+func (db *DB) ListSpeakersIncludeDeleted(ctx context.Context) ([]Speaker, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT id, name, onvif_address, username, password, rtsp_uri, zone,
+			status, manufacturer, model, created_at, updated_at, deleted_at
+		FROM speakers ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var speakers []Speaker
+	for rows.Next() {
+		var s Speaker
+		if err := rows.Scan(&s.ID, &s.Name, &s.OnvifAddress, &s.Username, &s.Password, &s.RTSPUri,
+			&s.Zone, &s.Status, &s.Manufacturer, &s.Model, &s.CreatedAt, &s.UpdatedAt, &s.DeletedAt); err != nil {
+			return nil, err
+		}
+		speakers = append(speakers, s)
+	}
+	return speakers, rows.Err()
+}
+
+// SoftDeleteSpeaker marks a speaker as deleted. Idempotent.
+func (db *DB) SoftDeleteSpeaker(ctx context.Context, id uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE speakers SET deleted_at=NOW() WHERE id=$1 AND deleted_at IS NULL`, id)
 	return err
 }
 

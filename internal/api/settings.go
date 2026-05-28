@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HandleGetSettings returns the current system settings (any authenticated user)

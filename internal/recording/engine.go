@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
-	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -15,17 +15,18 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	appmetrics "ironsight/internal/metrics"
 )
 
 // Engine manages FFmpeg recording processes for all cameras
 type Engine struct {
-	cfg            *config.Config
-	db             *database.DB
-	recorders      map[uuid.UUID]*Recorder
-	gortRecorders  map[uuid.UUID]*GortRecorder // pure-Go recorders (opt-in per camera)
-	mu             sync.RWMutex
+	cfg           *config.Config
+	db            *database.DB
+	recorders     map[uuid.UUID]*Recorder
+	gortRecorders map[uuid.UUID]*GortRecorder // pure-Go recorders (opt-in per camera)
+	mu            sync.RWMutex
 }
 
 // Recorder manages a single camera's FFmpeg recording process
@@ -65,18 +66,17 @@ func NewEngine(cfg *config.Config, db *database.DB) *Engine {
 }
 
 // useGortRecorder returns true if the given camera should use the pure-Go
-// recorder instead of FFmpeg. Set via env var GORT_CAMERAS as a comma-separated
-// list of full UUIDs or 8-char prefixes. Example:
+// recorder instead of FFmpeg. The set comes from cfg.GortCameras (env var
+// GORT_CAMERAS, parsed at config-load time into a slice of full UUIDs or
+// 8-char prefixes). Example env value:
 //
 //	GORT_CAMERAS=9ca4bcfd,6884a556
-func useGortRecorder(cameraID uuid.UUID) bool {
-	env := os.Getenv("GORT_CAMERAS")
-	if env == "" {
+func useGortRecorder(gortCameras []string, cameraID uuid.UUID) bool {
+	if len(gortCameras) == 0 {
 		return false
 	}
 	id := cameraID.String()
-	for _, raw := range strings.Split(env, ",") {
-		tok := strings.TrimSpace(raw)
+	for _, tok := range gortCameras {
 		if tok == "" {
 			continue
 		}
@@ -113,13 +113,16 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 
 	// Opt-in: use the pure-Go gortsplib recorder for cameras listed in GORT_CAMERAS.
 	// Skips FFmpeg entirely for that camera (no HLS from this engine either).
-	if useGortRecorder(cameraID) {
+	if useGortRecorder(e.cfg.GortCameras, cameraID) {
 		gr := NewGortRecorder(cameraID, cameraName, rtspURI, outputDir, e.db, time.Duration(e.cfg.SegmentDuration)*time.Second)
 		if err := gr.Start(); err != nil {
 			return err
 		}
 		e.gortRecorders[cameraID] = gr
 		log.Printf("[REC] Camera %s using Go recorder (gortsplib)", cameraName)
+		// P1-C-03: update gauges after a Go recorder starts.
+		appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+		appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 		return nil
 	}
 
@@ -180,6 +183,9 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 
 	e.recorders[cameraID] = recorder
 	log.Printf("[REC] Started recording for camera %s (%s) mode=%s", cameraName, cameraID, mode)
+	// P1-C-03: update Prometheus gauges after a new FFmpeg recorder starts.
+	appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+	appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 	return nil
 }
 
@@ -192,6 +198,9 @@ func (e *Engine) StopRecording(cameraID uuid.UUID) error {
 		gr.Stop()
 		delete(e.gortRecorders, cameraID)
 		log.Printf("[REC] Stopped Go recording for camera %s", cameraID)
+		// P1-C-03: update Prometheus gauges after a Go recorder stops.
+		appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+		appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 		return nil
 	}
 	recorder, ok := e.recorders[cameraID]
@@ -202,6 +211,9 @@ func (e *Engine) StopRecording(cameraID uuid.UUID) error {
 	recorder.Stop()
 	delete(e.recorders, cameraID)
 	log.Printf("[REC] Stopped recording for camera %s", cameraID)
+	// P1-C-03: update Prometheus gauges after an FFmpeg recorder stops.
+	appmetrics.SetActiveCameras(len(e.recorders) + len(e.gortRecorders))
+	appmetrics.SetFFmpegSubprocesses(len(e.recorders))
 	return nil
 }
 
@@ -218,6 +230,9 @@ func (e *Engine) StopAll() {
 		gr.Stop()
 		delete(e.gortRecorders, id)
 	}
+	// P1-C-03: zero out Prometheus gauges — no cameras are recording.
+	appmetrics.SetActiveCameras(0)
+	appmetrics.SetFFmpegSubprocesses(0)
 	log.Println("[REC] All recordings stopped")
 }
 
@@ -326,8 +341,14 @@ func (r *Recorder) recordLoop(ctx context.Context) {
 		err := r.runFFmpeg(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return // context cancelled, expected shutdown
+				return // context canceled, expected shutdown
 			}
+			// P1-C-04: emit a discrete app alert for each non-expected FFmpeg
+			// crash so alertmanager can surface recurring subprocess failures
+			// even when the process is auto-restarting. The label is bounded
+			// (alert name is a constant string; camera name is not a label).
+			appmetrics.SetCustomAlert("ffmpeg_subprocess_crash", "warning",
+				"FFmpeg exited for camera "+r.cameraName+": "+err.Error())
 			// Detect fast crashes (< 5s) — likely bandwidth/connection errors.
 			// After 3 fast crashes, drop sub stream to reduce RTSP connections.
 			if time.Since(startTime) < 5*time.Second {
@@ -525,6 +546,19 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		}
 	}
 
+	// LOCAL-09: probe the source codec once so we can conditionally rewrite
+	// the codec_tag from `hev1` (what Milesight emits) to `hvc1` (what Safari
+	// recognises) for HEVC sources. MUST NOT pass `-tag:v hvc1` on H.264
+	// streams — the mp4 box would say hvc1 over actual H.264 bytes, which
+	// breaks playback in every browser. Empty/unknown codec → no override
+	// (fail-safe: keep whatever ffmpeg picks by default, which is correct
+	// for the source codec).
+	hvc1Tag := []string{}
+	switch probeStreamVideoCodec(r.ffmpegPath, r.rtspURI) {
+	case "hevc", "h265":
+		hvc1Tag = []string{"-tag:v", "hvc1"}
+	}
+
 	// 1) HLS live stream output
 	if r.subStreamURI != "" {
 		// Dual stream HLS
@@ -532,6 +566,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0", // Main stream video
 			"-map", "1:v:0", // Sub stream video
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-f", "hls",
 			"-hls_time", "1",
 			"-hls_list_size", "5",
@@ -546,6 +583,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		args = append(args,
 			"-map", "0:v:0",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-f", "hls",
 			"-hls_time", "1",
 			"-hls_list_size", "5",
@@ -580,6 +620,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-c:a", audioCodec,
 			"-f", "segment",
 			"-segment_time", "2",
@@ -600,6 +643,9 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 			"-map", "0:v:0",
 			"-map", "0:a:0?",
 			"-c:v", "copy",
+		)
+		args = append(args, hvc1Tag...)
+		args = append(args,
 			"-c:a", audioCodec,
 			"-f", "segment",
 			"-segment_time", fmt.Sprintf("%d", r.segmentDur),
@@ -614,6 +660,15 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	}
 
 	r.cmd = exec.CommandContext(ctx, r.ffmpegPath, args...)
+	// P1-C-05: force the ffmpeg subprocess to interpret strftime in UTC
+	// so segment filenames (`seg_%Y%m%d_%H%M%S.mp4`, `ring_*` etc.) are
+	// always in UTC regardless of the host timezone. Without TZ=UTC, a
+	// host in CDT writes filenames in CDT, and parseSegmentTimestamp
+	// (which now parses in UTC, also P1-C-05) would shift the segment
+	// boundaries by 5 hours every spring/fall on DST flips. Existing
+	// pre-fix filenames stay accessible because parseSegmentTimestamp's
+	// behaviour for already-recorded files isn't going to be re-run.
+	r.cmd.Env = append(os.Environ(), "TZ=UTC")
 	r.cmd.Stdout = nil
 	// Capture FFmpeg stderr to a per-camera file (truncated each run) so we can
 	// surface the full startup output on crash. This replaces the discarded
@@ -625,7 +680,7 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		// Close the file when FFmpeg exits OR when we leave this function
 		// for any other reason (Wait returns, stall watchdog kills FFmpeg,
 		// panic). The previous fire-and-forget goroutine could leak the FD
-		// across many crash/restart cycles before runCtx finally cancelled.
+		// across many crash/restart cycles before runCtx finally canceled.
 		// sync.Once-style: defer and Done channel — whichever fires first.
 		stderrFile := f
 		defer func() {
@@ -746,10 +801,37 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					continue
 				}
 
-				filePath := filepath.Join(r.outputDir, entry.Name())
+				// LOCAL-10: only index files that match the segment-output
+				// pattern this recorder is writing — seg_*.mp4 (continuous
+				// mode) or ring_*.mp4 (event mode). The previous loop
+				// also picked up `ffmpeg_stderr.log` (4-9 KB, passes the
+				// size gate) and indexed it as a "segment". That row then
+				// flows through the timeline endpoint and the player tries
+				// to render the text log as video. Filter at the source.
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".mp4") || (!strings.HasPrefix(name, "seg_") && !strings.HasPrefix(name, "ring_")) {
+					continue
+				}
+
+				filePath := filepath.Join(r.outputDir, name)
 				info, err := entry.Info()
 				if err != nil || info.Size() < 1000 {
 					continue // Skip tiny/incomplete files
+				}
+
+				// LOCAL-10: only process files this recorder run produced.
+				// Files older than startedAt are already in the DB from
+				// prior runs (the segments hypertable has no UNIQUE
+				// constraint on (camera_id, file_path) yet, so duplicate
+				// InsertSegment calls on every restart bloat the table by
+				// ~9.5K rows per camera per startup — and on 27M-row
+				// tables each InsertSegment is slow enough that the
+				// rescan never finishes before the next ffmpeg stall +
+				// restart, blocking fresh segments from being indexed
+				// at all). Mark as seen and skip entirely.
+				if info.ModTime().Before(startedAt) {
+					seen[name] = true
+					continue
 				}
 
 				// Only do the expensive 2-second stability check for files that
@@ -771,6 +853,32 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					startTime = info.ModTime().Add(-time.Duration(r.segmentDur) * time.Second)
 				}
 
+				// Probe the codec so the recorded-playback serve handler can
+				// decide pass-through vs transcode without ffprobing every
+				// segment on every request.
+				//
+				// Scope-limited to segments produced by THIS recorder run
+				// (mtime after startedAt). On startup, watchSegments re-
+				// scans every existing file in the camera dir — for a
+				// 9.5 K-file backlog at ~100 ms/probe that's a 16-minute
+				// stall before any fresh segment gets indexed, which we
+				// can't accept. Old segments inherit a NULL `video_codec`
+				// and get lazy-probed on first playback request via the
+				// /media/v1 handler (which writes back via
+				// db.UpdateSegmentVideoCodec).
+				//
+				// Probe failure on a fresh segment is non-fatal: leave
+				// VideoCodec empty and the serve handler will lazy-probe.
+				var videoCodec string
+				if info.ModTime().After(startedAt) {
+					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
+					if codecErr != nil {
+						log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
+					} else {
+						videoCodec = vc
+					}
+				}
+
 				segment := &database.Segment{
 					CameraID:   r.cameraID,
 					StartTime:  startTime,
@@ -779,6 +887,7 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					FileSize:   info.Size(),
 					DurationMs: r.segmentDur * 1000,
 					HasAudio:   r.hasAudio,
+					VideoCodec: videoCodec,
 				}
 
 				if err := r.db.InsertSegment(ctx, segment); err != nil {
@@ -789,6 +898,9 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					seen[entry.Name()] = true
 					continue
 				}
+
+				// P1-C-03: count segments written per camera for Prometheus.
+				appmetrics.IncSegmentsWritten(r.cameraID.String())
 
 				seen[entry.Name()] = true
 				// Only log new segments (created after this recorder started) to reduce noise
@@ -801,6 +913,23 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 }
 
 // parseSegmentTimestamp extracts time from filename like seg_20260219_140530.mp4
+//
+// P1-C-05: parses in UTC. The ffmpeg subprocess that wrote the
+// filename has `TZ=UTC` set in its env (see runFFmpeg), so the
+// strftime fields are UTC. Parsing the same string in time.Local
+// would silently shift segment boundaries by the host's UTC offset
+// — fine on UTC hosts, broken on US/Central, ambiguous across DST
+// boundaries. UTC everywhere removes the whole class of bugs.
+//
+// Filename-format change is intentionally only forward-looking:
+// pre-P1-C-05 segments were written in the host's local timezone,
+// so their filenames don't carry a TZ marker and a local-parse
+// would have produced their original wall-clock time. Operators
+// reviewing OLD segments by filename see a 5-hour offset until the
+// segments age out of retention (typically 14-30 days). That's
+// acceptable — the database stores start_time/end_time as
+// timestamptz which preserves the absolute instant regardless of
+// what timezone the filename was parsed in.
 func parseSegmentTimestamp(filename string) time.Time {
 	// Expected format: seg_YYYYMMDD_HHMMSS.mp4 (19 chars before the extension)
 	name := filepath.Base(filename)
@@ -809,8 +938,7 @@ func parseSegmentTimestamp(filename string) time.Time {
 	if len(stem) < 19 {
 		return time.Time{}
 	}
-	// Extract date/time parts using the system's local timezone (since FFmpeg strftime uses local time)
-	t, err := time.ParseInLocation("seg_20060102_150405", stem[:19], time.Local)
+	t, err := time.ParseInLocation("seg_20060102_150405", stem[:19], time.UTC)
 	if err != nil {
 		return time.Time{}
 	}
@@ -833,6 +961,62 @@ func (r *Recorder) ringBufferCleanup(ctx context.Context) {
 			r.clipWriter.CleanRingBuffer()
 		}
 	}
+}
+
+// probeStreamVideoCodec runs ffprobe on the RTSP URI and returns the
+// lowercase codec_name of the first video stream ("h264", "hevc", etc.).
+// Empty string on any error (network timeout, missing video stream,
+// ffprobe not available). Called once per FFmpeg run before constructing
+// args so we can conditionally apply `-tag:v hvc1` for HEVC sources only
+// — that tag MUST NOT be applied to H.264 streams (would write an mp4
+// with codec_tag=hvc1 over actual H.264 data, breaking the file).
+//
+// LOCAL-09: Milesight cameras emit HEVC with codec_tag `hev1` in the
+// RTSP stream, which `-c:v copy` carries through to the recorded mp4.
+// Safari only renders HEVC mp4s tagged `hvc1`. This probe lets us
+// rewrite the tag for HEVC sources without touching H.264 ones.
+func probeStreamVideoCodec(ffmpegPath, rtspURI string) string {
+	if rtspURI == "" {
+		return ""
+	}
+
+	ffprobePath := "ffprobe"
+	if ffmpegPath != "" && ffmpegPath != "ffmpeg" {
+		dir := filepath.Dir(ffmpegPath)
+		ffprobePath = filepath.Join(dir, "ffprobe")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// `-show_entries stream=codec_name` keeps the output tiny + parse-free:
+	// the entire stdout is the codec name (one per line if multiple video
+	// streams; we take the first non-empty line). Pinning `-select_streams v:0`
+	// to the first video stream matches what the recorder consumes via
+	// `-map 0:v:0`.
+	cmd := exec.CommandContext(ctx, ffprobePath,
+		"-v", "quiet",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		"-rtsp_transport", "tcp",
+		"-timeout", "5000000", // 5s in microseconds
+		rtspURI)
+
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// Output is the codec name (possibly with trailing newline). Lower-case
+	// for stable comparison; ffprobe emits lowercase by convention but the
+	// docs don't strictly guarantee it.
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(strings.ToLower(line))
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 // probeHasAudio runs ffprobe on the RTSP URI to detect whether an audio stream is present.

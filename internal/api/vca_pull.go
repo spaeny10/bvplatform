@@ -12,8 +12,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // Milesight's VCA GETs return polygon coordinates in a pixel space whose
@@ -318,11 +318,11 @@ func pullLineCross(ctx context.Context, client *onvif.Client, camID uuid.UUID) (
 		vcaEnvelope
 		LineCrossingSens  int `json:"lineCrossingSens"`
 		DetectionInfoList []struct {
-			LineIndex           int    `json:"lineIndex"`
-			LineCrossingEnable  int    `json:"lineCrossingEnable"`
-			Direction           int    `json:"direction"`
-			PolygonX            string `json:"polygonX"`
-			PolygonY            string `json:"polygonY"`
+			LineIndex          int    `json:"lineIndex"`
+			LineCrossingEnable int    `json:"lineCrossingEnable"`
+			Direction          int    `json:"direction"`
+			PolygonX           string `json:"polygonX"`
+			PolygonY           string `json:"polygonY"`
 		} `json:"detectionInfoList"`
 	}
 	if err := json.Unmarshal(raw, &payload); err != nil {

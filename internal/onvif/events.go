@@ -29,14 +29,14 @@ type EventEnricherFunc func(topic string, rawXML string) map[string]interface{}
 
 // EventSubscriber manages ONVIF event subscriptions for a camera
 type EventSubscriber struct {
-	client    *Client
-	cameraID  uuid.UUID
-	callback  EventCallback
-	stopCh    chan struct{}
-	running   bool
-	mu        sync.Mutex
-	Classify  EventClassifierFunc // optional: vendor-specific topic classifier
-	Enrich    EventEnricherFunc   // optional: vendor-specific metadata extractor
+	client   *Client
+	cameraID uuid.UUID
+	callback EventCallback
+	stopCh   chan struct{}
+	running  bool
+	mu       sync.Mutex
+	Classify EventClassifierFunc // optional: vendor-specific topic classifier
+	Enrich   EventEnricherFunc   // optional: vendor-specific metadata extractor
 }
 
 // InjectEvent allows external event sources (e.g. Milesight WebSocket) to fire
@@ -101,7 +101,7 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		return addr, time.Now().Add(subscriptionTTL), nil
 	}
 
-	// Initial subscription — retry until success or context cancelled.
+	// Initial subscription — retry until success or context canceled.
 	// When the camera reports its subscription cap is exhausted (typical
 	// on Milesight/Hikvision after stale subs leak across restarts) we
 	// back off much harder: retrying every 60s would just keep leaking
@@ -334,7 +334,17 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 			PullMessagesResponse struct {
 				NotificationMessage []struct {
 					Message struct {
-						InnerXML string `xml:",innerxml"`
+						// LOCAL-05: PropertyOperation is an attribute of the
+						// <tt:Message> element. ONVIF spec values are
+						// "Initialized" (subscription bootstrap snapshot —
+						// every renewal cycle redumps current rule state),
+						// "Changed" (state transition — the real events),
+						// and "Deleted" (rule removed). We filter
+						// Initialized+all-false-state messages downstream
+						// so subscription renewals don't pile rows of the
+						// no-event state into the events table.
+						PropertyOperation string `xml:"PropertyOperation,attr"`
+						InnerXML          string `xml:",innerxml"`
 					} `xml:"Message"`
 					Topic struct {
 						Value string `xml:",chardata"`
@@ -367,6 +377,7 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 
 		evt.Details["topic"] = topic
 		evt.Details["raw"] = msg.Message.InnerXML
+		evt.Details["property_operation"] = msg.Message.PropertyOperation
 
 		// Parse common data items from the message
 		parseDataItems(msg.Message.InnerXML, evt.Details)
@@ -378,12 +389,80 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 			}
 		}
 
+		// LOCAL-05: drop subscription-renewal snapshots. Every
+		// PullPoint subscription renewal triggers the camera to dump
+		// its current rule state via PropertyOperation="Initialized"
+		// messages. With 4 cameras × ~10 preconfigured Milesight VCA
+		// rules each, that's ~40 rows in the events table every
+		// renewal cycle (~267s on the Milesight panoramic), all
+		// representing "this rule is currently in the no-event
+		// state". They flood the events table without conveying any
+		// actual incident.
+		//
+		// Real state transitions arrive as PropertyOperation="Changed"
+		// and pass through unchanged. The narrow case we DO keep
+		// from Initialized: a message whose data items show an
+		// active state (e.g. IsHuman=true on a persistent alarm
+		// that was active when the subscription cycle restarted) —
+		// these are rare but real signals.
+		if isInitializedNoEventState(msg.Message.PropertyOperation, evt.Details) {
+			continue
+		}
+
 		if evt.Type != "" {
 			events = append(events, evt)
 		}
 	}
 
 	return events, nil
+}
+
+// isInitializedNoEventState returns true when the message is a
+// subscription-renewal snapshot that the camera emits to describe its
+// current rule state (PropertyOperation="Initialized") AND every
+// boolean-style data item is false-y. These are the high-volume
+// no-information messages that flood the events table on every
+// renewal cycle (LOCAL-05). Real state-transition events arrive as
+// PropertyOperation="Changed" and bypass this filter entirely.
+//
+// Pass-through cases (returns false → message is kept):
+//   - PropertyOperation != "Initialized" — Changed / Deleted / empty
+//     (some non-conformant cameras omit the attribute on Changed
+//     messages; we keep those).
+//   - PropertyOperation = "Initialized" with at least one "is*"
+//     SimpleItem set to true/1 — a persistent alarm that was
+//     already active when the subscription resumed. Rare but real.
+//   - PropertyOperation = "Initialized" with no boolean SimpleItems
+//     at all — peoplecount, vehiclecount, LPR plates, etc. We can't
+//     judge "no-event state" without a boolean signal so we keep the
+//     message to be safe.
+func isInitializedNoEventState(propertyOp string, details map[string]interface{}) bool {
+	if propertyOp != "Initialized" {
+		return false
+	}
+	// Scan for any "is*" SimpleItem (the ONVIF convention for trigger
+	// booleans: IsMotion, IsHuman, IsVehicle, IsFace, IsRemove,
+	// IsAbandoned, IsTamper, IsLineCross, IsIntrusion, ...). If we
+	// find one that's true/1, the message represents an actual
+	// active state — keep it.
+	sawBool := false
+	for key, raw := range details {
+		if !strings.HasPrefix(key, "is") {
+			continue
+		}
+		s, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		sawBool = true
+		v := strings.ToLower(strings.TrimSpace(s))
+		if v != "" && v != "false" && v != "0" {
+			return false // at least one boolean is active
+		}
+	}
+	// Skip only when we found at least one boolean signal AND all of
+	// them were false. No boolean signals at all → can't judge → keep.
+	return sawBool
 }
 
 // classifyEvent maps ONVIF topic strings to simplified event types

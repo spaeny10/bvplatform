@@ -4,6 +4,7 @@ import { useRef } from 'react';
 import type { LastDisposition } from '@/stores/operator-store';
 import { DISPOSITION_OPTIONS } from '@/stores/operator-store';
 import SeverityPill from '@/components/shared/SeverityPill';
+import SignedImage from '@/components/shared/SignedImage';
 
 interface Props {
   lastDisposition: LastDisposition;
@@ -157,7 +158,7 @@ export default function EvidenceExportModal({ lastDisposition, operatorName, ope
                 Event Capture
               </div>
               <div style={{ position: 'relative', borderRadius: 6, overflow: 'hidden', background: '#080a06', height: 200 }}>
-                <img
+                <SignedImage
                   src={alarm.snapshot_url}
                   alt="Event capture"
                   style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}

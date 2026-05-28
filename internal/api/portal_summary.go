@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandlePortalSummary returns a customer-scoped rollup over the last
@@ -47,20 +47,20 @@ func HandlePortalSummary(db *database.DB) http.HandlerFunc {
 		}
 
 		writeJSON(w, map[string]interface{}{
-			"period_days":         days,
-			"period_start":        summary.PeriodStart,
-			"period_end":          summary.PeriodEnd,
-			"sites":               summary.SiteCount,
-			"cameras":             summary.CameraCount,
-			"events_handled":      summary.DispositionCount,
-			"verified_threats":    summary.VerifiedThreats,
-			"false_positives":     summary.FalsePositives,
-			"alarms_total":        summary.AlarmCount,
-			"avg_response_sec":    summary.AvgAckSec,
-			"p95_response_sec":    summary.P95AckSec,
-			"within_sla":          summary.WithinSLA,
-			"over_sla":            summary.OverSLA,
-			"top_events":          summary.TopEvents,
+			"period_days":      days,
+			"period_start":     summary.PeriodStart,
+			"period_end":       summary.PeriodEnd,
+			"sites":            summary.SiteCount,
+			"cameras":          summary.CameraCount,
+			"events_handled":   summary.DispositionCount,
+			"verified_threats": summary.VerifiedThreats,
+			"false_positives":  summary.FalsePositives,
+			"alarms_total":     summary.AlarmCount,
+			"avg_response_sec": summary.AvgAckSec,
+			"p95_response_sec": summary.P95AckSec,
+			"within_sla":       summary.WithinSLA,
+			"over_sla":         summary.OverSLA,
+			"top_events":       summary.TopEvents,
 		})
 	}
 }

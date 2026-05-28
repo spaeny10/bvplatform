@@ -4,22 +4,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   VCARule, VCARuleCreate, VCAPoint,
   listVCARules, createVCARule, updateVCARule, deleteVCARule,
-  syncVCARules, getVCASnapshotURL,
+  syncVCARules,
 } from '@/lib/api';
 import { vcaPullPreview, vcaPullApply, VCAPullResult } from '@/lib/milesight';
-
-// ── Rule type config ──
-const RULE_TYPES = [
-  { key: 'intrusion',      icon: '🚧', label: 'Intrusion Zone',    color: '#EF4444', fill: 'rgba(239,68,68,0.18)',   minPoints: 3 },
-  { key: 'linecross',      icon: '➡️', label: 'Line Crossing',     color: '#3B82F6', fill: 'rgba(59,130,246,0.18)',   minPoints: 2 },
-  { key: 'regionentrance',  icon: '🚪', label: 'Region Entrance',  color: '#22C55E', fill: 'rgba(34,197,94,0.18)',    minPoints: 3 },
-  { key: 'loitering',      icon: '⏱️', label: 'Loitering Zone',    color: '#EAB308', fill: 'rgba(234,179,8,0.18)',    minPoints: 3 },
-] as const;
-
-type RuleTypeKey = typeof RULE_TYPES[number]['key'];
-type DrawMode = 'idle' | 'drawing';
-
-const ruleConfig = (type: string) => RULE_TYPES.find(t => t.key === type) || RULE_TYPES[0];
+import { RULE_TYPES, ruleConfig, RuleTypeKey, DrawMode } from '@/lib/vca-zones';
+import { useVCASnapshot } from '@/hooks/useVCASnapshot';
+import { useVCACanvas, CanvasPoint } from '@/hooks/useVCACanvas';
 
 interface Props {
   cameraId: string;
@@ -28,22 +18,20 @@ interface Props {
 
 export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
 
   const [rules, setRules] = useState<VCARule[]>([]);
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [drawMode, setDrawMode] = useState<DrawMode>('idle');
   const [drawType, setDrawType] = useState<RuleTypeKey>('intrusion');
-  const [drawPoints, setDrawPoints] = useState<VCAPoint[]>([]);
+  const [drawPoints, setDrawPoints] = useState<CanvasPoint[]>([]);
   const [drawName, setDrawName] = useState('');
-  const [snapshotLoaded, setSnapshotLoaded] = useState(false);
-  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
   const [pullPreview, setPullPreview] = useState<VCAPullResult | null>(null);
   const [pulling, setPulling] = useState(false);
-  const [hoveredVertex, setHoveredVertex] = useState<{ ruleIdx: number; ptIdx: number } | null>(null);
-  const [draggingVertex, setDraggingVertex] = useState<{ ruleId: string; ptIdx: number } | null>(null);
+
+  // ── Snapshot ──
+  const { imgRef, snapshotLoaded, snapshotError, reload: loadSnapshot } = useVCASnapshot(cameraId);
 
   // ── Load rules ──
   const loadRules = useCallback(async () => {
@@ -53,322 +41,27 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
 
   useEffect(() => { loadRules(); }, [loadRules]);
 
-  // ── Load snapshot: try ONVIF endpoint first, then HLS frame grab ──
-  const loadSnapshot = useCallback(async () => {
-    setSnapshotLoaded(false);
-    setSnapshotError(null);
-    const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+  const ruleToCreate = (r: VCARule): VCARuleCreate => ({
+    rule_type: r.rule_type,
+    name: r.name,
+    enabled: r.enabled,
+    sensitivity: r.sensitivity,
+    region: r.region,
+    direction: r.direction,
+    threshold_sec: r.threshold_sec,
+    schedule: r.schedule,
+    actions: r.actions,
+  });
 
-    // Attempt 1: ONVIF snapshot endpoint
-    try {
-      const res = await fetch(getVCASnapshotURL(cameraId), { headers });
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          const img = new Image();
-          img.onload = () => { imgRef.current = img; setSnapshotLoaded(true); };
-          img.onerror = () => { setSnapshotError('Snapshot image failed to decode'); setSnapshotLoaded(true); };
-          img.src = url;
-          return;
-        }
-      }
-    } catch { /* try fallback */ }
-
-    // Attempt 2: HLS live stream frame (grab first frame of the sub-stream m3u8)
-    try {
-      const hlsUrl = `/hls/${cameraId}/sub_live.m3u8`;
-      const res = await fetch(hlsUrl, { headers });
-      if (res.ok) {
-        // If HLS exists, use a video element to grab a frame
-        const video = document.createElement('video');
-        video.crossOrigin = 'anonymous';
-        video.muted = true;
-        video.playsInline = true;
-        video.src = hlsUrl;
-        video.currentTime = 0.1;
-        await new Promise<void>((resolve, reject) => {
-          video.onloadeddata = () => resolve();
-          video.onerror = () => reject();
-          setTimeout(reject, 5000);
-        });
-        const canvas = document.createElement('canvas');
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 360;
-        canvas.getContext('2d')?.drawImage(video, 0, 0);
-        const dataUrl = canvas.toDataURL('image/jpeg');
-        const img = new Image();
-        img.onload = () => { imgRef.current = img; setSnapshotLoaded(true); };
-        img.src = dataUrl;
-        video.pause();
-        video.src = '';
-        return;
-      }
-    } catch { /* proceed without snapshot */ }
-
-    setSnapshotError('Could not load camera snapshot. Zones can still be drawn on the grid.');
-    setSnapshotLoaded(true);
-  }, [cameraId]);
-
-  useEffect(() => { loadSnapshot(); }, [loadSnapshot]);
-
-  // ── Canvas rendering ──
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const w = canvas.width;
-    const h = canvas.height;
-
-    // Background
-    ctx.clearRect(0, 0, w, h);
-    if (imgRef.current) {
-      ctx.drawImage(imgRef.current, 0, 0, w, h);
-    } else {
-      // Dark background with visible grid so zones can still be drawn
-      ctx.fillStyle = '#0c0f14';
-      ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-      ctx.lineWidth = 0.5;
-      for (let gx = 0; gx <= w; gx += w / 8) {
-        ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, h); ctx.stroke();
-      }
-      for (let gy = 0; gy <= h; gy += h / 6) {
-        ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(w, gy); ctx.stroke();
-      }
-    }
-
-    // Draw existing rules
-    for (const rule of rules) {
-      const cfg = ruleConfig(rule.rule_type);
-      const pts = rule.region.map(p => ({ x: p.x * w, y: p.y * h }));
-      if (pts.length < 2) continue;
-
-      const isSelected = rule.id === selectedRuleId;
-      const alpha = rule.enabled ? 1 : 0.35;
-
-      ctx.save();
-      ctx.globalAlpha = alpha;
-
-      if (rule.rule_type === 'linecross' && pts.length === 2) {
-        // Draw line
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        ctx.lineTo(pts[1].x, pts[1].y);
-        ctx.strokeStyle = cfg.color;
-        ctx.lineWidth = isSelected ? 3 : 2;
-        ctx.stroke();
-
-        // Direction arrow at midpoint
-        const mx = (pts[0].x + pts[1].x) / 2;
-        const my = (pts[0].y + pts[1].y) / 2;
-        const angle = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
-        ctx.save();
-        ctx.translate(mx, my);
-        ctx.rotate(angle);
-        ctx.beginPath();
-        ctx.moveTo(8, 0);
-        ctx.lineTo(-4, -5);
-        ctx.lineTo(-4, 5);
-        ctx.closePath();
-        ctx.fillStyle = cfg.color;
-        ctx.fill();
-        ctx.restore();
-      } else {
-        // Draw polygon
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.closePath();
-        ctx.fillStyle = cfg.fill;
-        ctx.fill();
-        ctx.strokeStyle = cfg.color;
-        ctx.lineWidth = isSelected ? 2.5 : 1.5;
-        if (!rule.enabled) ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
-      // Vertex handles (when selected)
-      if (isSelected) {
-        for (let i = 0; i < pts.length; i++) {
-          const isHover = hoveredVertex?.ruleIdx === rules.indexOf(rule) && hoveredVertex?.ptIdx === i;
-          ctx.beginPath();
-          ctx.arc(pts[i].x, pts[i].y, isHover ? 7 : 5, 0, Math.PI * 2);
-          ctx.fillStyle = '#fff';
-          ctx.fill();
-          ctx.strokeStyle = cfg.color;
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        }
-      }
-
-      // Label at centroid
-      const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-      const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-      const label = rule.name || cfg.label;
-      ctx.font = '600 10px Inter, sans-serif';
-      const tw = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(0,0,0,0.75)';
-      ctx.roundRect(cx - tw / 2 - 5, cy - 7, tw + 10, 14, 3);
-      ctx.fill();
-      ctx.fillStyle = cfg.color;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, cx, cy);
-
-      ctx.restore();
-    }
-
-    // Draw in-progress shape
-    if (drawMode === 'drawing' && drawPoints.length > 0) {
-      const cfg = ruleConfig(drawType);
-      const pts = drawPoints.map(p => ({ x: p.x * w, y: p.y * h }));
-
-      ctx.beginPath();
-      ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-
-      if (drawType !== 'linecross' && pts.length >= 3) {
-        ctx.closePath();
-        ctx.fillStyle = cfg.fill;
-        ctx.fill();
-      }
-
-      ctx.strokeStyle = cfg.color;
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Vertex dots
-      for (const pt of pts) {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = '#fff';
-        ctx.fill();
-        ctx.strokeStyle = cfg.color;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-    }
-  }, [rules, selectedRuleId, drawMode, drawType, drawPoints, hoveredVertex]);
-
-  useEffect(() => { render(); }, [render, snapshotLoaded]);
-
-  // ── Mouse handlers ──
-  const getCanvasPoint = (e: React.MouseEvent): VCAPoint => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-      y: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-    };
-  };
-
-  const handleCanvasClick = (e: React.MouseEvent) => {
-    if (draggingVertex) return;
-
-    if (drawMode === 'drawing') {
-      const pt = getCanvasPoint(e);
-
-      // Close polygon: click near first point
-      if (drawPoints.length >= 3 && drawType !== 'linecross') {
-        const first = drawPoints[0];
-        const dist = Math.sqrt((pt.x - first.x) ** 2 + (pt.y - first.y) ** 2);
-        if (dist < 0.03) {
-          finishDrawing();
-          return;
-        }
-      }
-
-      const newPoints = [...drawPoints, pt];
-
-      // Auto-finish line crossing after 2 points
-      if (drawType === 'linecross' && newPoints.length === 2) {
-        setDrawPoints(newPoints);
-        setTimeout(() => finishDrawing(newPoints), 50);
-        return;
-      }
-
-      setDrawPoints(newPoints);
-    } else {
-      // Select/deselect rules by clicking
-      const pt = getCanvasPoint(e);
-      const canvas = canvasRef.current!;
-      const w = canvas.width;
-      const h = canvas.height;
-
-      for (const rule of [...rules].reverse()) {
-        const pts = rule.region.map(p => ({ x: p.x * w, y: p.y * h }));
-        if (pointInPolygon(pt.x * w, pt.y * h, pts)) {
-          setSelectedRuleId(rule.id);
-          return;
-        }
-      }
-      setSelectedRuleId(null);
-    }
-  };
-
-  const handleCanvasMouseDown = (e: React.MouseEvent) => {
-    if (drawMode === 'drawing' || !selectedRuleId) return;
-    const pt = getCanvasPoint(e);
-    const canvas = canvasRef.current!;
-    const rule = rules.find(r => r.id === selectedRuleId);
-    if (!rule) return;
-
-    // Check if clicking near a vertex
-    for (let i = 0; i < rule.region.length; i++) {
-      const vx = rule.region[i].x;
-      const vy = rule.region[i].y;
-      const dist = Math.sqrt((pt.x - vx) ** 2 + (pt.y - vy) ** 2);
-      if (dist < 0.025) {
-        setDraggingVertex({ ruleId: rule.id, ptIdx: i });
-        return;
-      }
-    }
-  };
-
-  const handleCanvasMouseMove = (e: React.MouseEvent) => {
-    if (draggingVertex) {
-      const pt = getCanvasPoint(e);
-      setRules(prev => prev.map(r => {
-        if (r.id !== draggingVertex.ruleId) return r;
-        const newRegion = [...r.region];
-        newRegion[draggingVertex.ptIdx] = pt;
-        return { ...r, region: newRegion };
-      }));
-      render();
-    }
-  };
-
-  const handleCanvasMouseUp = async () => {
-    if (draggingVertex) {
-      const rule = rules.find(r => r.id === draggingVertex.ruleId);
-      if (rule) {
-        try {
-          await updateVCARule(cameraId, rule.id, ruleToCreate(rule));
-          autoSync();
-        } catch { /* best-effort save */ }
-      }
-      setDraggingVertex(null);
-    }
-  };
-
-  const handleDoubleClick = () => {
-    if (drawMode === 'drawing' && drawPoints.length >= 3 && drawType !== 'linecross') {
-      finishDrawing();
-    }
+  // Auto-save confirmation — camera VCA must be configured through its web UI
+  const autoSync = () => {
+    setSyncResult('✓ Zone saved. Configure matching zones on the camera via its web UI for on-device detection.');
   };
 
   // ── Finish drawing + save ──
-  const finishDrawing = async (pts?: VCAPoint[]) => {
-    const region = pts || drawPoints;
+  const finishDrawing = useCallback(async (pts: CanvasPoint[]) => {
     const cfg = ruleConfig(drawType);
-    if (region.length < cfg.minPoints) return;
+    if (pts.length < cfg.minPoints) return;
 
     try {
       await createVCARule(cameraId, {
@@ -376,7 +69,7 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
         name: drawName || cfg.label + ' ' + (rules.filter(r => r.rule_type === drawType).length + 1),
         enabled: true,
         sensitivity: 50,
-        region,
+        region: pts as VCAPoint[],
         direction: 'both',
         threshold_sec: drawType === 'loitering' ? 10 : 0,
         schedule: 'always',
@@ -384,14 +77,50 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       });
       await loadRules();
       autoSync();
-    } catch (err: any) {
-      setSyncResult(`Failed to save rule: ${err?.message || err}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncResult(`Failed to save rule: ${msg}`);
     }
 
     setDrawMode('idle');
     setDrawPoints([]);
     setDrawName('');
-  };
+  }, [cameraId, drawType, drawName, rules, loadRules]);
+
+  // ── Canvas hook ──
+  const { isDragging, onClick, onMouseDown, onMouseMove, onMouseUp, onDoubleClick } = useVCACanvas({
+    canvasRef,
+    imgRef,
+    ruleTypes: RULE_TYPES,
+    zones: rules,
+    drawMode,
+    activeRuleType: drawType,
+    draftPoints: drawPoints,
+    selectedZoneId: selectedRuleId,
+    onDraftPointAdd: (pt) => setDrawPoints(prev => [...prev, pt]),
+    onPolygonComplete: (pts) => {
+      // finishDrawing resets drawMode + drawPoints itself
+      finishDrawing(pts);
+    },
+    onZoneSelect: (id) => setSelectedRuleId(id),
+    onVertexMove: (zoneId, ptIdx, pt) => {
+      setRules(prev => prev.map(r => {
+        if (r.id !== zoneId) return r;
+        const newRegion = [...r.region];
+        newRegion[ptIdx] = pt as VCAPoint;
+        return { ...r, region: newRegion };
+      }));
+    },
+    onVertexDragEnd: async (zoneId) => {
+      const rule = rules.find(r => r.id === zoneId);
+      if (rule) {
+        try {
+          await updateVCARule(cameraId, rule.id, ruleToCreate(rule));
+          autoSync();
+        } catch { /* best-effort save */ }
+      }
+    },
+  });
 
   // ── Actions ──
   const handleDelete = async (ruleId: string) => {
@@ -414,8 +143,9 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       const res = await syncVCARules(cameraId);
       setSyncResult(`✓ Pushed ${res.synced} rule${res.synced !== 1 ? 's' : ''} to camera${res.errors > 0 ? ` (${res.errors} error${res.errors !== 1 ? 's' : ''})` : ''}`);
       loadRules();
-    } catch (err: any) {
-      setSyncResult(`Sync failed: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncResult(`Sync failed: ${msg}`);
     } finally {
       setSyncing(false);
     }
@@ -430,8 +160,9 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
     try {
       const preview = await vcaPullPreview(cameraId);
       setPullPreview(preview);
-    } catch (err: any) {
-      setSyncResult(`Pull failed: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncResult(`Pull failed: ${msg}`);
     } finally {
       setPulling(false);
     }
@@ -450,31 +181,13 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       setSyncResult('✓ Pulled camera state into the platform.');
       setPullPreview(null);
       await loadRules();
-    } catch (err: any) {
-      setSyncResult(`Apply failed: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setSyncResult(`Apply failed: ${msg}`);
     } finally {
       setPulling(false);
     }
   };
-
-  // Auto-save confirmation — camera VCA must be configured through its web UI
-  const autoSync = async () => {
-    setSyncResult('✓ Zone saved. Configure matching zones on the camera via its web UI for on-device detection.');
-  };
-
-  const ruleToCreate = (r: VCARule): VCARuleCreate => ({
-    rule_type: r.rule_type,
-    name: r.name,
-    enabled: r.enabled,
-    sensitivity: r.sensitivity,
-    region: r.region,
-    direction: r.direction,
-    threshold_sec: r.threshold_sec,
-    schedule: r.schedule,
-    actions: r.actions,
-  });
-
-  const selectedRule = rules.find(r => r.id === selectedRuleId);
 
   // Prevent all clicks inside the editor from bubbling up to the modal overlay
   const stopBubble = (e: React.MouseEvent) => e.stopPropagation();
@@ -666,7 +379,7 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
             <button
               type="button"
               disabled={!canSave}
-              onClick={() => finishDrawing()}
+              onClick={() => finishDrawing(drawPoints)}
               style={{
                 padding: '6px 20px', borderRadius: 4, fontSize: 11, fontWeight: 700,
                 background: canSave ? `${cfg.color}20` : 'rgba(255,255,255,0.02)',
@@ -699,14 +412,14 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
           ref={canvasRef}
           width={640}
           height={360}
-          onClick={handleCanvasClick}
-          onDoubleClick={handleDoubleClick}
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleCanvasMouseMove}
-          onMouseUp={handleCanvasMouseUp}
+          onClick={onClick}
+          onDoubleClick={onDoubleClick}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
           style={{
             width: '100%', display: 'block',
-            cursor: drawMode === 'drawing' ? 'crosshair' : draggingVertex ? 'grabbing' : 'default',
+            cursor: drawMode === 'drawing' ? 'crosshair' : isDragging ? 'grabbing' : 'default',
           }}
         />
         {!snapshotLoaded && (
@@ -813,16 +526,4 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       )}
     </div>
   );
-}
-
-// ── Hit testing helper ──
-function pointInPolygon(x: number, y: number, polygon: { x: number; y: number }[]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const xi = polygon[i].x, yi = polygon[i].y;
-    const xj = polygon[j].x, yj = polygon[j].y;
-    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
 }

@@ -295,7 +295,7 @@ Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Cyan
 Write-Host "    1. Open a new terminal" -ForegroundColor White
 Write-Host "    2. docker-compose up -d   (start database)" -ForegroundColor White  
-Write-Host "    3. go mod tidy && go build -o bin\onvif-tool.exe ./cmd/server" -ForegroundColor White
+Write-Host "    3. go mod tidy && go build -o bin\ironsight.exe ./cmd/server" -ForegroundColor White
 Write-Host "    4. cd frontend && npm install && npm run dev" -ForegroundColor White
 Write-Host "    5. Open http://localhost:3000" -ForegroundColor White
 Write-Host ""

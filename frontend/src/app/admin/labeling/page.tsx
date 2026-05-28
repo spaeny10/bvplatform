@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import Logo from '@/components/shared/Logo';
 import UserChip from '@/components/shared/UserChip';
+import SignedImage from '@/components/shared/SignedImage';
 import { authFetch } from '@/lib/api';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -299,8 +300,13 @@ export default function LabelingPage() {
                 {/* Image */}
                 <div style={{ flex: 1, position: 'relative', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   {snapshotSrc ? (
-                    <img
-                      ref={imgRef}
+                    // imgRef intentionally unused: pre-P1-A-03 attempts
+                    // captured an HTMLImageElement here for hypothetical
+                    // bbox-overlay computations; none ever wired up.
+                    // SignedImage doesn't forward refs (it has its own
+                    // resolve-then-render lifecycle), so dropping the
+                    // attribute is the right move.
+                    <SignedImage
                       src={snapshotSrc}
                       alt="Alarm frame"
                       style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}

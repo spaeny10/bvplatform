@@ -13,7 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // ClipWriter manages event-triggered clip creation with pre/post buffer.
@@ -245,7 +245,12 @@ func parseRingTimestamp(filename string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("invalid segment filename: %s", filename)
 	}
 	timeStr := parts[1] // "20260220_171312"
-	t, err := time.ParseInLocation("20060102_150405", timeStr, time.Now().Location())
+	// P1-C-05: parse in UTC. The ffmpeg subprocess that wrote the
+	// filename has TZ=UTC set in its env, so the strftime fields are
+	// UTC. time.Now().Location() would shift by the host's UTC offset
+	// — silent on UTC hosts, broken everywhere else, ambiguous across
+	// DST boundaries (1:30am on a fall-back day matches twice).
+	t, err := time.ParseInLocation("20060102_150405", timeStr, time.UTC)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse time from %s: %w", filename, err)
 	}

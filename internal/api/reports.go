@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandleSLAReport returns the operator response-time report. Two query

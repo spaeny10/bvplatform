@@ -80,7 +80,11 @@ export default function PortalMobileNav() {
                         style={{
                             flex: 1,
                             display: 'flex', flexDirection: 'column', alignItems: 'center',
-                            gap: 2, padding: '6px 4px',
+                            justifyContent: 'center',
+                            gap: 2,
+                            /* Minimum 44px touch target height per WCAG 2.5.5 */
+                            minHeight: 44,
+                            padding: '8px 4px',
                             textDecoration: 'none',
                             color: active
                                 ? 'var(--brand-primary, #E8732A)'

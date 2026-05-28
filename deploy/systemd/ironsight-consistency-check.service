@@ -1,0 +1,34 @@
+[Unit]
+Description=Ironsight P4-SCHEMA-02 daily consistency check
+Documentation=https://github.com/jetstreamsys/bigview-platform/blob/main/external/bvplatform-main/cmd/consistency-check/main.go
+After=network-online.target
+Wants=network-online.target
+# Triggered by ironsight-consistency-check.timer — do not enable this unit directly.
+
+[Service]
+Type=oneshot
+User=jetstream
+Group=jetstream
+
+# Binary path — built and placed by the deploy step.
+ExecStart=/usr/local/bin/ironsight-consistency-check --days 7
+
+# Database URL for the Ironsight Postgres instance.
+# Override in /etc/ironsight/consistency-check.env if DATABASE_URL
+# is not set in the system environment.
+EnvironmentFile=-/etc/ironsight/consistency-check.env
+
+# Report directory must be writable by the jetstream user.
+Environment=REPORT_DIR=/opt/ironsight-consistency-reports
+
+# Give the check up to 5 minutes to complete before the timer
+# fires again; in practice it should finish in < 30 s.
+TimeoutStartSec=5min
+
+# Capture all output in the journal (unit name tag).
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ironsight-consistency-check
+
+[Install]
+WantedBy=multi-user.target

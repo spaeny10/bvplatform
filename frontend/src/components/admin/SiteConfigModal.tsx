@@ -33,10 +33,21 @@ const NAV: NavItem[] = [
 ];
 
 function apiFetch(url: string, opts: RequestInit = {}) {
-  const token = typeof window !== 'undefined' ? localStorage.getItem('ironsight_token') : '';
+  const csrfToken = typeof document !== 'undefined'
+      ? (document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='))?.split('=')[1] ?? '')
+      : '';
+  const method = (opts.method ?? 'GET').toUpperCase();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(opts.headers as Record<string, string> | undefined),
+  };
+  if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
   return fetch(url, {
     ...opts,
-    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...opts.headers },
+    credentials: 'include',
+    headers,
   });
 }
 

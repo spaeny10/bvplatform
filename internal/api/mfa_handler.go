@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
 )
 
 // HandleMFAEnroll generates a fresh TOTP secret and 10 recovery codes
@@ -85,12 +85,12 @@ func HandleMFAEnroll(db *database.DB, cfg *config.Config) http.HandlerFunc {
 			issuer = "Ironsight"
 		}
 		writeJSON(w, map[string]interface{}{
-			"secret":            secret,
-			"provisioning_url":  auth.ProvisioningURL(secret, issuer, claims.Username),
-			"recovery_codes":    recoveryCodes,
-			"recovery_count":    len(recoveryCodes),
-			"requires_confirm":  true,
-			"confirm_endpoint":  "/api/auth/mfa/confirm",
+			"secret":           secret,
+			"provisioning_url": auth.ProvisioningURL(secret, issuer, claims.Username),
+			"recovery_codes":   recoveryCodes,
+			"recovery_count":   len(recoveryCodes),
+			"requires_confirm": true,
+			"confirm_endpoint": "/api/auth/mfa/confirm",
 		})
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	msdriver "onvif-tool/internal/milesight"
+	msdriver "ironsight/internal/milesight"
 )
 
 func main() {

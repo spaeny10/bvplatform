@@ -4,11 +4,40 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
+
+// removeSegmentAndCache deletes a recording segment from disk along with
+// any LOCAL-11 cached H.264 transcode that lives in the sibling
+// .h264-cache/ directory. Returns total bytes freed across both files.
+// Missing files are silently ignored — retention is idempotent and the
+// cache is optional, so its absence is the common case (only watched
+// segments get a transcode).
+//
+// Caller is expected to have already deleted the corresponding DB rows
+// (segments + transcode_cache, when the latter exists); this helper only
+// touches the filesystem.
+func removeSegmentAndCache(path string) int64 {
+	var freed int64
+	if info, err := os.Stat(path); err == nil {
+		freed += info.Size()
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("[RETENTION] failed to delete %s: %v", path, err)
+	}
+	cache := CachedTranscodePath(path)
+	if info, err := os.Stat(cache); err == nil {
+		freed += info.Size()
+		if err := os.Remove(cache); err != nil && !os.IsNotExist(err) {
+			log.Printf("[RETENTION] failed to delete cached transcode %s: %v", cache, err)
+		}
+	}
+	return freed
+}
 
 // RetentionManager periodically cleans up old recording segments based on:
 //  1. Disk space caps (max_gb per storage location) — highest priority
@@ -20,6 +49,7 @@ import (
 //
 //	cameras, segments, exports, thumbnails, hls, recordings on disk.
 //	support_tickets + support_messages (closed-and-stale only).
+//	pending_review_queue reviewed/dismissed rows + PPE frame files (P2-C-01).
 //
 // It MUST NOT touch:
 //
@@ -39,16 +69,40 @@ import (
 // window — never an automated retention purge. See
 // `Documents/USCompliance.md` for the full posture.
 type RetentionManager struct {
-	db     *database.DB
-	stopCh chan struct{}
+	db            *database.DB
+	ppeFramesDir  string
+	ppeRetainDays int
+	// P2-C-02 tracking retention (belt-and-suspenders for TimescaleDB policy).
+	trackingRawRetainDays    int
+	trackingBucketRetainDays int
+	stopCh                   chan struct{}
 }
 
-// NewRetentionManager creates a new retention manager
+// NewRetentionManager creates a new retention manager.
+// ppeFramesDir and ppeRetainDays configure the PPE frame sweep pass (P2-C-01).
+// Pass empty string / 0 to disable the PPE sweep (safe for deployments
+// where the PPE worker is not running).
 func NewRetentionManager(db *database.DB) *RetentionManager {
 	return &RetentionManager{
 		db:     db,
 		stopCh: make(chan struct{}),
 	}
+}
+
+// SetPPERetention configures the PPE frame sweep parameters.
+// Call before Start. Passing 0 or empty string is safe — the sweep is skipped.
+func (rm *RetentionManager) SetPPERetention(framesDir string, retainDays int) {
+	rm.ppeFramesDir = framesDir
+	rm.ppeRetainDays = retainDays
+}
+
+// SetTrackingRetention configures the P2-C-02 tracking sweep parameters.
+// rawRetainDays is the belt-and-suspenders fallback for the TimescaleDB policy
+// on person_track_frames. bucketRetainDays governs person_track_buckets (no TS policy).
+// Passing 0 for either skips that sweep.
+func (rm *RetentionManager) SetTrackingRetention(rawRetainDays, bucketRetainDays int) {
+	rm.trackingRawRetainDays = rawRetainDays
+	rm.trackingBucketRetainDays = bucketRetainDays
 }
 
 // Start begins the retention cleanup loop (runs every hour)
@@ -67,7 +121,7 @@ func (rm *RetentionManager) Start(ctx context.Context) {
 			log.Println("[RETENTION] Stopped")
 			return
 		case <-ctx.Done():
-			log.Println("[RETENTION] Context cancelled, stopping")
+			log.Println("[RETENTION] Context canceled, stopping")
 			return
 		case <-ticker.C:
 			rm.cleanup(ctx)
@@ -112,6 +166,15 @@ func (rm *RetentionManager) cleanup(ctx context.Context) {
 
 	// Pass 4: closed support tickets older than the support retention window.
 	rm.pruneSupportTickets(ctx)
+
+	// Pass 5: PPE evidence frames (P2-C-01). Sweeps reviewed/dismissed
+	// queue rows and removes their on-disk JPEG files.
+	rm.sweepPPEFrames(ctx)
+
+	// Pass 6: Person-tracking retention (P2-C-02).
+	// person_track_frames: Go-side fallback for the TimescaleDB retention policy.
+	// person_track_buckets: regular table, no TS policy — Go sweep only.
+	rm.sweepTrackingData(ctx)
 
 	if totalDeleted > 0 {
 		log.Printf("[RETENTION] Cleanup complete: %d segment(s) deleted, %.2f MB freed",
@@ -191,12 +254,21 @@ func (rm *RetentionManager) enforceCapacitySafetyValve(ctx context.Context) (int
 			if len(paths) == 0 {
 				break
 			}
+			batchFreed := int64(0)
 			for _, p := range paths {
-				if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-					log.Printf("[RETENTION] Safety valve: file rm %s: %v", p, err)
-				}
+				// removeSegmentAndCache returns source+cache bytes so the
+				// valve budget tracks REAL disk freed, not just DB-recorded
+				// segment bytes (an HEVC source with a cache is ~2-3× the
+				// file_size column).
+				batchFreed += removeSegmentAndCache(p)
 			}
-			freedHere += freed
+			// Fall back to the DB-reported total if the on-disk stat came
+			// up empty (paths missing, permission issues) so we don't loop
+			// forever on a no-op delete.
+			if batchFreed < freed {
+				batchFreed = freed
+			}
+			freedHere += batchFreed
 			deletedHere += len(paths)
 		}
 		totalDeleted += deletedHere
@@ -255,19 +327,22 @@ func (rm *RetentionManager) enforceStorageCaps(ctx context.Context) (int, int64)
 				break // No more segments to delete
 			}
 
-			// Remove files from disk
+			// Remove files from disk. removeSegmentAndCache also drops
+			// the LOCAL-11 H.264 transcode cache file if one exists.
+			batchFreed := int64(0)
 			for _, path := range paths {
-				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-					log.Printf("[RETENTION] Failed to delete file %s: %v", path, err)
-				}
+				batchFreed += removeSegmentAndCache(path)
+			}
+			if batchFreed < freed {
+				batchFreed = freed
 			}
 
 			totalDeleted += len(paths)
-			totalBytes += freed
-			usage -= freed
+			totalBytes += batchFreed
+			usage -= batchFreed
 
 			log.Printf("[RETENTION] Storage '%s': deleted %d segment(s), freed %.2f MB",
-				loc.Label, len(paths), float64(freed)/1024/1024)
+				loc.Label, len(paths), float64(batchFreed)/1024/1024)
 		}
 	}
 
@@ -280,9 +355,9 @@ func (rm *RetentionManager) enforceStorageCaps(ctx context.Context) (int, int64)
 //
 // Retention resolution order (first non-zero wins):
 //
-//   1. Site policy: sites.retention_days for the camera's assigned site.
-//   2. Storage location default: first enabled recordings-purpose location.
-//   3. 0 → skip this camera (no policy; keep everything).
+//  1. Site policy: sites.retention_days for the camera's assigned site.
+//  2. Storage location default: first enabled recordings-purpose location.
+//  3. 0 → skip this camera (no policy; keep everything).
 //
 // Sites are cached for the duration of one pass so we don't query the DB
 // N times for the common case of many cameras sharing a site.
@@ -351,13 +426,9 @@ func (rm *RetentionManager) enforceRetentionDays(ctx context.Context) (int, int6
 		}
 
 		for _, path := range paths {
-			info, err := os.Stat(path)
-			if err == nil {
-				totalBytes += info.Size()
-			}
-			if err := os.Remove(path); err != nil {
-				log.Printf("[RETENTION] Failed to delete file %s: %v", path, err)
-			}
+			// removeSegmentAndCache stats + removes both source and any
+			// LOCAL-11 cached H.264 transcode in one call.
+			totalBytes += removeSegmentAndCache(path)
 		}
 
 		if len(paths) > 0 {
@@ -395,3 +466,59 @@ func (rm *RetentionManager) pruneSupportTickets(ctx context.Context) {
 	}
 }
 
+// sweepPPEFrames removes reviewed/dismissed pending_review_queue rows older
+// than ppeRetainDays and deletes their on-disk JPEG files.
+// P2-C-01 — only active when ppeFramesDir and ppeRetainDays are configured.
+func (rm *RetentionManager) sweepPPEFrames(ctx context.Context) {
+	if rm.ppeFramesDir == "" || rm.ppeRetainDays <= 0 {
+		return
+	}
+
+	paths, err := rm.db.SweepPPEFrameRows(ctx, rm.ppeRetainDays)
+	if err != nil {
+		log.Printf("[RETENTION] PPE sweep DB: %v", err)
+		return
+	}
+	if len(paths) == 0 {
+		return
+	}
+
+	var freed int64
+	deleted := 0
+	for _, relPath := range paths {
+		absPath := filepath.Join(rm.ppeFramesDir, relPath)
+		if info, err := os.Stat(absPath); err == nil {
+			freed += info.Size()
+		}
+		if err := os.Remove(absPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[RETENTION] PPE frame delete %s: %v", absPath, err)
+			continue
+		}
+		deleted++
+	}
+	log.Printf("[RETENTION] PPE sweep: %d frame(s) removed (%.2f MB freed)", deleted, float64(freed)/1024/1024)
+}
+
+// sweepTrackingData is the P2-C-02 retention pass for person-tracking tables.
+// person_track_frames: belt-and-suspenders fallback for the TimescaleDB
+// add_retention_policy set in migration 0023. The TS policy handles the fast
+// path; this sweep is the safety net (R2 mitigation).
+// person_track_buckets: regular table with no TS policy — Go sweep only.
+func (rm *RetentionManager) sweepTrackingData(ctx context.Context) {
+	if rm.trackingRawRetainDays > 0 {
+		n, err := rm.db.SweepTrackFrames(ctx, rm.trackingRawRetainDays)
+		if err != nil {
+			log.Printf("[RETENTION] tracking frames sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("[RETENTION] tracking frames sweep: %d row(s) deleted (>%dd)", n, rm.trackingRawRetainDays)
+		}
+	}
+	if rm.trackingBucketRetainDays > 0 {
+		n, err := rm.db.SweepTrackBuckets(ctx, rm.trackingBucketRetainDays)
+		if err != nil {
+			log.Printf("[RETENTION] tracking buckets sweep: %v", err)
+		} else if n > 0 {
+			log.Printf("[RETENTION] tracking buckets sweep: %d row(s) deleted (>%dd)", n, rm.trackingBucketRetainDays)
+		}
+	}
+}

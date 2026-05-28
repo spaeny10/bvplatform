@@ -21,7 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/pion/rtp"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // GortRecorder is a pure-Go RTSP recorder built on gortsplib. It replaces the
@@ -224,7 +224,7 @@ func (r *GortRecorder) runOnce(ctx context.Context) error {
 		return fmt.Errorf("play: %w", err)
 	}
 
-	// Wait until the connection ends or we're cancelled.
+	// Wait until the connection ends or we're canceled.
 	waitErrCh := make(chan error, 1)
 	go func() { waitErrCh <- c.Wait() }()
 
@@ -354,7 +354,13 @@ func (sw *segmentWriter) writeAccessUnit(au [][]byte, pts int64, clockRate int) 
 	// self-contained / seekable). Before rotating, we have to flush the pending
 	// AU to the *current* segment with a meaningful duration — the arriving
 	// AU's DTS gives us that delta.
-	now := time.Now()
+	// P1-C-05: format segment filenames in UTC so they match the
+	// ffmpeg recorder's UTC filenames (the ffmpeg subprocess gets
+	// TZ=UTC in its env). Without this, gortsplib recorders on
+	// non-UTC hosts would write filenames in local time while
+	// ffmpeg recorders on the same fleet wrote UTC, mixing two
+	// clocks in the same `segments` table.
+	now := time.Now().UTC()
 	needRotate := sw.curFile == nil ||
 		(idrPresent && !sw.curStartWall.IsZero() &&
 			now.Sub(sw.curStartWall) >= sw.segmentDur)

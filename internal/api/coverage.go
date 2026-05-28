@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
+	"ironsight/internal/database"
 )
 
 // HandleGetCoverage serves GET /api/timeline/coverage?start=&end=&camera_ids=id1,id2,...

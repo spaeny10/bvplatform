@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/onvif"
+	"ironsight/internal/database"
+	"ironsight/internal/onvif"
 )
 
 // createSenseCamera handles the camera-add path for push-only devices
@@ -47,11 +47,11 @@ func createSenseCamera(ctx context.Context, db *database.DB, input *database.Cam
 
 	now := time.Now().UTC()
 	cam := &database.Camera{
-		ID:                uuid.New(),
-		Name:              input.Name,
-		OnvifAddress:      input.OnvifAddress,
-		Username:          input.Username,
-		Password:          input.Password,
+		ID:           uuid.New(),
+		Name:         input.Name,
+		OnvifAddress: input.OnvifAddress,
+		Username:     input.Username,
+		Password:     input.Password,
 		// No RTSP / sub-stream / profile token — never used.
 		// retention_days follows the same default as continuous cameras
 		// so any snapshot we save through the webhook gets aged out.

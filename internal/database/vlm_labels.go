@@ -13,20 +13,25 @@ import (
 // VLMLabelJob is one entry in the active-learning labeling queue.
 // Created passively whenever Qwen produces a description for an alarm frame;
 // drained by internal annotators via /admin/labeling (never by SOC operators).
+//
+// CameraID is *uuid.UUID following migration 0027 (P3-INFRA-04), which
+// converted the column from TEXT NOT NULL to UUID (nullable) and added a FK
+// to cameras(id) ON DELETE SET NULL.  NULL means the originating camera was
+// deleted after the job was enqueued; the annotation history is preserved.
 type VLMLabelJob struct {
-	ID             int64     `json:"id"`
-	AlarmID        string    `json:"alarm_id"`
-	CameraID       string    `json:"camera_id"`
-	SiteID         string    `json:"site_id"`
-	SnapshotURL    string    `json:"snapshot_url"`
-	VLMDescription string    `json:"vlm_description"`
-	VLMThreat      string    `json:"vlm_threat"`
-	VLMModel       string    `json:"vlm_model"`
-	YOLODetections []byte    `json:"yolo_detections"`
-	Status         string    `json:"status"` // pending | claimed | labeled | skipped
+	ID             int64      `json:"id"`
+	AlarmID        string     `json:"alarm_id"`
+	CameraID       *uuid.UUID `json:"camera_id"`
+	SiteID         string     `json:"site_id"`
+	SnapshotURL    string     `json:"snapshot_url"`
+	VLMDescription string     `json:"vlm_description"`
+	VLMThreat      string     `json:"vlm_threat"`
+	VLMModel       string     `json:"vlm_model"`
+	YOLODetections []byte     `json:"yolo_detections"`
+	Status         string     `json:"status"` // pending | claimed | labeled | skipped
 	ClaimedBy      *uuid.UUID `json:"claimed_by,omitempty"`
 	ClaimedAt      *time.Time `json:"claimed_at,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	CreatedAt      time.Time  `json:"created_at"`
 }
 
 // VLMLabel is a ground-truth label submitted by an internal annotator.
@@ -44,21 +49,24 @@ type VLMLabel struct {
 
 // LabelingStats is a summary of the labeling queue health.
 type LabelingStats struct {
-	Pending  int `json:"pending"`
-	Claimed  int `json:"claimed"`
-	Labeled  int `json:"labeled"`
-	Skipped  int `json:"skipped"`
-	Total    int `json:"total"`
+	Pending int `json:"pending"`
+	Claimed int `json:"claimed"`
+	Labeled int `json:"labeled"`
+	Skipped int `json:"skipped"`
+	Total   int `json:"total"`
 	// label breakdown
-	Correct          int `json:"correct"`
-	Incorrect        int `json:"incorrect"`
-	NeedsCorrection  int `json:"needs_correction"`
+	Correct         int `json:"correct"`
+	Incorrect       int `json:"incorrect"`
+	NeedsCorrection int `json:"needs_correction"`
 }
 
 // EnqueueLabelJob inserts a new pending job into the labeling queue.
 // Called by the alarm pipeline after a successful Qwen inference.
 // Idempotent on alarm_id: if a job already exists for this alarm we skip.
-func (db *DB) EnqueueLabelJob(ctx context.Context, alarmID, cameraID, siteID, snapshotURL, description, threat, model string, detectionsJSON []byte) error {
+//
+// cameraID is uuid.UUID — the column was converted from TEXT to UUID in
+// migration 0027 (P3-INFRA-04).
+func (db *DB) EnqueueLabelJob(ctx context.Context, alarmID string, cameraID uuid.UUID, siteID, snapshotURL, description, threat, model string, detectionsJSON []byte) error {
 	if detectionsJSON == nil {
 		detectionsJSON = []byte("[]")
 	}

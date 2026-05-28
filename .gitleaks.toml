@@ -1,0 +1,62 @@
+# gitleaks allowlist for Ironsight (P1-B-03).
+#
+# Add patterns here for known-safe matches that gitleaks would otherwise
+# flag. The goal is a CLEAN gitleaks run on every PR; real secrets must
+# never land in the repo. If you're tempted to add a regex here to
+# silence a CI failure, first check whether the match is actually a
+# secret that needs rotating.
+
+title = "Ironsight gitleaks config"
+
+# Inherit gitleaks' default rule set (provides the standard detectors
+# for AWS, GCP, Azure, GitHub PATs, JWT, generic API keys, etc.) and
+# layer our allowlist on top.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe patterns that gitleaks misclassifies as secrets"
+
+# Paths that contain test fixtures, demo data, or auto-generated content
+# where high-entropy strings are expected.
+paths = [
+    # Demo seed data — the password "demo123" and similar are fixtures,
+    # not credentials. The actual seed binary now reads passwords from
+    # env (LOCAL-08); these constants only document the defaults.
+    '''internal/seed/.*\.go$''',
+    # Test fixtures — UUIDs, fake JWT tokens used as test inputs.
+    '''.*_test\.go$''',
+    # Frontend lockfile (package-lock.json) — npm registry SHA tokens
+    # look like secrets to gitleaks but aren't.
+    '''frontend/package-lock\.json$''',
+    # Go module sum file — same false-positive pattern.
+    '''go\.sum$''',
+    # The migration baseline contains seeded org/site/operator UUIDs
+    # in INSERT statements — fixed-known constants, not secrets.
+    '''migrations/0001_baseline\.sql$''',
+    # Audit/forensic snapshots store historical findings that may
+    # quote (now-rotated) credentials as part of the recommendation
+    # text. Real rotations are tracked in INFRA_MASTER.md.
+    '''audit/.*\.md$''',
+]
+
+# Literal strings that are intentional fixtures and not credentials.
+stopwords = [
+    "demo123",
+    "JWT_SECRET",
+    "POSTGRES_PASSWORD",
+    "ADMIN_PASSWORD",
+    "your-secret-here",
+    "changeme",
+]
+
+# Regex allowlist — patterns that match the default detectors but are
+# always-safe in our codebase. Keep these narrow; broad patterns will
+# silence real secrets.
+regexes = [
+    # The four secret env-var names that appear all over docs / .env
+    # examples / runbooks. gitleaks' default rules can flag these as
+    # "high-entropy strings near the word 'secret'". The names
+    # themselves aren't secrets.
+    '''(?i)(jwt_secret|postgres_password|admin_password|evidence_signing_key)''',
+]

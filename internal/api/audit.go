@@ -13,8 +13,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"onvif-tool/internal/auth"
-	"onvif-tool/internal/database"
+	"ironsight/internal/auth"
+	"ironsight/internal/database"
 )
 
 // ──────────────────── Audit Middleware ────────────────────

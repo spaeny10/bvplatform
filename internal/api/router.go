@@ -3,29 +3,65 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	sentryhttp "github.com/getsentry/sentry-go/http"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"onvif-tool/internal/ai"
-	"onvif-tool/internal/config"
-	"onvif-tool/internal/database"
-	"onvif-tool/internal/detection"
-	"onvif-tool/internal/notify"
-	"onvif-tool/internal/onvif"
-	"onvif-tool/internal/recording"
-	"onvif-tool/internal/streaming"
+	"ironsight/internal/ai"
+	"ironsight/internal/config"
+	"ironsight/internal/database"
+	"ironsight/internal/detection"
+	"ironsight/internal/logging"
+	appmetrics "ironsight/internal/metrics"
+	"ironsight/internal/notify"
+	"ironsight/internal/onvif"
+	"ironsight/internal/recording"
+	"ironsight/internal/streaming"
 )
 
 // NewRouter creates the HTTP router with all API routes
 func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher, aiClient *ai.Client) http.Handler {
 	r := chi.NewRouter()
 
-	// Middleware
-	r.Use(middleware.Logger)
+	// P1-A-03: spin up the media-serve audit ring buffer. Every
+	// /media/v1/<token> hit enqueues one row; the auditor batches 100
+	// rows or 5 seconds (whichever is first) into audit_log. The
+	// goroutine outlives this constructor — cmd/server doesn't yet
+	// have an api-package shutdown hook, so we accept the leak on
+	// process exit (the OS reclaims the goroutine when main() returns).
+	mediaAuditor := newMediaAuditor(db)
+	mediaAuditor.Start()
+
+	// LOCAL-11: registry that serializes concurrent transcode requests
+	// for the same HEVC segment so we don't burn fred CPU running the
+	// same ffmpeg job in parallel for a popular segment.
+	transcoder := newTranscodeRegistry()
+
+	// Middleware. P1-C-01 swap: chi's middleware.Logger writes
+	// human-readable lines to stdlib log; we now emit structured JSON
+	// via internal/logging and tag every request with a UUIDv7 request
+	// id. RequestID must come BEFORE RequestLogger so the logger
+	// middleware can pre-bind the id into the per-request slog.Logger.
+	//
+	// P1-C-03: metrics middleware is registered BEFORE the Recoverer so
+	// that panics caught by Recoverer and converted to 500 responses are
+	// still counted in ironsight_http_requests_total{status="500"}. If
+	// metrics came after Recoverer, the 500 conversion would happen
+	// before our wrapper sees the status code.
+	if cfg.MetricsEnabled {
+		r.Use(appmetrics.HTTPMiddleware)
+	}
+	// P1-C-02: sentryhttp panic-capture middleware. Outermost so a panic
+	// is reported to Sentry BEFORE chi's Recoverer converts it to a 500
+	// response (Repanic:true causes it to re-panic after capture so
+	// middleware.Recoverer still writes the 500).
+	r.Use(sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle)
+	r.Use(logging.RequestID)
+	r.Use(logging.RequestLogger(nil)) // nil → process default set in cmd/server
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RealIP)
 	// Origins come from cfg.AllowedOrigins which is populated by the
@@ -33,9 +69,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// time is the dev-mode localhost pair; production deployments must
 	// override with the actual frontend origin(s).
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.AllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
+		AllowedOrigins: cfg.AllowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		// X-CSRF-Token added for P1-A-02 part 2 double-submit CSRF protection.
+		// AllowCredentials: true is required for the browser to send the
+		// ironsight_session / ironsight_csrf cookies cross-origin. Note:
+		// AllowedOrigins must NOT contain "*" when AllowCredentials is true —
+		// the cors library rejects the combination at startup.
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
 		ExposedHeaders:   []string{"Link"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -79,18 +120,29 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 	// Authenticated auth routes
 	r.With(RequireAuth(cfg, db)).Get("/auth/me", HandleGetMe(db))
-	r.With(RequireAuth(cfg, db)).Post("/auth/logout", HandleLogout(db))
+	// P1-A-02 part 2: logout is behind CSRF because forcing a logout on a
+	// user via CSRF is annoying (session disruption); the CSRF cookie is
+	// always present by the time a session exists, so the cost is negligible.
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/auth/logout", HandleLogout(db, cfg))
 
 	// MFA management routes. All require an authenticated session;
 	// enrollment uses the session token to bind the new secret to the
 	// caller, and disable requires an active MFA code as proof.
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/enroll", HandleMFAEnroll(db, cfg))
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
-	r.With(RequireAuth(cfg, db)).Post("/api/auth/mfa/disable", HandleMFADisable(db))
+	// P1-A-02 part 2: MFA routes are POSTs outside the /api group, so CSRF
+	// middleware must be applied explicitly here.
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/enroll", HandleMFAEnroll(db, cfg))
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
+	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/disable", HandleMFADisable(db))
 
 	// API routes (JWT protected)
+	// P1-A-02 part 2: CSRFMiddleware is mounted here so all non-idempotent
+	// requests under /api/* require a valid X-CSRF-Token header matching the
+	// ironsight_csrf cookie. GET/HEAD/OPTIONS are exempt (see CSRFMiddleware).
+	// Routes that are intentionally outside this group (login, sense webhook,
+	// public health) are never checked.
 	r.Route("/api", func(r chi.Router) {
 		r.Use(RequireAuth(cfg, db))
+		r.Use(CSRFMiddleware)
 		r.Use(AuditMiddleware(db))
 		// Camera CRUD
 		r.Route("/cameras", func(r chi.Router) {
@@ -142,7 +194,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Post("/discover/preview", HandleDiscoverPreview())
 
 		// Events & Timeline
-		r.Get("/events", HandleQueryEvents(db))
+		r.Get("/events", HandleQueryEvents(cfg, db))
 		r.Get("/timeline", HandleGetTimeline(db))
 		r.Get("/timeline/coverage", HandleGetCoverage(db))
 
@@ -158,33 +210,33 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// for the Profile G fallback playback path.
 		r.Get("/cameras/{id}/sd/status", HandleSDStatus(db))
 
-			// ONVIF-driven reboot (admin / supervisor only). Useful when
-			// the camera gets into a bad state — stuck event-subscription
-			// pool, wedged RTSP, stale driver state. Camera goes offline
-			// for ~30-90s while it restarts.
-			r.Post("/cameras/{id}/reboot", HandleRebootCamera(db))
+		// ONVIF-driven reboot (admin / supervisor only). Useful when
+		// the camera gets into a bad state — stuck event-subscription
+		// pool, wedged RTSP, stale driver state. Camera goes offline
+		// for ~30-90s while it restarts.
+		r.Post("/cameras/{id}/reboot", HandleRebootCamera(db))
 
 		// Unified historical search: events (filtered by RBAC) with playback
 		// URLs resolved in one round trip. Frontend uses this to render a
 		// clickable list — each row carries the segment + seek offset.
-		r.Get("/search/events", HandleSearchEvents(db))
+		r.Get("/search/events", HandleSearchEvents(cfg, db))
 
 		// Semantic / keyword search over VLM-generated segment descriptions.
 		// Populated by the background indexer — any minute of recording is
 		// searchable by natural-language content ("red jacket", "ladder",
 		// "delivery truck"), not just by event-rule name.
-		r.Get("/search/semantic", HandleSemanticSearch(db))
+		r.Get("/search/semantic", HandleSemanticSearch(cfg, db))
 
 		// Unified safety + security frame search for the /search page.
 		// Returns shaped SearchResult[] matching the frontend type, unioning
 		// VLM-described segments with SOC alarms (so PPE violation filters
 		// and natural-language queries hit the same result list).
-		r.Post("/search/frames", HandleSearchFrames(db))
+		r.Post("/search/frames", HandleSearchFrames(cfg, db))
 
 		// Recording-health snapshot for operators + customers. Per-camera
 		// stats over the last 24h + traffic-light status so silent recording
 		// failures surface in the UI instead of in server logs.
-		r.Get("/recording/health", HandleRecordingHealth(db))
+		r.Get("/recording/health", HandleRecordingHealth(cfg, db))
 
 		// Evidence export: bundles an event into a .zip with clip.mp4,
 		// snapshot.jpg, event.json, README.txt for police / insurance reports.
@@ -256,11 +308,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// reply so neither side has to babysit the UI.
 		// Mounted under the existing /api group, so the actual
 		// paths are /api/support/tickets/* — short and clean.
-		r.Post("/support/tickets",                  HandleCreateSupportTicket(db, notifier))
-		r.Get("/support/tickets",                   HandleListSupportTickets(db))
-		r.Get("/support/tickets/{id}",              HandleGetSupportTicket(db))
-		r.Post("/support/tickets/{id}/messages",    HandleSupportTicketReply(db, notifier))
-		r.Patch("/support/tickets/{id}",            HandleUpdateSupportTicket(db))
+		r.Post("/support/tickets", HandleCreateSupportTicket(db, notifier))
+		r.Get("/support/tickets", HandleListSupportTickets(db))
+		r.Get("/support/tickets/{id}", HandleGetSupportTicket(db))
+		r.Post("/support/tickets/{id}/messages", HandleSupportTicketReply(db, notifier))
+		r.Patch("/support/tickets/{id}", HandleUpdateSupportTicket(db))
 
 		// ════════════════════════════════════════
 		// Ironsight Platform Routes (/api/v1/*)
@@ -333,13 +385,38 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// these are the authenticated supervisor-only management
 			// endpoints. Audit middleware tags the actions as
 			// create_evidence_share / revoke_evidence_share.
-			r.Post("/incidents/{id}/share", HandleCreateEvidenceShare(db))
+			r.Post("/incidents/{id}/share", HandleCreateEvidenceShare(cfg, db))
 			r.Get("/incidents/{id}/shares", HandleListEvidenceShares(db))
 			r.Delete("/shares/{token}", HandleRevokeEvidenceShare(db))
 			r.Get("/incidents", HandleListIncidents(db))
 			r.Get("/incidents/{id}", HandleGetIncident(db))
 
 			r.Get("/portal/summary", HandlePortalSummary(db))
+
+			// PPE pending review queue (P2-C-01)
+			// GET  /api/v1/portal/pending-review          — list findings (all tenant roles)
+			// POST /api/v1/portal/pending-review/{id}/review — submit verdict (site_manager+)
+			// GET  /api/v1/portal/pending-review/{id}/frame  — serve JPEG thumbnail (any tenant role)
+			r.Get("/portal/pending-review", HandleListPendingReview(cfg, db))
+			r.Post("/portal/pending-review/{id}/review", HandleReviewPendingEntry(cfg, db))
+			r.Get("/portal/pending-review/{id}/frame", HandleServePPEFrame(cfg, db))
+
+			// Person-tracking aggregation (P2-C-02)
+			// GET /api/v1/portal/person-tracks — pre-aggregated bucket rows for the C-06 dashboard.
+			// CSRF-exempt: GET endpoint. Auth-scoped to claims.OrganizationID.
+			r.Get("/portal/person-tracks", HandleGetPersonTracks(db))
+
+			// Compliance dashboard + PDF reports (P2-C-06)
+			// Both are GET endpoints — CSRFMiddleware exempts GET/HEAD/OPTIONS.
+			// Tenant-scoped from JWT claims; SOC roles may spectate via ?org=.
+			r.Get("/portal/compliance/summary", HandleComplianceSummary(db))
+			r.Get("/portal/compliance/report.pdf", HandleComplianceReportPDF(db, cfg))
+
+			// Chain-of-custody manifests (P3-INFRA-03)
+			// GET endpoints — CSRF-exempt per CSRFMiddleware GET exclusion.
+			r.Get("/evidence/manifests", HandleListManifests(db))
+			r.Get("/evidence/manifests/{id}", HandleGetManifest(db))
+			r.Get("/evidence/manifests/{id}/verify", HandleVerifyManifest(db, cfg))
 
 			// Active alarm escalation
 			r.Post("/alarms/{alarmId}/escalate", HandleEscalateAlarm(db, hub))
@@ -406,15 +483,15 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 		// ── ML Labeling (internal staff / admin only) ──────────────────
 		// Off-SOC active-learning queue. Passively populated when Qwen
-		// analyses an alarm frame; drained by internal annotators at
+		// analyzes an alarm frame; drained by internal annotators at
 		// /admin/labeling. SOC operators never see or interact with this.
 		r.Route("/admin/labeling", func(r chi.Router) {
-			r.Get("/stats",           HandleLabelingStats(db))
-			r.Get("/jobs",            HandleListLabelJobs(db))
-			r.Post("/jobs/next",      HandleClaimNextLabelJob(db))
+			r.Get("/stats", HandleLabelingStats(db))
+			r.Get("/jobs", HandleListLabelJobs(db))
+			r.Post("/jobs/next", HandleClaimNextLabelJob(db))
 			r.Post("/jobs/{id}/claim", HandleClaimLabelJob(db))
 			r.Post("/jobs/{id}/label", HandleSubmitLabel(db))
-			r.Get("/export",          HandleExportLabeledDataset(db))
+			r.Get("/export", HandleExportLabeledDataset(db))
 		})
 
 		// Bookmarks / Incident markers
@@ -441,8 +518,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Playback segment lookup (returns JSON with MP4 segment URLs) and
 		// HLS VOD playlist. Inside the auth group — handlers use CanAccessCamera
 		// to restrict playback to the caller's authorized cameras.
-		r.Get("/playback/{id}", HandlePlayback(db))
-		r.Get("/playback/{id}/playlist.m3u8", HandlePlaybackHLS(db))
+		r.Get("/playback/{id}", HandlePlayback(cfg, db))
+		r.Get("/playback/{id}/playlist.m3u8", HandlePlaybackHLS(cfg, db))
+
+		// P1-A-03 mint endpoint. JWT-authenticated; caller asks for a
+		// short-lived signed URL bound to (camera_id, kind, path) and
+		// gets back /media/v1/<token>. Tenant scope is enforced here
+		// AND re-enforced in HandleMediaServe.
+		r.Post("/media/mint", HandleMediaMint(cfg, db))
 	})
 
 	// Camera snapshot — public so <img> tags in the SOC feed can load without a Bearer token.
@@ -455,26 +538,58 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 
 	// Playback endpoints registered inside the /api auth group above.
 
-	// Static file serving for HLS segments
-	r.Handle("/hls/*", http.StripPrefix("/hls/", http.FileServer(http.Dir(cfg.HLSPath))))
+	// P1-A-03: authenticated media serving. Replaces the three bare
+	// http.FileServer registrations that previously served /hls/*,
+	// /recordings/*, and /snapshots/* with no authentication and no
+	// tenant scoping. The token in the URL is the authorization — the
+	// handler validates it, re-checks CanAccessCamera against the
+	// current DB state, then streams the file. See docs/media-auth.md.
+	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor, transcoder))
 
 	// WebRTC WHEP proxy to MediaMTX
 	if mtxServer != nil {
 		r.Handle("/webrtc/*", http.StripPrefix("/webrtc", mtxServer.WHEPHandler()))
 	}
 
-	// Static file serving for recordings playback
-	r.Handle("/recordings/*", http.StripPrefix("/recordings/", http.FileServer(http.Dir(cfg.StoragePath))))
-
-	// Static file serving for alarm event snapshots (JPEG frames captured at detection time)
-	// Stored alongside recordings: {storageBase}/snapshots/{cameraID}/{alarmID}.jpg
-	if cfg.StoragePath != "" {
-		snapshotsDir := filepath.Join(filepath.Dir(cfg.StoragePath), "snapshots")
-		r.Handle("/snapshots/*", http.StripPrefix("/snapshots/", http.FileServer(http.Dir(snapshotsDir))))
-	}
-
-	// Static file serving for exports
+	// Static file serving for exports. NOTE: /exports is operator-only
+	// (admin / supervisor / soc_operator), bundled evidence ZIPs are
+	// already gated at the /api/events/{id}/export create path so the
+	// resulting download URLs are obscure-enough for the moment. A
+	// separate hardening task (P1-A-03 follow-up) can fold this into
+	// the same /media/v1/ scheme if Caleb wants belt-and-braces.
 	r.Handle("/exports/*", http.StripPrefix("/exports/", http.FileServer(http.Dir(cfg.ExportPath))))
+
+	// P1-C-03 / P1-A-02 PR3: Prometheus /metrics endpoint.
+	//
+	// Security posture (updated P1-A-02 PR3):
+	//   METRICS_AUTH=none (default) — /metrics is NOT wrapped in RequireAuth.
+	//     The Prometheus scraper on the monitoring LXC hits the endpoint
+	//     without an auth token. REQUIRED: NPM must restrict /metrics to the
+	//     monitoring LXC IP + trusted LAN CIDR before traffic reaches this
+	//     container. Do NOT expose publicly with no NPM restriction.
+	//     See docs/metrics.md for the NPM rule requirement.
+	//   METRICS_AUTH=sso — gate behind RequireAuth (JWT/SSO middleware).
+	//     Useful for dev/testing environments where network restrictions are
+	//     not in place, or as belt-and-suspenders on top of NPM restrictions.
+	//
+	// The bearer-token path in RequireAuth has been retired (P1-A-02 PR3), so
+	// the scraper can no longer authenticate via Authorization header —
+	// network-trust is the production scraping model going forward.
+	//
+	// Disabled entirely when MetricsEnabled=false (METRICS_ENABLED=false env).
+	if cfg.MetricsEnabled {
+		metricsHandler := promhttp.HandlerFor(
+			appmetrics.Registry,
+			promhttp.HandlerOpts{EnableOpenMetrics: false},
+		)
+		if cfg.MetricsAuth == "sso" {
+			// Explicit opt-in: gate behind RequireAuth for dev/test.
+			r.With(RequireAuth(cfg, db)).Get("/metrics", metricsHandler.ServeHTTP)
+		} else {
+			// Default ("none"): no application auth — NPM network restriction required.
+			r.Get("/metrics", metricsHandler.ServeHTTP)
+		}
+	}
 
 	return r
 }
