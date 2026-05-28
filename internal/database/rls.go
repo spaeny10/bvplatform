@@ -84,12 +84,15 @@ func AcquireWithTenant(ctx context.Context, pool *pgxpool.Pool, tenant string) (
 		return nil, nil, fmt.Errorf("rls.AcquireWithTenant: begin tx: %w", err)
 	}
 
-	// SET LOCAL scopes the GUC to this transaction. When the transaction ends
-	// (commit or rollback) the GUC is automatically cleared — no explicit
-	// RESET needed.  This is the safest approach: even if the caller forgets
-	// to commit/rollback, pgxpool's release path triggers a rollback on the
-	// idle connection, clearing the GUC before the connection re-enters the pool.
-	if _, err = tx.Exec(ctx, `SET LOCAL app.current_tenant = $1`, tenant); err != nil {
+	// set_config(name, value, is_local) is the parametrised equivalent of
+	// SET LOCAL — `SET` itself does not accept $-placeholders, so we use the
+	// function form to avoid string-concatenating tenant IDs into SQL.
+	// is_local=true scopes the GUC to this transaction; when the transaction
+	// ends (commit or rollback) the GUC is automatically cleared — no explicit
+	// RESET needed. Even if the caller forgets to commit/rollback, pgxpool's
+	// release path triggers a rollback on the idle connection, clearing the
+	// GUC before the connection re-enters the pool.
+	if _, err = tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, tenant); err != nil {
 		_ = tx.Rollback(ctx)
 		conn.Release()
 		return nil, nil, fmt.Errorf("rls.AcquireWithTenant: set local: %w", err)
@@ -107,7 +110,7 @@ func AcquireWithTenant(ctx context.Context, pool *pgxpool.Pool, tenant string) (
 // This is a lower-level escape hatch; prefer AcquireWithTenant for the
 // standard request-scoped use case.
 func SetTenantOnConn(ctx context.Context, tx pgx.Tx, tenant string) error {
-	if _, err := tx.Exec(ctx, `SET LOCAL app.current_tenant = $1`, tenant); err != nil {
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.current_tenant', $1, true)`, tenant); err != nil {
 		return fmt.Errorf("rls.SetTenantOnConn: %w", err)
 	}
 	return nil
