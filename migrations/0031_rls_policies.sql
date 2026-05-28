@@ -31,12 +31,14 @@
 -- fred production also uses 'onvif' as the owner.  The goose migrate binary
 -- connects as 'onvif' so it has the bypass policy automatically.
 --
--- We also grant bypass to 'postgres' (the postgres superuser) for:
---   • CI workers that may use the default postgres role
---   • Emergency DBA access
---
--- Both grants are PERMISSIVE policies so they stack with (i.e. OR with) the
--- tenant_isolation policy — a connection as onvif/postgres always wins.
+-- We deliberately do NOT grant bypass to 'postgres' as a literal role: the
+-- timescale container started with POSTGRES_USER=onvif (fred) does not create
+-- a postgres role at all, and CI's ephemeral DB starts as the postgres
+-- SUPERUSER which already bypasses RLS unconditionally via the SUPERUSER
+-- attribute. Integration tests that need to verify enforcement explicitly
+-- SET LOCAL ROLE to a non-superuser test role (see testutil.AcquireRLSTenantTx).
+-- This avoids "role does not exist" failures on fred when applying the
+-- migration.
 --
 -- HYPERTABLE NOTE
 -- ───────────────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ $$;
 --       USING (organization_id = app_current_tenant())
 --       WITH CHECK (organization_id = app_current_tenant());
 --   CREATE POLICY service_bypass ON t
---       AS PERMISSIVE FOR ALL TO onvif, postgres
+--       AS PERMISSIVE FOR ALL TO onvif
 --       USING (true);
 -- ─────────────────────────────────────────────────────────────────────────
 
@@ -142,7 +144,7 @@ CREATE POLICY tenant_isolation ON sites
 
 DROP POLICY IF EXISTS service_bypass ON sites;
 CREATE POLICY service_bypass ON sites
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── organizations ────────────────────────────────────────────────────────
@@ -158,7 +160,7 @@ CREATE POLICY tenant_isolation ON organizations
 
 DROP POLICY IF EXISTS service_bypass ON organizations;
 CREATE POLICY service_bypass ON organizations
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── users ────────────────────────────────────────────────────────────────
@@ -179,7 +181,7 @@ CREATE POLICY tenant_isolation ON users
 
 DROP POLICY IF EXISTS service_bypass ON users;
 CREATE POLICY service_bypass ON users
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── active_alarms ─────────────────────────────────────────────────────────
@@ -194,7 +196,7 @@ CREATE POLICY tenant_isolation ON active_alarms
 
 DROP POLICY IF EXISTS service_bypass ON active_alarms;
 CREATE POLICY service_bypass ON active_alarms
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── incidents ─────────────────────────────────────────────────────────────
@@ -209,7 +211,7 @@ CREATE POLICY tenant_isolation ON incidents
 
 DROP POLICY IF EXISTS service_bypass ON incidents;
 CREATE POLICY service_bypass ON incidents
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── evidence_shares ──────────────────────────────────────────────────────
@@ -224,7 +226,7 @@ CREATE POLICY tenant_isolation ON evidence_shares
 
 DROP POLICY IF EXISTS service_bypass ON evidence_shares;
 CREATE POLICY service_bypass ON evidence_shares
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── vlm_label_jobs ────────────────────────────────────────────────────────
@@ -239,7 +241,7 @@ CREATE POLICY tenant_isolation ON vlm_label_jobs
 
 DROP POLICY IF EXISTS service_bypass ON vlm_label_jobs;
 CREATE POLICY service_bypass ON vlm_label_jobs
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── vca_rules ────────────────────────────────────────────────────────────
@@ -259,7 +261,7 @@ CREATE POLICY tenant_isolation ON ppe_zones
 
 DROP POLICY IF EXISTS service_bypass ON ppe_zones;
 CREATE POLICY service_bypass ON ppe_zones
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── compliance_rules ──────────────────────────────────────────────────────
@@ -274,7 +276,7 @@ CREATE POLICY tenant_isolation ON compliance_rules
 
 DROP POLICY IF EXISTS service_bypass ON compliance_rules;
 CREATE POLICY service_bypass ON compliance_rules
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── pending_review_queue ──────────────────────────────────────────────────
@@ -289,7 +291,7 @@ CREATE POLICY tenant_isolation ON pending_review_queue
 
 DROP POLICY IF EXISTS service_bypass ON pending_review_queue;
 CREATE POLICY service_bypass ON pending_review_queue
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── support_tickets ───────────────────────────────────────────────────────
@@ -304,7 +306,7 @@ CREATE POLICY tenant_isolation ON support_tickets
 
 DROP POLICY IF EXISTS service_bypass ON support_tickets;
 CREATE POLICY service_bypass ON support_tickets
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── evidence_manifests ───────────────────────────────────────────────────
@@ -319,7 +321,7 @@ CREATE POLICY tenant_isolation ON evidence_manifests
 
 DROP POLICY IF EXISTS service_bypass ON evidence_manifests;
 CREATE POLICY service_bypass ON evidence_manifests
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── person_track_frames (hypertable) ──────────────────────────────────────
@@ -336,7 +338,7 @@ CREATE POLICY tenant_isolation ON person_track_frames
 
 DROP POLICY IF EXISTS service_bypass ON person_track_frames;
 CREATE POLICY service_bypass ON person_track_frames
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── person_track_buckets ──────────────────────────────────────────────────
@@ -351,7 +353,7 @@ CREATE POLICY tenant_isolation ON person_track_buckets
 
 DROP POLICY IF EXISTS service_bypass ON person_track_buckets;
 CREATE POLICY service_bypass ON person_track_buckets
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── model_versions ────────────────────────────────────────────────────────
@@ -366,7 +368,7 @@ CREATE POLICY tenant_isolation ON model_versions
 
 DROP POLICY IF EXISTS service_bypass ON model_versions;
 CREATE POLICY service_bypass ON model_versions
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── analysis_runs ─────────────────────────────────────────────────────────
@@ -381,7 +383,7 @@ CREATE POLICY tenant_isolation ON analysis_runs
 
 DROP POLICY IF EXISTS service_bypass ON analysis_runs;
 CREATE POLICY service_bypass ON analysis_runs
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── detections (hypertable) ───────────────────────────────────────────────
@@ -398,7 +400,7 @@ CREATE POLICY tenant_isolation ON detections
 
 DROP POLICY IF EXISTS service_bypass ON detections;
 CREATE POLICY service_bypass ON detections
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── detection_reviews ─────────────────────────────────────────────────────
@@ -413,7 +415,7 @@ CREATE POLICY tenant_isolation ON detection_reviews
 
 DROP POLICY IF EXISTS service_bypass ON detection_reviews;
 CREATE POLICY service_bypass ON detection_reviews
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── digest_sends ──────────────────────────────────────────────────────────
@@ -430,7 +432,7 @@ CREATE POLICY tenant_isolation ON digest_sends
 
 DROP POLICY IF EXISTS service_bypass ON digest_sends;
 CREATE POLICY service_bypass ON digest_sends
-    AS PERMISSIVE FOR ALL TO onvif, postgres
+    AS PERMISSIVE FOR ALL TO onvif
     USING (true);
 
 -- ── segments (hypertable) ────────────────────────────────────────────────
