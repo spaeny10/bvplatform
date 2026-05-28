@@ -127,6 +127,19 @@ func initSharedDB() {
 	// non-superuser, no-bypass role via SET LOCAL ROLE inside its test
 	// transactions (see testutil.AcquireRLSTenantTx). This role is not used
 	// in production.
+	//
+	// pg_advisory_lock serialises concurrent test binaries (which each run
+	// initSharedDB once via sync.Once but share the same database). Without
+	// the lock, parallel binaries race on system-catalog updates triggered
+	// by GRANT/ALTER DEFAULT PRIVILEGES and hit "tuple concurrently updated".
+	// The arbitrary key 729384721234 is per-purpose; pick a different one if
+	// another setup path needs its own serialisation later.
+	if _, err := pool.Exec(ctx, `SELECT pg_advisory_lock(729384721234)`); err != nil {
+		sharedDBErr = fmt.Errorf("rls_test_user setup: advisory lock: %w", err)
+		return
+	}
+	defer pool.Exec(ctx, `SELECT pg_advisory_unlock(729384721234)`) //nolint:errcheck
+
 	for _, stmt := range []string{
 		`DO $$ BEGIN
 			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'rls_test_user') THEN
