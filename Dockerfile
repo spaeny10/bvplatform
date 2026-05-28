@@ -50,7 +50,8 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/server          ./cmd/server    
     go build -trimpath -ldflags "-s -w" -o /out/worker          ./cmd/worker          && \
     go build -trimpath -ldflags "-s -w" -o /out/seed            ./cmd/seed            && \
     go build -trimpath -ldflags "-s -w" -o /out/migrate         ./cmd/migrate         && \
-    go build -trimpath -ldflags "-s -w" -o /out/verify-manifest ./cmd/verify-manifest
+    go build -trimpath -ldflags "-s -w" -o /out/verify-manifest ./cmd/verify-manifest && \
+    go build -trimpath -ldflags "-s -w" -o /out/reanalyze       ./cmd/reanalyze
 
 # ── Stage 2: runtime ───────────────────────────────────────────
 # We pick bookworm-slim over distroless because the server shells out to
@@ -80,6 +81,7 @@ COPY --from=build --chown=ironsight:ironsight /out/worker          /app/worker
 COPY --from=build --chown=ironsight:ironsight /out/seed            /app/seed
 COPY --from=build --chown=ironsight:ironsight /out/migrate         /app/migrate
 COPY --from=build --chown=ironsight:ironsight /out/verify-manifest /app/verify-manifest
+COPY --from=build --chown=ironsight:ironsight /out/reanalyze       /app/reanalyze
 
 # Storage paths live under /data by convention. docker-compose mounts a
 # named volume (or a host path) at /data; the Go server gets pointed at
