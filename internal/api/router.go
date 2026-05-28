@@ -144,6 +144,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Use(RequireAuth(cfg, db))
 		r.Use(CSRFMiddleware)
 		r.Use(AuditMiddleware(db))
+		// P4-SCHEMA-07: propagate the per-request tenant ID into context.
+		// RLSMiddleware reads claims (resolved by RequireAuth above) and
+		// stores claims.OrganizationID so handlers can call
+		// db.AcquireWithTenant when they want DB-level RLS enforcement.
+		r.Use(RLSMiddleware)
 		// Camera CRUD
 		r.Route("/cameras", func(r chi.Router) {
 			r.Get("/", HandleListCameras(db))
