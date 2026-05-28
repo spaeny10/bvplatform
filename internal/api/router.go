@@ -484,6 +484,21 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 				}
 				writeJSON(w, map[string]interface{}{"ok": true, "incident_id": incidentID})
 			})
+
+			// ── P4-SCHEMA-06: detection listing + model-version filter ─────────
+			// GET /api/v1/detections
+			//   ?model_version_id=<uuid>  — filter to a specific model version
+			//                              (default: latest by deployed_at for org)
+			//   ?domain=<ppe|security|…>  — filter by detection_domain
+			//   ?since=<RFC3339>          — lower bound on detected_at
+			//   ?until=<RFC3339>          — upper bound on detected_at
+			//   ?limit=<int>              — page size (default 100, max 1000)
+			// GET /api/v1/model-versions
+			//   Returns available model_versions for the caller's org (for dropdown).
+			//   "Latest model" semantics: newest by deployed_at across all domains.
+			//   Operators use ?model_version_id=<uuid> to filter to a specific version.
+			r.Get("/detections", HandleListDetections(db))
+			r.Get("/model-versions", HandleListModelVersions(db))
 		})
 
 		// ── ML Labeling (internal staff / admin only) ──────────────────
@@ -498,6 +513,18 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Post("/jobs/{id}/label", HandleSubmitLabel(db))
 			r.Get("/export", HandleExportLabeledDataset(db))
 		})
+
+		// ── P4-SCHEMA-06: re-analysis admin API (admin only) ───────────
+		// POST /api/admin/reanalyze  — kick off an async re-analysis run.
+		// GET  /api/admin/reanalyze/{run_id} — poll run status.
+		r.Route("/admin/reanalyze", func(r chi.Router) {
+			r.Post("/", HandleAdminReanalyze(db))
+			r.Get("/{run_id}", HandleGetReanalyzeRun(db))
+		})
+
+		// ── P4-SCHEMA-06: detection listing with model-version filter ──
+		// GET /api/v1/detections?model_version_id=<uuid>&domain=<d>&since=&until=&limit=
+		// GET /api/v1/model-versions — list available model versions for dropdown.
 
 		// Bookmarks / Incident markers
 		r.Post("/bookmarks", HandleCreateBookmark(db))
