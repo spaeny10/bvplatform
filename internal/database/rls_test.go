@@ -130,10 +130,12 @@ func TestRLS_TenantIsolation_Detections(t *testing.T) {
 	detA := insertTestDetection(t, db, ctx, orgA, camA, mvA, arA)
 	detB := insertTestDetection(t, db, ctx, orgB, camB, mvB, arB)
 
-	// Acquire connection scoped to org A.
-	conn, tx, err := database.AcquireWithTenant(ctx, db.Pool, orgA)
+	// Acquire connection scoped to org A. Use the RLS-test helper which also
+	// drops the effective role to rls_test_user — the bare pool runs as
+	// postgres-SUPERUSER which bypasses RLS unconditionally regardless of FORCE.
+	conn, tx, err := testutil.AcquireRLSTenantTx(ctx, db, orgA)
 	if err != nil {
-		t.Fatalf("AcquireWithTenant: %v", err)
+		t.Fatalf("AcquireRLSTenantTx: %v", err)
 	}
 	defer conn.Release()
 	defer tx.Rollback(ctx)
@@ -183,9 +185,9 @@ func TestRLS_WithCheck_Blocks_CrossTenant_Insert(t *testing.T) {
 	camA := insertTestCameraForOrg(t, db, ctx, siteA)
 	mvA, arA := buildDetectionFixture(t, db, ctx, orgA, camA)
 
-	conn, tx, err := database.AcquireWithTenant(ctx, db.Pool, orgA)
+	conn, tx, err := testutil.AcquireRLSTenantTx(ctx, db, orgA)
 	if err != nil {
-		t.Fatalf("AcquireWithTenant: %v", err)
+		t.Fatalf("AcquireRLSTenantTx: %v", err)
 	}
 	defer conn.Release()
 	defer tx.Rollback(ctx)
@@ -381,9 +383,9 @@ func TestRLS_Sites_Isolation(t *testing.T) {
 	siteB := insertTestSite(t, db, ctx, orgB)
 
 	// Scoped to org A — must see site A and not site B.
-	conn, tx, err := database.AcquireWithTenant(ctx, db.Pool, orgA)
+	conn, tx, err := testutil.AcquireRLSTenantTx(ctx, db, orgA)
 	if err != nil {
-		t.Fatalf("AcquireWithTenant: %v", err)
+		t.Fatalf("AcquireRLSTenantTx: %v", err)
 	}
 	defer conn.Release()
 	defer tx.Rollback(ctx)
@@ -416,9 +418,9 @@ func TestRLS_Organizations_Isolation(t *testing.T) {
 	orgA := insertTestOrg(t, db, ctx)
 	orgB := insertTestOrg(t, db, ctx)
 
-	conn, tx, err := database.AcquireWithTenant(ctx, db.Pool, orgA)
+	conn, tx, err := testutil.AcquireRLSTenantTx(ctx, db, orgA)
 	if err != nil {
-		t.Fatalf("AcquireWithTenant: %v", err)
+		t.Fatalf("AcquireRLSTenantTx: %v", err)
 	}
 	defer conn.Release()
 	defer tx.Rollback(ctx)
