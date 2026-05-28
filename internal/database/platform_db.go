@@ -278,9 +278,16 @@ func (c CallerScope) IsUnscoped() bool {
 // reviewer (and any reasonable security review) wants the boundary
 // checked on every read, not assumed.
 func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, error) {
-	// Trap 1 fix: join must filter deleted cameras so counts are accurate.
-	// The cameras_active view is not used here because we need the explicit
-	// JOIN condition for aggregation — we add AND c.deleted_at IS NULL instead.
+	// 2026-05-28 regression fix: switched the camera counts from a
+	// JOIN+GROUP BY to scalar subqueries. The JOIN+GROUP BY version relied
+	// on Postgres' functional-dependency relaxation (GROUP BY s.id allows
+	// SELECTing s.name etc when s.id is a PRIMARY KEY). That relaxation
+	// only works against base tables — once we switched the FROM clause
+	// to the soft-delete view `sites_active` (P3-INFRA-05), Postgres
+	// stopped recognising the PK and rejected the query with
+	// "column \"s.name\" must appear in the GROUP BY clause" (SQLSTATE
+	// 42803). The scalar-subquery shape avoids GROUP BY entirely and
+	// works against base tables, views, and RLS-enabled tables alike.
 	base := `
 		SELECT s.id, s.name, s.address, s.organization_id, s.latitude, s.longitude,
 		       s.status, s.monitoring_start, s.monitoring_end, s.site_notes,
@@ -292,16 +299,17 @@ func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, e
 		       COALESCE(s.recording_triggers, 'motion,object'),
 		       COALESCE(s.recording_schedule, ''),
 		       s.created_at,
-		       COUNT(c.id) FILTER (WHERE c.status = 'online') AS cameras_online,
-		       COUNT(c.id) AS cameras_total
-		FROM sites_active s
-		LEFT JOIN cameras c ON c.site_id = s.id AND c.deleted_at IS NULL`
+		       (SELECT COUNT(*) FROM cameras c
+		          WHERE c.site_id = s.id AND c.deleted_at IS NULL AND c.status = 'online') AS cameras_online,
+		       (SELECT COUNT(*) FROM cameras c
+		          WHERE c.site_id = s.id AND c.deleted_at IS NULL) AS cameras_total
+		FROM sites_active s`
 
 	var rows pgx.Rows
 	var err error
 	switch {
 	case scope.IsUnscoped():
-		rows, err = db.Pool.Query(ctx, base+` GROUP BY s.id ORDER BY s.name`)
+		rows, err = db.Pool.Query(ctx, base+` ORDER BY s.name`)
 	case scope.OrganizationID != "":
 		// Customer / site_manager: scoped to their organization's
 		// sites. Plus any explicitly-assigned sites in case the user
@@ -309,12 +317,12 @@ func (db *DB) ListSitesScoped(ctx context.Context, scope CallerScope) ([]Site, e
 		rows, err = db.Pool.Query(ctx, base+`
 			WHERE s.organization_id = $1
 			   OR ($2::text[] IS NOT NULL AND s.id = ANY($2::text[]))
-			GROUP BY s.id ORDER BY s.name`,
+			ORDER BY s.name`,
 			scope.OrganizationID, scope.AssignedSiteIDs)
 	case len(scope.AssignedSiteIDs) > 0:
 		rows, err = db.Pool.Query(ctx, base+`
 			WHERE s.id = ANY($1::text[])
-			GROUP BY s.id ORDER BY s.name`,
+			ORDER BY s.name`,
 			scope.AssignedSiteIDs)
 	default:
 		// No org, no assignments — caller has access to nothing. Return

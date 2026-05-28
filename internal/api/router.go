@@ -134,6 +134,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/confirm", HandleMFAConfirm(db))
 	r.With(RequireAuth(cfg, db), CSRFMiddleware).Post("/api/auth/mfa/disable", HandleMFADisable(db))
 
+	// P1-A-04: short-lived WS ticket minter. GET is CSRF-exempt (safe method),
+	// but RequireAuth ensures only authenticated sessions can mint tickets.
+	// The frontend calls this before opening the WS to alerts / live feed; the
+	// fallback path (X-Forwarded-Email on the WS upgrade) is for SSO sessions
+	// whose cookie isn't yet recognised by the ticket mint.
+	r.With(RequireAuth(cfg, db)).Get("/api/auth/ws-ticket", HandleWSTicket(cfg))
+
 	// API routes (JWT protected)
 	// P1-A-02 part 2: CSRFMiddleware is mounted here so all non-idempotent
 	// requests under /api/* require a valid X-CSRF-Token header matching the

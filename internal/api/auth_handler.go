@@ -377,6 +377,35 @@ func HandleLogout(db *database.DB, cfg *config.Config) http.HandlerFunc {
 	}
 }
 
+// HandleWSTicket mints a short-lived WebSocket-upgrade ticket for the
+// current authenticated session. The caller is identified by the session
+// JWT (cookie) which RequireAuth already validated; this endpoint just
+// re-signs the identity into the WS audience so the upgrade handler can
+// authenticate the WS connection without exposing the long-lived session
+// JWT in the URL query string.
+//
+// Returns 401 if no claims are present. The ticket TTL is auth.DefaultWSTicketTTL
+// (5 minutes) — long enough to survive a network blip between the mint
+// request and the WS upgrade, short enough that URL leaks are bounded.
+//
+// Mounted at GET /api/auth/ws-ticket inside the RequireAuth+CSRF group;
+// GET is CSRF-exempt by design (CSRFMiddleware skips safe methods).
+func HandleWSTicket(cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ticket, err := auth.SignWSTicket(claims, cfg.JWTSecret, auth.DefaultWSTicketTTL)
+		if err != nil {
+			http.Error(w, "ws-ticket mint failed", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"ticket": ticket})
+	}
+}
+
 // HandleGetMe returns the current user's full profile from the DB
 func HandleGetMe(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
