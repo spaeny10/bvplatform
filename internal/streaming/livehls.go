@@ -49,10 +49,11 @@ import (
 	gohlscodecs "github.com/bluenviron/gohlslib/v2/pkg/codecs"
 	gortsplib "github.com/bluenviron/gortsplib/v5"
 	"github.com/bluenviron/gortsplib/v5/pkg/base"
+	"github.com/bluenviron/gortsplib/v5/pkg/description"
 	"github.com/bluenviron/gortsplib/v5/pkg/format"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph264"
 	"github.com/bluenviron/gortsplib/v5/pkg/format/rtph265"
-	pion "github.com/pion/rtp"
+	"github.com/pion/rtp"
 
 	"github.com/google/uuid"
 )
@@ -216,7 +217,7 @@ func (m *LiveHLSMuxer) start() error {
 	var hlsTracks []*gohlslib.Track
 	type trackWiring struct {
 		hlsTrack *gohlslib.Track
-		rtspMed  *gortsplib.MediaDescription
+		rtspMed  *description.Media
 		codec    interface{} // *format.H264 or *format.H265
 	}
 	var wirings []trackWiring
@@ -225,16 +226,12 @@ func (m *LiveHLSMuxer) start() error {
 		for _, f := range media.Formats {
 			switch ft := f.(type) {
 			case *format.H265:
+				// SafeParams returns (vps []byte, sps []byte, pps []byte) — plain byte slices.
 				vps, sps, pps := ft.SafeParams()
-				codec := &gohlscodecs.H265{}
-				if len(vps) > 0 {
-					codec.VPS = vps[0]
-				}
-				if len(sps) > 0 {
-					codec.SPS = sps[0]
-				}
-				if len(pps) > 0 {
-					codec.PPS = pps[0]
+				codec := &gohlscodecs.H265{
+					VPS: vps,
+					SPS: sps,
+					PPS: pps,
 				}
 				t := &gohlslib.Track{Codec: codec}
 				hlsTracks = append(hlsTracks, t)
@@ -242,13 +239,11 @@ func (m *LiveHLSMuxer) start() error {
 				goto nextMedia
 
 			case *format.H264:
+				// SafeParams returns (sps []byte, pps []byte) — plain byte slices.
 				sps, pps := ft.SafeParams()
-				codec := &gohlscodecs.H264{}
-				if len(sps) > 0 {
-					codec.SPS = sps[0]
-				}
-				if len(pps) > 0 {
-					codec.PPS = pps[0]
+				codec := &gohlscodecs.H264{
+					SPS: sps,
+					PPS: pps,
 				}
 				t := &gohlslib.Track{Codec: codec}
 				hlsTracks = append(hlsTracks, t)
@@ -291,7 +286,14 @@ func (m *LiveHLSMuxer) start() error {
 				c.Close()
 				return fmt.Errorf("h265 decoder: %w", err)
 			}
-			c.OnPacketRTP(w.rtspMed, ft, func(pkt *pion.Packet) {
+			wMed := w.rtspMed // capture for closure
+			c.OnPacketRTP(w.rtspMed, ft, func(pkt *rtp.Packet) {
+				// PacketPTS returns the presentation timestamp in 90kHz clock units
+				// (same unit that gohlslib's WriteH265 expects).
+				pts, ok := c.PacketPTS(wMed, pkt)
+				if !ok {
+					return // clock not yet established; skip
+				}
 				au, err := dec.Decode(pkt)
 				if err != nil {
 					if err != rtph265.ErrNonStartingPacketAndNoPrevious &&
@@ -300,8 +302,6 @@ func (m *LiveHLSMuxer) start() error {
 					}
 					return
 				}
-				// RTP timestamp is in 90 kHz clock units for video.
-				pts := time.Duration(pkt.Timestamp) * time.Second / 90000
 				if err := mux.WriteH265(w.hlsTrack, time.Now(), pts, au); err != nil {
 					log.Printf("[LIVEHLS] WriteH265 error for camera %s: %v", m.cameraID, err)
 				}
@@ -314,7 +314,13 @@ func (m *LiveHLSMuxer) start() error {
 				c.Close()
 				return fmt.Errorf("h264 decoder: %w", err)
 			}
-			c.OnPacketRTP(w.rtspMed, ft, func(pkt *pion.Packet) {
+			wMed := w.rtspMed // capture for closure
+			c.OnPacketRTP(w.rtspMed, ft, func(pkt *rtp.Packet) {
+				// PacketPTS returns the presentation timestamp in 90kHz clock units.
+				pts, ok := c.PacketPTS(wMed, pkt)
+				if !ok {
+					return // clock not yet established; skip
+				}
 				au, err := dec.Decode(pkt)
 				if err != nil {
 					if err != rtph264.ErrNonStartingPacketAndNoPrevious &&
@@ -323,8 +329,6 @@ func (m *LiveHLSMuxer) start() error {
 					}
 					return
 				}
-				// RTP timestamp is in 90 kHz clock units for video.
-				pts := time.Duration(pkt.Timestamp) * time.Second / 90000
 				if err := mux.WriteH264(w.hlsTrack, time.Now(), pts, au); err != nil {
 					log.Printf("[LIVEHLS] WriteH264 error for camera %s: %v", m.cameraID, err)
 				}
@@ -333,7 +337,9 @@ func (m *LiveHLSMuxer) start() error {
 	}
 
 	// ---- setup and play ----
-	if err := c.SetupAll(u, desc.Medias); err != nil {
+	// desc.BaseURL is the RTSP base URL from the DESCRIBE response; it may
+	// differ from the stream URL u when the server uses a different base path.
+	if err := c.SetupAll(desc.BaseURL, desc.Medias); err != nil {
 		mux.Close()
 		c.Close()
 		return fmt.Errorf("rtsp setup %s: %w", m.rtspURL, err)
