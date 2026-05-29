@@ -12,6 +12,7 @@ package metrics
 import (
 	"bufio"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -315,3 +316,30 @@ func (sr *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	return h.Hijack()
 }
+
+// ReadFrom delegates to the underlying ResponseWriter's io.ReaderFrom
+// when available. This is required because downstream wrappers
+// (notably sentry-go's httputils.NewWrapResponseWriter) only preserve
+// the Hijacker interface when the wrapped writer is "fully fancy" —
+// implements Flusher AND Hijacker AND ReaderFrom. Without ReadFrom
+// here, sentryhttp's wrapper falls back to a flush-only proxy that
+// strips Hijack, breaking the WS upgrade chain. The interface check
+// passes on the presence of the METHOD; the inner ResponseWriter does
+// not need to support it (we'll use io.Copy as the fallback).
+func (sr *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := sr.ResponseWriter.(io.ReaderFrom); ok {
+		if !sr.wrote {
+			sr.wrote = true
+		}
+		return rf.ReadFrom(src)
+	}
+	// Fallback: ordinary Write loop. This path is unusual because
+	// the stdlib http.response always implements ReaderFrom.
+	return io.Copy(writeOnlyWriter{sr}, src)
+}
+
+// writeOnlyWriter strips the ReadFrom method from a ResponseWriter so
+// io.Copy doesn't infinite-loop into ReadFrom when fallback-copying.
+type writeOnlyWriter struct{ http.ResponseWriter }
+
+func (w writeOnlyWriter) Write(p []byte) (int, error) { return w.ResponseWriter.Write(p) }
