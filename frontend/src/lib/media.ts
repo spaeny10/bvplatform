@@ -26,7 +26,10 @@
 
 import { authFetch } from '@/lib/api';
 
-export type MediaKind = 'segment' | 'hls' | 'snapshot';
+// P3-INFRA-06: 'live-hls' added for gohlslib LL-HLS live-view tokens.
+// Tokens of this kind have a 60-second TTL and are refreshed every 30s
+// by createMediaRefresher (which clamps to Math.max(30s, ttl-60s)).
+export type MediaKind = 'segment' | 'hls' | 'snapshot' | 'live-hls';
 
 export interface MintRequest {
     camera_id: string;

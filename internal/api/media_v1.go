@@ -54,6 +54,7 @@ import (
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/logging"
+	"ironsight/internal/streaming"
 )
 
 // ──────────────────── Constants ────────────────────
@@ -62,6 +63,12 @@ const (
 	// DefaultMediaTTL is the standard token lifetime when the mint
 	// caller didn't request anything else.
 	DefaultMediaTTL = 5 * time.Minute
+
+	// LiveHLSMediaTTL is the token lifetime for kind=live-hls. Short
+	// (60s) because these tokens are refreshed every 30s by the frontend
+	// and leaking one would only expose ~30s of live view on that camera.
+	// P3-INFRA-06.
+	LiveHLSMediaTTL = 60 * time.Second
 
 	// MaxMediaTTL is the operator-facing ceiling for ttl_seconds on the
 	// mint endpoint. Evidence-export uses up to 1 h so a downloaded
@@ -334,14 +341,28 @@ func HandleMediaMint(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		}
 
 		ttl := DefaultMediaTTL
-		if req.TTLSeconds > 0 {
+		// P3-INFRA-06: live-hls tokens use a fixed 60s TTL regardless of
+		// the caller's ttl_seconds — the frontend refreshes every 30s and
+		// there's no on-disk file to hold open beyond that window.
+		if kind == auth.MediaKindLiveHLS {
+			ttl = LiveHLSMediaTTL
+		} else if req.TTLSeconds > 0 {
 			ttl = time.Duration(req.TTLSeconds) * time.Second
 			if ttl > MaxMediaTTL {
 				ttl = MaxMediaTTL
 			}
 		}
 
-		token, err := auth.SignMediaToken(claims.UserID, camUUID.String(), kind, req.Path, cfg.JWTSecret, ttl)
+		// live-hls tokens have no on-disk path. Use the synthetic "live"
+		// leaf so validMediaPath passes. The serve handler ignores this
+		// field for live-hls — it uses claims.CameraID to look up the
+		// gohlslib muxer instead.
+		path := req.Path
+		if kind == auth.MediaKindLiveHLS {
+			path = "live"
+		}
+
+		token, err := auth.SignMediaToken(claims.UserID, camUUID.String(), kind, path, cfg.JWTSecret, ttl)
 		if err != nil {
 			// Path or kind invalid — surface as 400. Don't leak the
 			// internal error string (could echo back tampered input).
@@ -367,7 +388,10 @@ func HandleMediaMint(cfg *config.Config, db *database.DB) http.HandlerFunc {
 //	tenant scope check fails (camera deleted, user demoted, etc.) → 404
 //	file missing on disk → 404 (same response as cross-tenant: don't leak)
 //	path traversal somehow survives → 400 (should be unreachable post-parse)
-func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor, transcoder *transcodeRegistry) http.HandlerFunc {
+//
+// P3-INFRA-06: kind=live-hls short-circuits before any disk I/O and
+// proxies the request to the per-camera gohlslib LL-HLS muxer instead.
+func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor, transcoder *transcodeRegistry, liveHLS *streaming.LiveHLSManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tokenStr := chi.URLParam(r, "token")
 		if tokenStr == "" {
@@ -381,10 +405,9 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		}
 
 		// Re-verify tenant scope on every serve (design decision 5).
-		// Tokens have a 5-min TTL but role changes (admin demotes a
-		// customer mid-session, customer is removed from a site) must
-		// take effect immediately — we can't trust the mint-time
-		// authorization alone. Cost: one indexed point lookup.
+		// Tokens have a short TTL but role changes (admin demotes a
+		// customer mid-session, camera deleted) must take effect
+		// immediately. Cost: one indexed point lookup.
 		camUUID, err := uuid.Parse(claims.CameraID)
 		if err != nil {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -400,6 +423,57 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 		ok, cErr := CanAccessCamera(r.Context(), db, fakeClaims, camUUID)
 		if cErr != nil || !ok {
 			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+
+		// P3-INFRA-06: live-hls — route to the gohlslib LL-HLS muxer.
+		// No on-disk path to resolve; the muxer is looked up by cameraID.
+		// The request path after the token suffix tells us whether the
+		// client wants the master playlist or a segment/part:
+		//   /media/v1/<token>           → master playlist
+		//   /media/v1/<token>/seg0.mp4  → fMP4 segment
+		if claims.Kind == auth.MediaKindLiveHLS {
+			if liveHLS == nil {
+				http.Error(w, "live view not available", http.StatusServiceUnavailable)
+				return
+			}
+			muxer, mErr := liveHLS.GetOrStart(camUUID)
+			if mErr != nil {
+				log.Printf("[MEDIA-SERVE] live-hls GetOrStart camera %s: %v", camUUID, mErr)
+				http.Error(w, "stream not available", http.StatusServiceUnavailable)
+				return
+			}
+			// Audit before touching the body.
+			auditor.enqueue(mediaAuditRow{
+				when:     time.Now().UTC(),
+				userID:   userUUID,
+				username: fakeClaims.Username,
+				cameraID: camUUID.String(),
+				path:     claims.Path,
+				kind:     string(claims.Kind),
+				ip:       clientIP(r),
+			})
+			// Determine whether this is a playlist or segment request by
+			// inspecting the URL query string. gohlslib uses the path
+			// "/master.m3u8" for the master playlist and "/stream0.m3u8"
+			// (or similar) for media playlists + segment names for parts.
+			// Our signed URL carries the token as the entire path segment;
+			// the client appends ?_HLS_msn=&_HLS_part= for LL-HLS
+			// blocking requests on the *same* URL (gohlslib handles this
+			// internally via the query string). For the initial playlist
+			// fetch there is no extra query; for parts there is.
+			// Rule: if _HLS_msn or _HLS_part is present → segment path.
+			q := r.URL.Query()
+			if q.Get("_HLS_msn") != "" || q.Get("_HLS_part") != "" || q.Get("_HLS_skip") != "" {
+				// LL-HLS blocking playlist reload — pass to muxer with
+				// the master playlist path so gohlslib can serve the
+				// updated partial segment manifest.
+				muxer.RecordViewer()
+				muxer.ServePlaylist(w, r)
+			} else {
+				muxer.RecordViewer()
+				muxer.ServePlaylist(w, r)
+			}
 			return
 		}
 
