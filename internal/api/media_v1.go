@@ -437,12 +437,6 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 				http.Error(w, "live view not available", http.StatusServiceUnavailable)
 				return
 			}
-			muxer, mErr := liveHLS.GetOrStart(camUUID)
-			if mErr != nil {
-				log.Printf("[MEDIA-SERVE] live-hls GetOrStart camera %s: %v", camUUID, mErr)
-				http.Error(w, "stream not available", http.StatusServiceUnavailable)
-				return
-			}
 			// Audit before touching the body.
 			auditor.enqueue(mediaAuditRow{
 				when:     time.Now().UTC(),
@@ -453,27 +447,71 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 				kind:     string(claims.Kind),
 				ip:       clientIP(r),
 			})
-			// Determine whether this is a playlist or segment request by
-			// inspecting the URL query string. gohlslib uses the path
-			// "/master.m3u8" for the master playlist and "/stream0.m3u8"
-			// (or similar) for media playlists + segment names for parts.
-			// Our signed URL carries the token as the entire path segment;
-			// the client appends ?_HLS_msn=&_HLS_part= for LL-HLS
-			// blocking requests on the *same* URL (gohlslib handles this
-			// internally via the query string). For the initial playlist
-			// fetch there is no extra query; for parts there is.
-			// Rule: if _HLS_msn or _HLS_part is present → segment path.
-			q := r.URL.Query()
-			if q.Get("_HLS_msn") != "" || q.Get("_HLS_part") != "" || q.Get("_HLS_skip") != "" {
-				// LL-HLS blocking playlist reload — pass to muxer with
-				// the master playlist path so gohlslib can serve the
-				// updated partial segment manifest.
-				muxer.RecordViewer()
-				muxer.ServePlaylist(w, r)
-			} else {
-				muxer.RecordViewer()
-				muxer.ServePlaylist(w, r)
+
+			// Token path semantics:
+			//   claims.Path == "live" -> multivariant playlist fetch.
+			//     Capture gohlslib output and rewrite relative URIs to signed
+			//     /media/v1/<child-token> URLs so the browser can fetch each
+			//     resource through the same auth layer.
+			//   claims.Path != "live" -> media playlist or segment/part.
+			//     The path in the token IS the gohlslib resource name
+			//     (e.g. "video1_stream.m3u8", "seg0.mp4", "init.mp4").
+			//     Look up the already-running muxer and proxy.
+			if claims.Path != "live" {
+				runningMuxer := liveHLS.GetRunning(camUUID)
+				if runningMuxer == nil {
+					http.Error(w, "stream not available", http.StatusServiceUnavailable)
+					return
+				}
+				// Media playlists (.m3u8) contain relative segment URIs that
+				// also need to be rewritten to /media/v1/<token> form.
+				// Binary segments (.mp4) are proxied directly.
+				if strings.HasSuffix(claims.Path, ".m3u8") {
+					rec := &liveHLSResponseRecorder{header: make(http.Header)}
+					runningMuxer.ServeSegment(rec, r, claims.Path)
+					if rec.status != 0 && rec.status != http.StatusOK {
+						w.WriteHeader(rec.status)
+						_, _ = w.Write(rec.body.Bytes())
+						return
+					}
+					rewritten := rewriteLiveHLSPlaylist(rec.body.Bytes(), cfg, claims, LiveHLSMediaTTL)
+					for k, vv := range rec.header {
+						for _, v := range vv {
+							w.Header().Add(k, v)
+						}
+					}
+					w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+					_, _ = w.Write(rewritten)
+				} else {
+					runningMuxer.ServeSegment(w, r, claims.Path)
+				}
+				return
 			}
+
+			// Initial multivariant playlist: GetOrStart, capture, rewrite, serve.
+			muxer, mErr := liveHLS.GetOrStart(camUUID)
+			if mErr != nil {
+				log.Printf("[MEDIA-SERVE] live-hls GetOrStart camera %s: %v", camUUID, mErr)
+				http.Error(w, "stream not available", http.StatusServiceUnavailable)
+				return
+			}
+			muxer.RecordViewer()
+			rec := &liveHLSResponseRecorder{header: make(http.Header)}
+			muxer.ServePlaylist(rec, r)
+			if rec.status != 0 && rec.status != http.StatusOK {
+				w.WriteHeader(rec.status)
+				_, _ = w.Write(rec.body.Bytes())
+				return
+			}
+			rewritten := rewriteLiveHLSPlaylist(rec.body.Bytes(), cfg, claims, LiveHLSMediaTTL)
+			for k, vv := range rec.header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+			_, _ = w.Write(rewritten)
 			return
 		}
 
@@ -815,4 +853,81 @@ func MintSegmentPlaybackURL(cfg *config.Config, userID, cameraID, segFilePath st
 		return sb.String()
 	}
 	return url
+}
+
+// liveHLSResponseRecorder captures a gohlslib HTTP response into memory
+// so that the handler can rewrite the playlist body before sending it to
+// the browser.  It implements http.ResponseWriter.
+type liveHLSResponseRecorder struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (r *liveHLSResponseRecorder) Header() http.Header         { return r.header }
+func (r *liveHLSResponseRecorder) WriteHeader(code int)        { r.status = code }
+func (r *liveHLSResponseRecorder) Write(b []byte) (int, error) { return r.body.Write(b) }
+
+// rewriteLiveHLSPlaylist walks the gohlslib-generated M3U8 line by line
+// and replaces every bare URI (non-comment, non-blank) with a freshly
+// signed /media/v1/<child-token> URL.  Comment lines that embed a URI=
+// attribute (e.g. EXT-X-MAP) are also rewritten.
+//
+// Child tokens carry kind=live-hls and path=<gohlslib-resource-name>.
+// HandleMediaServe routes those tokens to muxer.ServeSegment.
+func rewriteLiveHLSPlaylist(body []byte, cfg *config.Config, parent *auth.MediaClaims, ttl time.Duration) []byte {
+	var out bytes.Buffer
+	sc := bufio.NewScanner(bytes.NewReader(body))
+	for sc.Scan() {
+		line := sc.Text()
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			// Pass comment lines through; rewrite any embedded URI= attribute.
+			if strings.Contains(trimmed, `URI="`) {
+				out.WriteString(rewriteLiveHLSAttributeURI(line, cfg, parent, ttl))
+			} else {
+				out.WriteString(line)
+			}
+		} else {
+			// Bare URI line — mint a child token with path=<resource-name>.
+			tok, err := auth.SignMediaToken(
+				parent.UserID, parent.CameraID,
+				auth.MediaKindLiveHLS, trimmed,
+				cfg.JWTSecret, ttl,
+			)
+			if err != nil {
+				// validMediaPath rejected the name — leave it as-is.
+				out.WriteString(line)
+			} else {
+				out.WriteString("/media/v1/" + tok)
+			}
+		}
+		out.WriteByte('\n')
+	}
+	return out.Bytes()
+}
+
+// rewriteLiveHLSAttributeURI rewrites the URI="..." attribute in an
+// HLS tag line (typically EXT-X-MAP) to a signed live-hls child token.
+func rewriteLiveHLSAttributeURI(line string, cfg *config.Config, parent *auth.MediaClaims, ttl time.Duration) string {
+	const marker = `URI="`
+	idx := strings.Index(line, marker)
+	if idx < 0 {
+		return line
+	}
+	start := idx + len(marker)
+	end := strings.Index(line[start:], `"`)
+	if end < 0 {
+		return line
+	}
+	uri := line[start : start+end]
+	tok, err := auth.SignMediaToken(
+		parent.UserID, parent.CameraID,
+		auth.MediaKindLiveHLS, uri,
+		cfg.JWTSecret, ttl,
+	)
+	if err != nil {
+		return line
+	}
+	return line[:start] + "/media/v1/" + tok + line[start+end:]
 }
