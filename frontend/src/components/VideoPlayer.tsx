@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import Hls from 'hls.js';
 import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment } from '@/lib/api';
+import { createMediaRefresher } from '@/lib/media';
 
 interface VideoPlayerProps {
     cameraId: string;
@@ -202,8 +204,20 @@ export default function VideoPlayer({
     }, [hasPTZ, isLive, cameraId]);
 
 
-    // ---- LIVE MODE EFFECT (WebRTC via WHEP) ----
-    const pcRef = useRef<RTCPeerConnection | null>(null);
+    // ---- LIVE MODE EFFECT (LL-HLS via gohlslib, P3-INFRA-06) ----
+    //
+    // P3-INFRA-06 replaced the WebRTC/WHEP path with gohlslib-backed
+    // LL-HLS. The browser compatibility story:
+    //   Safari + iOS Safari: native HLS + HEVC — works natively.
+    //   Chrome 107+ with hardware H.265 decode: hls.js + HEVC — works.
+    //   Firefox: HLS served but H.265 not decoded — gets a "codec not
+    //     supported" error. A future PR will add a Firefox banner.
+    //
+    // Token TTL is 60 s; createMediaRefresher fires every 30 s
+    // (Math.max(30_000, 60_000 - 60_000) = 30_000 ms). On each refresh
+    // we call hls.loadSource(newURL) which causes hls.js to reload the
+    // playlist from the live edge — safe for LL-HLS because the server
+    // maintains a full 7-segment window.
 
     useEffect(() => {
         if (!isLive) return;
@@ -213,152 +227,69 @@ export default function VideoPlayer({
         setLoading(true);
         setError('');
 
+        // The backend LiveHLSManager always pulls the sub-stream from
+        // mediamtx (lower bitrate, designed for live monitoring). The
+        // HD/SD quality toggle in the UI is kept for future use but
+        // currently has no effect on the live-HLS path — both HD and SD
+        // request the same sub-stream token. A future PR can add a
+        // quality parameter once the muxer supports per-stream selection.
         let cancelled = false;
-        // Track whether we already fell back to sub stream (avoid infinite loop)
-        let fellBackToSub = false;
+        let hls: Hls | null = null;
 
-        const connectWebRTC = async (forceSubStream = false) => {
-            try {
-                // Clean up previous connection
-                if (pcRef.current) {
-                    pcRef.current.close();
-                    pcRef.current = null;
-                }
-
-                const pc = new RTCPeerConnection({
-                    // No external STUN needed — MediaMTX is on localhost
-                });
-                pcRef.current = pc;
-
-                // Track whether we received a video track within timeout
-                let gotTrack = false;
-
-                // Receive video/audio tracks
-                pc.ontrack = (evt) => {
-                    if (cancelled) return;
-                    gotTrack = true;
-                    video.srcObject = evt.streams[0];
-                    video.play().catch(() => { });
-                    setLoading(false);
-                };
-
-                pc.onconnectionstatechange = () => {
-                    if (cancelled) return;
-                    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-                        // If we were trying the main stream and it failed, fall back to sub
-                        if (useMainStream && !forceSubStream && !fellBackToSub) {
-                            console.warn('[WebRTC] Main stream (HD) failed — falling back to sub stream (camera likely uses H.265)');
-                            fellBackToSub = true;
-                            connectWebRTC(true);
-                            return;
-                        }
-                        setError('Stream disconnected');
-                        // Auto-retry after 3 seconds
-                        setTimeout(() => {
-                            if (!cancelled) {
-                                setError('');
-                                setLoading(true);
-                                connectWebRTC(fellBackToSub);
-                            }
-                        }, 3000);
-                    }
-                };
-
-                // Add receive-only transceivers
-                pc.addTransceiver('video', { direction: 'recvonly' });
-                pc.addTransceiver('audio', { direction: 'recvonly' });
-
-                // Create and set local SDP offer
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-
-                // Wait for ICE gathering — resolve on first candidate or fast timeout
-                await new Promise<void>((resolve) => {
-                    if (pc.iceGatheringState === 'complete') {
-                        resolve();
-                        return;
-                    }
-                    let resolved = false;
-                    const done = () => { if (!resolved) { resolved = true; resolve(); } };
-                    // Resolve as soon as we have at least one candidate
-                    pc.onicecandidate = (e) => { if (e.candidate) done(); };
-                    pc.addEventListener('icegatheringstatechange', () => {
-                        if (pc.iceGatheringState === 'complete') done();
+        const attachHLS = (url: string) => {
+            if (cancelled) return;
+            if (Hls.isSupported()) {
+                if (!hls) {
+                    hls = new Hls({
+                        lowLatencyMode: true,
+                        backBufferLength: 10,
+                        maxBufferLength: 30,
                     });
-                    // Fast timeout for localhost
-                    setTimeout(done, 300);
-                });
-
-                // Send SDP offer to MediaMTX WHEP endpoint via our proxy
-                // Use main stream unless forced to sub (fallback for H.265 cameras)
-                const useSub = forceSubStream || !useMainStream;
-                const streamSuffix = useSub ? '_sub' : '';
-                const whepUrl = `/webrtc/${cameraId}${streamSuffix}/whep`;
-                const resp = await fetch(whepUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/sdp' },
-                    body: pc.localDescription!.sdp,
-                });
-
-                if (!resp.ok) {
-                    // If main stream WHEP failed (e.g. H.265 unsupported), fall back to sub
-                    if (useMainStream && !forceSubStream && !fellBackToSub) {
-                        console.warn(`[WebRTC] Main stream WHEP returned ${resp.status} — falling back to sub stream`);
-                        pc.close();
-                        pcRef.current = null;
-                        fellBackToSub = true;
-                        connectWebRTC(true);
-                        return;
-                    }
-                    throw new Error(`WHEP error: ${resp.status}`);
-                }
-
-                const answerSdp = await resp.text();
-                await pc.setRemoteDescription({
-                    type: 'answer',
-                    sdp: answerSdp,
-                });
-
-                // For main stream attempts: if no track arrives within 8s, the source
-                // is likely H.265 (MediaMTX accepts WHEP but can't relay the codec).
-                // Fall back to sub stream.
-                if (useMainStream && !forceSubStream && !fellBackToSub) {
-                    setTimeout(() => {
-                        if (!cancelled && !gotTrack && !fellBackToSub) {
-                            console.warn('[WebRTC] Main stream timed out (no track) — falling back to sub stream (likely H.265)');
-                            pc.close();
-                            pcRef.current = null;
-                            fellBackToSub = true;
-                            connectWebRTC(true);
+                    hlsRef.current = hls;
+                    hls.attachMedia(video);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        if (cancelled) return;
+                        video.play().catch(() => { });
+                        setLoading(false);
+                    });
+                    hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
+                        if (cancelled) return;
+                        if (data.fatal) {
+                            console.error('[LIVE-HLS] fatal error:', data.type, data.details);
+                            setError('Stream unavailable');
+                            setLoading(false);
                         }
-                    }, 8000);
+                    });
+                } else {
+                    // Token refresh — swap the URL without recreating the player.
+                    hls.loadSource(url);
                 }
-
-            } catch (err: any) {
-                if (!cancelled) {
-                    // If main stream failed and we haven't fallen back yet, try sub
-                    if (useMainStream && !forceSubStream && !fellBackToSub) {
-                        console.warn('[WebRTC] Main stream error — falling back to sub stream:', err?.message);
-                        fellBackToSub = true;
-                        connectWebRTC(true);
-                        return;
-                    }
-                    console.error('[WebRTC]', err);
-                    setError('Stream unavailable');
-                    setLoading(false);
-                    // Auto-retry after 5 seconds
-                    setTimeout(() => {
-                        if (!cancelled) {
-                            setError('');
-                            setLoading(true);
-                            connectWebRTC(fellBackToSub);
-                        }
-                    }, 5000);
-                }
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari: native HLS. Just set src; browser handles LL-HLS natively.
+                video.src = url;
+                video.play().catch(() => { });
+                setLoading(false);
+            } else {
+                setError('Browser does not support HLS live view');
+                setLoading(false);
+                return;
             }
         };
 
-        connectWebRTC();
+        // Mint the first token and start the hls.js session. The refresher
+        // fires attachHLS again every 30 s with a new URL so the 60 s token
+        // never expires under the player.
+        const refresher = createMediaRefresher(
+            { camera_id: cameraId, kind: 'live-hls', path: 'live' },
+            (url) => { attachHLS(url); },
+        );
+        refresher.start().catch((err: any) => {
+            if (!cancelled) {
+                console.error('[LIVE-HLS] mint failed:', err);
+                setError('Stream unavailable');
+                setLoading(false);
+            }
+        });
 
         const updateRes = () => {
             if (video.videoWidth && video.videoHeight) {
@@ -372,15 +303,12 @@ export default function VideoPlayer({
             cancelled = true;
             video.removeEventListener('resize', updateRes);
             video.removeEventListener('loadedmetadata', updateRes);
-            if (pcRef.current) {
-                pcRef.current.close();
-                pcRef.current = null;
-            }
+            refresher.dispose();
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;
             }
-            video.srcObject = null;
+            video.src = '';
         };
     }, [cameraId, isLive, qualityKey]);
 
@@ -500,12 +428,12 @@ export default function VideoPlayer({
         const video = videoRef.current;
         if (!video) return;
 
-        // Clean up any live WebRTC
-        if (pcRef.current) {
-            pcRef.current.close();
-            pcRef.current = null;
+        // Clean up any live HLS session carried over from live mode.
+        if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
         }
-        video.srcObject = null;
+        video.src = '';
 
         // Reset segment tracking
         segmentsRef.current = [];

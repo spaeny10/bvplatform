@@ -24,7 +24,7 @@ import (
 )
 
 // NewRouter creates the HTTP router with all API routes
-func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher, aiClient *ai.Client) http.Handler {
+func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, liveHLS *streaming.LiveHLSManager, det *detection.Manager, player *onvif.BackchannelPlayer, subReg *SubscriberRegistry, notifier *notify.Dispatcher, aiClient *ai.Client) http.Handler {
 	r := chi.NewRouter()
 
 	// P1-A-03: spin up the media-serve audit ring buffer. Every
@@ -583,12 +583,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// tenant scoping. The token in the URL is the authorization — the
 	// handler validates it, re-checks CanAccessCamera against the
 	// current DB state, then streams the file. See docs/media-auth.md.
-	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor, transcoder))
-
-	// WebRTC WHEP proxy to MediaMTX
-	if mtxServer != nil {
-		r.Handle("/webrtc/*", http.StripPrefix("/webrtc", mtxServer.WHEPHandler()))
-	}
+	// P3-INFRA-06: live-hls token kind routes to the gohlslib LL-HLS muxer
+	// instead of resolving an on-disk path. The handler distinguishes by
+	// claims.Kind so no new URL prefix is needed — /media/v1/<token> works
+	// for all kinds. See internal/api/media_v1.go HandleMediaServe.
+	r.Get("/media/v1/{token}", HandleMediaServe(cfg, db, mediaAuditor, transcoder, liveHLS))
 
 	// Static file serving for exports. NOTE: /exports is operator-only
 	// (admin / supervisor / soc_operator), bundled evidence ZIPs are

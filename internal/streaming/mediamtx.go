@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +17,10 @@ import (
 	"ironsight/internal/config"
 )
 
-// MediaMTXServer manages a MediaMTX process for WebRTC streaming
+// MediaMTXServer manages a MediaMTX process used as an RTSP relay.
+// P3-INFRA-06: WebRTC has been removed; live view is now LL-HLS via
+// gohlslib in ironsight-api. mediamtx's sole role is RTSP relay for
+// the recording engine and the gohlslib live-HLS muxer.
 type MediaMTXServer struct {
 	cfg        *config.Config
 	cmd        *exec.Cmd
@@ -29,7 +29,6 @@ type MediaMTXServer struct {
 	streams    map[uuid.UUID]streamInfo
 	configPath string
 	binPath    string
-	whepProxy  *httputil.ReverseProxy
 }
 
 type streamInfo struct {
@@ -40,21 +39,20 @@ type streamInfo struct {
 
 // mediamtx YAML config structures
 type mtxConfig struct {
-	LogLevel              string              `yaml:"logLevel"`
-	LogDestinations       []string            `yaml:"logDestinations"`
-	API                   bool                `yaml:"api"`
-	APIAddress            string              `yaml:"apiAddress"`
-	RTSP                  bool                `yaml:"rtsp"`
-	RTSPAddress           string              `yaml:"rtspAddress"`
-	RTMP                  bool                `yaml:"rtmp"`
-	RTMPAddress           string              `yaml:"rtmpAddress"`
-	HLS                   bool                `yaml:"hls"`
-	HLSAddress            string              `yaml:"hlsAddress"`
-	WebRTC                bool                `yaml:"webrtc"`
-	WebRTCAddress         string              `yaml:"webrtcAddress"`
-	WebRTCAdditionalHosts []string            `yaml:"webrtcAdditionalHosts,omitempty"`
-	WebRTCICEServers2     []interface{}       `yaml:"webrtcICEServers2"`
-	Paths                 map[string]*mtxPath `yaml:"paths"`
+	LogLevel        string              `yaml:"logLevel"`
+	LogDestinations []string            `yaml:"logDestinations"`
+	API             bool                `yaml:"api"`
+	APIAddress      string              `yaml:"apiAddress"`
+	RTSP            bool                `yaml:"rtsp"`
+	RTSPAddress     string              `yaml:"rtspAddress"`
+	RTMP            bool                `yaml:"rtmp"`
+	RTMPAddress     string              `yaml:"rtmpAddress"`
+	HLS             bool                `yaml:"hls"`
+	HLSAddress      string              `yaml:"hlsAddress"`
+	// P3-INFRA-06: WebRTC removed — live view is now served via gohlslib
+	// LL-HLS in ironsight-api.  mediamtx is RTSP relay only.
+	WebRTC bool `yaml:"webrtc"`
+	Paths  map[string]*mtxPath `yaml:"paths"`
 }
 
 type mtxPath struct {
@@ -77,24 +75,11 @@ func NewMediaMTXServer(cfg *config.Config) *MediaMTXServer {
 	binPath := filepath.Join(cwd, "bin", binName)
 	configPath := filepath.Join(cwd, "bin", "mediamtx_runtime.yml")
 
-	// Reverse proxy to MediaMTX's WHEP endpoint — target host is whatever
-	// docker-compose / the operator configured (defaults to 127.0.0.1:8889
-	// for single-process dev).
-	var targetURL string
-	if !strings.HasPrefix(cfg.MediaMTXWebRTCAddr, "http") {
-		targetURL = "http://" + cfg.MediaMTXWebRTCAddr
-	} else {
-		targetURL = cfg.MediaMTXWebRTCAddr
-	}
-	target, _ := url.Parse(targetURL)
-	proxy := httputil.NewSingleHostReverseProxy(target)
-
 	return &MediaMTXServer{
 		cfg:        cfg,
 		streams:    make(map[uuid.UUID]streamInfo),
 		configPath: configPath,
 		binPath:    binPath,
-		whepProxy:  proxy,
 	}
 }
 
@@ -202,8 +187,8 @@ func (m *MediaMTXServer) Start(ctx context.Context) error {
 		if err := m.writeConfig(); err != nil {
 			return fmt.Errorf("write mediamtx config: %w", err)
 		}
-		log.Printf("[MEDIAMTX] External mode — reaching mediamtx at WHEP=%s, RTSP=%s, API=%s. Bootstrap config at %s.",
-			m.cfg.MediaMTXWebRTCAddr, m.cfg.MediaMTXRTSPAddr, m.cfg.MediaMTXAPIAddr, m.configPath)
+		log.Printf("[MEDIAMTX] External mode — RTSP relay at %s, API at %s. Bootstrap config at %s.",
+			m.cfg.MediaMTXRTSPAddr, m.cfg.MediaMTXAPIAddr, m.configPath)
 
 		// Don't block server start on mediamtx being up — in compose the
 		// api and mediamtx containers come up concurrently. Probe the API
@@ -381,11 +366,6 @@ func (m *MediaMTXServer) Stop() {
 	log.Println("[MEDIAMTX] Stopped")
 }
 
-// WHEPHandler returns an HTTP handler that proxies WHEP requests to MediaMTX
-func (m *MediaMTXServer) WHEPHandler() http.Handler {
-	return m.whepProxy
-}
-
 // writeConfig generates the mediamtx YAML config from registered streams
 func (m *MediaMTXServer) writeConfig() error {
 	paths := make(map[string]*mtxPath)
@@ -411,26 +391,27 @@ func (m *MediaMTXServer) writeConfig() error {
 
 	// Listen addresses come from config. Drop the host and keep only the
 	// port so mediamtx binds on 0.0.0.0 inside the container; the hostname
-	// side of MediaMTXRTSPAddr/MediaMTXWebRTCAddr is how the *Go* process
-	// reaches mediamtx, not how mediamtx listens.
+	// side of MediaMTXRTSPAddr is how the *Go* process reaches mediamtx,
+	// not how mediamtx listens.
+	//
+	// P3-INFRA-06: WebRTC is disabled — live view is now LL-HLS via
+	// gohlslib inside ironsight-api. mediamtx's role is RTSP relay only.
 	cfg := &mtxConfig{
 		LogLevel:        "info",
 		LogDestinations: []string{"stdout"},
 		// Enable the HTTP control API so runtime path adds/removes go
 		// through apiAddPath/apiRemovePath instead of config-rewrite +
 		// reload. See internal/streaming/mediamtx_api.go.
-		API:                   true,
-		APIAddress:            listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
-		RTSP:                  true, // Local RTSP relay — recording engine pulls from here instead of opening new camera connections
-		RTSPAddress:           listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
-		RTMP:                  false,
-		RTMPAddress:           ":11935",
-		HLS:                   false, // We don't need HLS from MediaMTX
-		HLSAddress:            ":18888",
-		WebRTC:                true,
-		WebRTCAddress:         listenPortSuffix(m.cfg.MediaMTXWebRTCAddr, "8889"),
-		WebRTCAdditionalHosts: m.cfg.WebRTCAdditionalHosts,
-		Paths:                 paths,
+		API:         true,
+		APIAddress:  listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
+		RTSP:        true, // Local RTSP relay — recording engine and gohlslib both pull from here
+		RTSPAddress: listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
+		RTMP:        false,
+		RTMPAddress: ":11935",
+		HLS:         false, // HLS is served by ironsight-api via gohlslib, not mediamtx
+		HLSAddress:  ":18888",
+		WebRTC:      false, // Disabled: P3-INFRA-06 replaced WebRTC with LL-HLS
+		Paths:       paths,
 	}
 
 	data, err := yaml.Marshal(cfg)

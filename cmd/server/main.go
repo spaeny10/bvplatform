@@ -209,6 +209,10 @@ func main() {
 	recEngine := recording.NewEngine(cfg, db)
 	hlsServer := streaming.NewHLSServer(cfg, db)
 	mtxServer := streaming.NewMediaMTXServer(cfg)
+	// P3-INFRA-06: LL-HLS live-view manager. Lazy-starts one gohlslib
+	// muxer per camera on first viewer request; idle-stops after 30s with
+	// no viewers. Pulls RTSP from mediamtx relay at MediaMTXRTSPAddr.
+	liveHLSMgr := streaming.NewLiveHLSManager(cfg.MediaMTXRTSPAddr)
 
 	// Batch-job workers. In single-binary mode (RUN_WORKERS=true, the
 	// default) we instantiate and start them in-process below. In the
@@ -405,7 +409,7 @@ func main() {
 
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()
-	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier, aiClient)
+	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, liveHLSMgr, det, player, subReg, notifier, aiClient)
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
@@ -425,6 +429,7 @@ func main() {
 
 		recEngine.StopAll()
 		hlsServer.StopAll()
+		liveHLSMgr.StopAll() // P3-INFRA-06: tear down any active gohlslib muxers
 		mtxServer.Stop()
 		if retentionMgr != nil {
 			retentionMgr.Stop()

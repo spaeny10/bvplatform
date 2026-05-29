@@ -7,6 +7,39 @@ or doc file; this log captures platform-level choices.
 
 ---
 
+## Streaming
+
+### Live-view delivery: LL-HLS via gohlslib, not WebRTC (P3-INFRA-06)
+
+**Date**: 2026-05-29
+
+**Decision**: Replace the WebRTC/WHEP live-view path with gohlslib-backed
+Low-Latency HLS (LL-HLS, fMP4 CMAF). mediamtx continues as an RTSP relay;
+its WebRTC server is disabled.
+
+**Root cause**: mediamtx's WebRTC path silently drops H.265 (HEVC) tracks
+from the SDP answer (`skipping track (Generic)` in mediamtx log), leaving
+the browser with an empty answer → 8-second timeout → WHEP 400 error. 3 of
+4 BigView trailer cameras use HEVC sub-streams, so live view was broken for
+most of the fleet.
+
+**LL-HLS advantages**: fMP4 CMAF supports H.265 natively in browsers that
+can decode it (Safari, Chrome 107+ with hardware HEVC). Latency is ~2-3s,
+acceptable for the operator monitoring use-case. The existing hls.js player
+(`HLSVideoPlayer.tsx`, `lowLatencyMode: true`) works without modification.
+
+**Trade-offs**:
+- Firefox + H.265: still no live view (no HEVC in HLS). A future PR will add
+  a browser compatibility banner and/or server-side transcoding.
+- Latency increased from <1s (WebRTC) to ~2-3s (LL-HLS). PTZ feedback loop
+  now relies on the prewarm endpoint + camera's visual settling.
+- Two RTSP pulls per camera (recording engine + gohlslib) — both pull from
+  mediamtx's local relay, not from the camera directly.
+
+**Full details**: [docs/streaming.md](./streaming.md)
+
+---
+
 ## Security
 
 ### RLS: Postgres Row-Level Security as defense-in-depth (P4-SCHEMA-07)
