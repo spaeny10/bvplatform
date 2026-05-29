@@ -502,6 +502,34 @@ func RequireAuth(cfg *config.Config, db *database.DB) func(http.Handler) http.Ha
 						DisplayName:    user.DisplayName,
 						OrganizationID: user.OrganizationID,
 					}
+
+					// Ensure SSO sessions carry an ironsight_csrf cookie.
+					// The /auth/login path sets this for cookie-login users via
+					// setSessionCookies(), but SSO sessions never go through
+					// /auth/login — so without this branch they have no CSRF
+					// cookie and every non-idempotent POST/PUT/PATCH/DELETE on
+					// /api/* fails with 403 "csrf cookie missing". Mint one
+					// on the FIRST authenticated request and re-emit it on
+					// every subsequent request (idempotent — same value if
+					// the cookie is already present and parseable).
+					if existing, err := r.Cookie(csrfCookieName); err != nil || existing.Value == "" {
+						if csrfToken, err := generateCSRFToken(); err == nil {
+							// 12 h matches the typical oauth2-proxy session
+							// lifetime; the cookie refreshes on every SSO
+							// request so it never stales out before the
+							// upstream session does.
+							http.SetCookie(w, &http.Cookie{
+								Name:     csrfCookieName,
+								Value:    csrfToken,
+								Path:     "/",
+								MaxAge:   int(12 * time.Hour / time.Second),
+								HttpOnly: false, // JS-readable for double-submit pattern
+								Secure:   cfg.CookieSecure,
+								SameSite: http.SameSiteLaxMode,
+							})
+						}
+					}
+
 					ctx := contextWithValue(r.Context(), ContextKeyClaims, claims)
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return

@@ -3,6 +3,7 @@ package logging
 import (
 	"bufio"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -140,3 +141,24 @@ func (rw *recordingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error)
 	}
 	return nil, nil, errors.New("recordingResponseWriter: underlying ResponseWriter is not a Hijacker")
 }
+
+// ReadFrom delegates to the underlying ResponseWriter's io.ReaderFrom.
+// This must be present (not just Hijack) because upstream wrappers in
+// the middleware chain — notably sentry-go's NewWrapResponseWriter —
+// only preserve Hijacker when the wrapped writer is "fully fancy"
+// (Flusher AND Hijacker AND ReaderFrom). Same fix applied to
+// metrics.statusRecorder; both shims must be uniform to keep the WS
+// upgrade path working regardless of which order they wrap.
+func (rw *recordingResponseWriter) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		// Treat ReadFrom as "data written" for status semantics.
+		return rf.ReadFrom(src)
+	}
+	return io.Copy(writeOnlyWriter{rw}, src)
+}
+
+// writeOnlyWriter strips ReadFrom so io.Copy doesn't infinite-loop into
+// it on the fallback path.
+type writeOnlyWriter struct{ http.ResponseWriter }
+
+func (w writeOnlyWriter) Write(p []byte) (int, error) { return w.ResponseWriter.Write(p) }
