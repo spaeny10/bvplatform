@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"ironsight/internal/ai"
+	"ironsight/internal/buildinfo"
 	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/detection"
@@ -93,8 +94,13 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// external uptime monitor. Deliberately unauthenticated and returns a
 	// fixed payload; the authenticated /api/system/health endpoint is the
 	// richer per-subsystem status dashboard.
+	//
+	// git_sha is injected at build time via ldflags (see internal/buildinfo).
+	// The promote-to-prod.sh script compares this value against the SHA under
+	// test on bob before promoting an image to fred. Empty string in local dev
+	// builds without ldflags — that is expected and not an error.
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"status": "ok"})
+		writeJSON(w, map[string]string{"status": "ok", "git_sha": buildinfo.GitSHA})
 	})
 
 	// Public evidence share endpoint. Unauthenticated by design — the
