@@ -1,0 +1,188 @@
+# Build and push all Ironsight images to GHCR on every push to main.
+#
+# Images produced:
+#   ghcr.io/spaeny10/ironsight-api:latest
+#   ghcr.io/spaeny10/ironsight-worker:latest   (same image as api, different tag for clarity)
+#   ghcr.io/spaeny10/ironsight-frontend:latest
+#   ghcr.io/spaeny10/ironsight-qwen:test-7b    (AWQ quantized 7B — half the VRAM of prod 32B)
+#   ghcr.io/spaeny10/ironsight-yolo:latest
+#
+# Visibility: images are pushed as PUBLIC packages so bob can pull without
+# authenticating. The source repo (spaeny10/bvplatform) remains private.
+# This is acceptable for a pre-launch product; revisit before customer
+# source access becomes a concern.
+#
+# Watchtower on bob polls ghcr.io every 5 minutes and pulls :latest tags
+# automatically. prod tags are created manually by promote-to-prod.sh and
+# are never auto-pulled.
+#
+# The CI gate workflow (ci.yml) runs in parallel and must pass on PRs.
+# This workflow only runs on push to main (after merge) — it does not block
+# PRs.
+
+name: Build and push test images
+
+on:
+  push:
+    branches: [main]
+
+# One run at a time per branch. If a second push arrives while a build is
+# in flight, cancel the old one — no point shipping a stale image.
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write   # required to push to ghcr.io
+
+env:
+  REGISTRY: ghcr.io
+  # All images live under this namespace (lowercase owner required by GHCR).
+  OWNER: spaeny10
+
+jobs:
+  # ── API + Worker ────────────────────────────────────────────────────
+  # api and worker share the same image (different compose entrypoints).
+  # We build once and push two tags.
+  build-api:
+    name: Build api + worker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push api image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          # GIT_SHA is injected into the Go binary via ldflags (see Dockerfile
+          # ARG GIT_SHA comment). Use the short SHA (7 chars) to match what
+          # promote-to-prod.sh compares against.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:sha-${{ github.sha }}
+          # Cache from the last successful build so incremental builds
+          # only rebuild changed layers.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:latest
+          cache-to: type=inline
+
+      - name: Tag worker (same image, separate GHCR package)
+        # docker buildx build-push-action doesn't cross-repo retag natively.
+        # Pull the freshly-pushed api image and push it under the worker name.
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:sha-${{ github.sha }}
+          docker tag  ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:sha-${{ github.sha }} \
+                      ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-worker:latest
+          docker tag  ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-api:sha-${{ github.sha }} \
+                      ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-worker:sha-${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-worker:latest
+          docker push ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-worker:sha-${{ github.sha }}
+
+  # ── Frontend (Next.js) ──────────────────────────────────────────────
+  build-frontend:
+    name: Build frontend image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          build-args: |
+            API_INTERNAL_URL=http://api:8080
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-frontend:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-frontend:sha-${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-frontend:latest
+          cache-to: type=inline
+
+  # ── Qwen VLM (7B AWQ — test-size) ───────────────────────────────────
+  # Production uses Qwen2.5-VL-32B. Test uses the AWQ-quantized 7B which
+  # fits in the RTX 3070's 8 GB VRAM (32B needs ~20 GB). The AWQ variant
+  # is the same model family; scene descriptions are less detailed but the
+  # API surface is identical. This image is never promoted to prod.
+  build-qwen-test:
+    name: Build qwen test-7b image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push qwen test image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/qwen
+          file: ./services/qwen/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-qwen:test-7b
+          # No sha tag needed — this tag is not promoted to prod.
+          # Watchtower on bob watches for changes to test-7b specifically
+          # (see docker-compose.test.yml label filter).
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-qwen:test-7b
+          cache-to: type=inline
+
+  # ── YOLO (unchanged from prod) ───────────────────────────────────────
+  build-yolo:
+    name: Build yolo image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push yolo image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/yolo
+          file: ./services/yolo/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-yolo:latest
+            ${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-yolo:sha-${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.OWNER }}/ironsight-yolo:latest
+          cache-to: type=inline

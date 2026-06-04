@@ -37,6 +37,14 @@ ENV CGO_ENABLED=0 \
     GOOS=linux \
     GOARCH=amd64
 
+# GIT_SHA is provided by the GitHub Actions workflow (or local docker build
+# --build-arg GIT_SHA=$(git rev-parse --short HEAD)). It is injected into
+# the api binary's internal/buildinfo.GitSHA variable at link time, which
+# the /api/health endpoint surfaces as "git_sha". The promote-to-prod.sh
+# script compares this value against the SHA under test before promoting
+# an image to fred.
+ARG GIT_SHA=dev
+
 # Four binaries: api (the HTTP server), worker (batch jobs), seed (one-shot
 # demo-data loader for staging only — see cmd/seed/main.go and phase-plan
 # task P1-B-09), and migrate (operator CLI for goose-tracked migrations,
@@ -46,12 +54,15 @@ ENV CGO_ENABLED=0 \
 # and `docker compose run --rm api /app/migrate <subcommand>` for migration
 # inspection / rollback. Sharing the base layer keeps the registry footprint
 # low; the binaries are each ~10–25 MB compressed.
-RUN go build -trimpath -ldflags "-s -w" -o /out/server          ./cmd/server          && \
-    go build -trimpath -ldflags "-s -w" -o /out/worker          ./cmd/worker          && \
-    go build -trimpath -ldflags "-s -w" -o /out/seed            ./cmd/seed            && \
-    go build -trimpath -ldflags "-s -w" -o /out/migrate         ./cmd/migrate         && \
-    go build -trimpath -ldflags "-s -w" -o /out/verify-manifest ./cmd/verify-manifest && \
-    go build -trimpath -ldflags "-s -w" -o /out/reanalyze       ./cmd/reanalyze
+#
+# The -X flag injects the git SHA into the binary. All six binaries share the
+# same build arg so a single image tag is unambiguous.
+RUN go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/server          ./cmd/server          && \
+    go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/worker          ./cmd/worker          && \
+    go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/seed            ./cmd/seed            && \
+    go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/migrate         ./cmd/migrate         && \
+    go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/verify-manifest ./cmd/verify-manifest && \
+    go build -trimpath -ldflags "-s -w -X ironsight/internal/buildinfo.GitSHA=${GIT_SHA}" -o /out/reanalyze       ./cmd/reanalyze
 
 # ── Stage 2: runtime ───────────────────────────────────────────
 # We pick bookworm-slim over distroless because the server shells out to

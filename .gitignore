@@ -116,3 +116,11 @@ dev.log.err
 # The Ironsight backlog/plans live in the OUTER bigview-platform repo, not here.
 # Agents sometimes cd into this repo and write ironsight/backlog/* by mistake.
 /ironsight/
+
+# ── Bob-local test deployment files ───────────────────────────────────
+# deploy/test/ contains bob-local overlay and synthetic camera config.
+# These are NOT committed — they live only on bob at
+# /home/jetstream/external/bvplatform-main/deploy/test/ and reference
+# host-local paths (/tank/data/ironsight-test/*, /etc/ironsight-test/).
+# deploy/promote-to-prod.sh IS committed (it's an ops tool, not config).
+deploy/test/
