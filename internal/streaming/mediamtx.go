@@ -41,6 +41,12 @@ type streamInfo struct {
 type mtxConfig struct {
 	LogLevel        string              `yaml:"logLevel"`
 	LogDestinations []string            `yaml:"logDestinations"`
+	// AuthInternalUsers grants all actions to any user from any source IP.
+	// mediamtx's default only allows the API action from 127.0.0.1/::1,
+	// which causes 401s when the ironsight-api container (different docker
+	// bridge IP) calls apiAddPath/apiRemovePath.  Port 9997 is not exposed
+	// outside the docker network, so opening ips:[] is safe here.
+	AuthInternalUsers []mtxAuthUser `yaml:"authInternalUsers"`
 	API             bool                `yaml:"api"`
 	APIAddress      string              `yaml:"apiAddress"`
 	RTSP            bool                `yaml:"rtsp"`
@@ -53,6 +59,19 @@ type mtxConfig struct {
 	// LL-HLS in ironsight-api.  mediamtx is RTSP relay only.
 	WebRTC bool `yaml:"webrtc"`
 	Paths  map[string]*mtxPath `yaml:"paths"`
+}
+
+// mtxAuthUser represents one entry in mediamtx's authInternalUsers list.
+type mtxAuthUser struct {
+	User        string              `yaml:"user"`
+	Pass        string              `yaml:"pass"`
+	IPs         []string            `yaml:"ips"`
+	Permissions []mtxAuthPermission `yaml:"permissions"`
+}
+
+// mtxAuthPermission is a single action entry within an authInternalUsers entry.
+type mtxAuthPermission struct {
+	Action string `yaml:"action"`
 }
 
 type mtxPath struct {
@@ -396,9 +415,26 @@ func (m *MediaMTXServer) writeConfig() error {
 	//
 	// P3-INFRA-06: WebRTC is disabled — live view is now LL-HLS via
 	// gohlslib inside ironsight-api. mediamtx's role is RTSP relay only.
+	// Allow any user from any source IP for all actions.  mediamtx defaults
+	// to restricting the "api" action to 127.0.0.1/::1 only, which blocks
+	// the ironsight-api container (different docker bridge IP) from calling
+	// apiAddPath/apiRemovePath — resulting in 401s and new cameras never
+	// registering until the mediamtx container is manually restarted.
+	// Port 9997 is not published outside the docker bridge network.
+	allActions := []mtxAuthPermission{
+		{Action: "publish"},
+		{Action: "read"},
+		{Action: "playback"},
+		{Action: "api"},
+		{Action: "metrics"},
+		{Action: "pprof"},
+	}
 	cfg := &mtxConfig{
 		LogLevel:        "info",
 		LogDestinations: []string{"stdout"},
+		AuthInternalUsers: []mtxAuthUser{
+			{User: "any", Pass: "", IPs: []string{}, Permissions: allActions},
+		},
 		// Enable the HTTP control API so runtime path adds/removes go
 		// through apiAddPath/apiRemovePath instead of config-rewrite +
 		// reload. See internal/streaming/mediamtx_api.go.

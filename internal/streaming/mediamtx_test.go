@@ -66,3 +66,28 @@ func TestWriteConfig_WebRTCDisabledEvenWithAdditionalHosts(t *testing.T) {
 		t.Fatalf("config must not contain 192.168.103.49 (WebRTC is disabled); got:\n%s", out)
 	}
 }
+
+// TestWriteConfig_AuthInternalUsersAllowsAnySource verifies that the emitted
+// YAML contains an authInternalUsers block that grants all actions to "any"
+// user with an empty IPs list.  This allows the ironsight-api docker container
+// (which has a non-loopback bridge IP) to call the mediamtx HTTP control API
+// without receiving 401 responses on AddStream/RemoveStream.
+func TestWriteConfig_AuthInternalUsersAllowsAnySource(t *testing.T) {
+	out := writeConfigForTest(t, &config.Config{
+		MediaMTXAPIAddr:  "mediamtx:9997",
+		MediaMTXRTSPAddr: "mediamtx:18554",
+	})
+
+	requiredSnippets := []string{
+		"authInternalUsers:",
+		"user: any",
+		"- action: api",
+		"- action: publish",
+		"ips: []",
+	}
+	for _, snippet := range requiredSnippets {
+		if !strings.Contains(out, snippet) {
+			t.Fatalf("config missing %q in authInternalUsers block; got:\n%s", snippet, out)
+		}
+	}
+}

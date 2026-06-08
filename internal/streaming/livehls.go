@@ -70,20 +70,20 @@ const (
 	liveHLSIdleTimeout = 30 * time.Second
 
 	// liveHLSSegmentMinDuration is the gohlslib target segment length.
-	// 2 seconds × default 7-segment window.  LL-HLS effective latency
-	// with partial segments is ~2-3 s end-to-end.
-	liveHLSSegmentMinDuration = 2 * time.Second
+	// 6 s keeps each segment large enough that even a 150 ms cellular
+	// keyframe jitter is well below 3% of the segment boundary.
+	liveHLSSegmentMinDuration = 6 * time.Second
 
 	// liveHLSPartMinDuration is the LL-HLS partial-segment duration.
-	// 2026-06-08 bumped 200 ms → 1 s. H.265 cellular cameras produce
-	// variable RTP timing (267 ms / 366 ms / 400 ms parts observed)
-	// due to packet-loss recovery, which makes hls.js see a "part
-	// duration changed" event on every cycle at 200 ms target. At 1 s
-	// the natural variability is a smaller fraction of the target so
-	// hls.js stays in steady-state playback instead of constantly
-	// re-buffering.
-	// 200 ms matches the gohlslib default.
-	liveHLSPartMinDuration = 1 * time.Second
+	// 5 s target: H.265 cellular cameras produce jitter up to 150 ms
+	// between keyframes, which at 1 s target (~10-15%) was still large
+	// enough to trigger gohlslib's LL-HLS spec-violation warning
+	// "part duration changed from 1s to 1.135s" on every cycle, causing
+	// iOS clients to error and browser players to flash-and-die.  At 5 s
+	// the same jitter is ~3% of the target — well within LL-HLS tolerance.
+	// Latency tradeoff: feed is ~10-15 s behind realtime, acceptable for
+	// security trailer monitoring.
+	liveHLSPartMinDuration = 5 * time.Second
 
 	// liveHLSReconnectBaseDelay is the starting back-off between RTSP
 	// reconnect attempts.  Doubles each failure up to liveHLSReconnectMax.
@@ -350,18 +350,14 @@ func (m *LiveHLSMuxer) start() error {
 
 	// Create the gohlslib Muxer once — it persists across RTSP reconnects.
 	//
-	// 2026-06-08 — back to MuxerVariantLowLatency. Tried MuxerVariantFMP4
-	// briefly (PR #39) hoping it would tolerate H.265 cellular timing jitter
-	// better, but gohlslib's fMP4 mode rotated segments out of its window
-	// before the api proxy could serve them — every seg*.mp4 came back HTTP
-	// 200 with 0 bytes, so the player loaded init.mp4 (753 bytes) then died
-	// with no media data → "flashes for a sec then disappears". LL-HLS at
-	// least serves part bodies (we observed 48 KB / 1 KB parts earlier)
-	// even though it logs the "part duration changed" warning; hls.js will
-	// stutter but eventually recover. PartMinDuration bumped 200 ms → 1 s
-	// so the natural H.265 timing variability (267/366/400 ms) is smaller
-	// relative to the target part length, which reduces the frequency of
-	// the spec-violation warning enough that hls.js stays happy.
+	// MuxerVariantFMP4 was tried (PR #39) but gohlslib rotated segments out
+	// of its window before the proxy could serve them — 0-byte bodies, dead
+	// player.  MuxerVariantLowLatency is kept.
+	//
+	// PartMinDuration is 5 s (see liveHLSPartMinDuration) because H.265
+	// cellular keyframe jitter spans 100 ms+ and gohlslib's LL-HLS variant
+	// emits a spec-violation warning + breaks players whenever part_n !=
+	// part_{n-1}.  At 5 s the jitter is ~3% of the target — noise.
 	mux := &gohlslib.Muxer{
 		Tracks:             hlsTracks,
 		Variant:            gohlslib.MuxerVariantLowLatency,

@@ -2,6 +2,11 @@
 
 ## 2026-06-08
 
+- **fix** live-stream: bump `liveHLSPartMinDuration` 1s→5s and `liveHLSSegmentMinDuration` 2s→6s — H.265 cellular jitter (~150ms) was ~15% of the 1s part target, triggering gohlslib's LL-HLS spec-violation warning on every cycle and killing browser players; at 5s it's ~3% (noise); latency tradeoff ~10-15s accepted for security trailer use.
+- **fix** mediamtx API auth: add `authInternalUsers` block to `writeConfig` granting all actions to any source IP — ironsight-api container had a non-loopback docker bridge IP, so mediamtx's default 127.0.0.1-only API ACL returned 401 on every `AddStream`/`RemoveStream` call; new cameras now register immediately without a manual mediamtx restart; port 9997 is not exposed outside the docker bridge network.
+
+
+
 - **fix** prod-bugs camera CRUD UX: `admin/page.tsx` `ensureCameras` had a `camerasLoaded` guard that short-circuited every subsequent `onRefresh()` call, so delete/add never reflected in the list; split into `refreshCameras` (always fetches, passed as `onRefresh`) and `ensureCameras` (lazy-load guard, used only for initial tab open); `CameraManager.tsx` now awaits `onRefresh()` before closing the add modal (camera is visible the moment modal closes), surfaces success and error toasts for single delete and bulk delete, disables Cancel during active ONVIF probe, and shows a "this can take up to 60 seconds" info banner while `adding` is true; `onRefresh` prop type widened from `() => void` → `() => Promise<void>` in `CameraManager` and `SettingsPage`; backend probe is still synchronous (TODO P2: async 202+poll pattern).
 
 - **fix** prod-bugs PR-A (frontend quick wins): suppress session-expiry banner for SSO users (ironsight_session cookie absent = oauth2-proxy session, banner is inaccurate); redirect already-authenticated users away from /login based on role; wrap AdminPage root with ToastProvider so CompanyCard/useApiAction/useToast works in all admin tabs (previously only SettingsPage was wrapped, causing "useToast must be used within ToastProvider" on Companies tab); hide docker-internal endpoints (http://yolo:8501 etc.) in ServicesHealthCard — show "internal service" instead; add degraded/stale reason tooltip to RecordingHealthCard status badge (mirrors recording_health.go threshold logic).
