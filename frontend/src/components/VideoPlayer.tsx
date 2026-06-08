@@ -262,8 +262,11 @@ export default function VideoPlayer({
                     hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
                         if (cancelled) return;
                         if (data.fatal) {
-                            console.error('[LIVE-HLS] fatal error:', data.type, data.details);
-                            setError('Stream unavailable');
+                            const reason = (data.response?.code ? `HTTP ${data.response.code} ` : '')
+                                + (data.error?.message || data.reason || '');
+                            const msg = `Stream unavailable — ${data.type}/${data.details}${reason ? ` (${reason})` : ''}`;
+                            console.error('[LIVE-HLS] fatal error:', data.type, data.details, data);
+                            setError(msg);
                             setLoading(false);
                         }
                     });
@@ -293,7 +296,7 @@ export default function VideoPlayer({
         refresher.start().catch((err: any) => {
             if (!cancelled) {
                 console.error('[LIVE-HLS] mint failed:', err);
-                setError('Stream unavailable');
+                setError(`Stream unavailable — mint failed (${err?.message || err})`);
                 setLoading(false);
             }
         });
@@ -751,7 +754,7 @@ export default function VideoPlayer({
             {error && (
                 <div className="video-cell-placeholder">
                     <div className="icon">📹</div>
-                    <span style={{ fontSize: 12 }}>{error}</span>
+                    <span style={{ fontSize: 12, wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center' }}>{error}</span>
                     <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                         {cameraName}
                     </span>
