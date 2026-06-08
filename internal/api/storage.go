@@ -47,7 +47,11 @@ type DiskUsage struct {
 // Linux reads /proc/mounts — see the build-tagged storage_*.go files.
 func HandleListDrives() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, listLocalDrives())
+		drives := listLocalDrives()
+		if drives == nil {
+			drives = []DriveInfo{} // never JSON-encode as null; the FE .map()s the response
+		}
+		writeJSON(w, drives)
 	}
 }
 
@@ -84,7 +88,7 @@ func HandleBrowsePath() http.HandlerFunc {
 			return
 		}
 
-		var folders []FolderEntry
+		folders := []FolderEntry{} // init non-nil; FE .map()s the response and crashes on null
 		for _, e := range entries {
 			if !e.IsDir() {
 				continue

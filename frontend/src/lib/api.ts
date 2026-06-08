@@ -949,13 +949,15 @@ export interface DiskUsage {
 export async function listDrives(): Promise<DriveInfo[]> {
     const res = await authFetch(`${API_BASE}/storage/drives`);
     if (!res.ok) return [];
-    return res.json();
+    // Backend nil-slice safety: a Go []T marshals as null when nil. Coerce so
+    // the caller can .map() unconditionally.
+    return (await res.json()) ?? [];
 }
 
 export async function browsePath(path: string): Promise<FolderEntry[]> {
     const res = await authFetch(`${API_BASE}/storage/browse?path=${encodeURIComponent(path)}`);
     if (!res.ok) return [];
-    return res.json();
+    return (await res.json()) ?? [];
 }
 
 export async function getDiskUsage(path: string): Promise<DiskUsage | null> {
@@ -967,7 +969,7 @@ export async function getDiskUsage(path: string): Promise<DiskUsage | null> {
 export async function listStorageLocations(): Promise<StorageLocation[]> {
     const res = await authFetch(`${API_BASE}/storage/locations`);
     if (!res.ok) return [];
-    return res.json();
+    return (await res.json()) ?? [];
 }
 
 export async function createStorageLocation(data: StorageLocationCreate): Promise<StorageLocation> {
