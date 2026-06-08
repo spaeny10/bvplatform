@@ -342,11 +342,20 @@ func (m *LiveHLSMuxer) start() error {
 	}
 
 	// Create the gohlslib Muxer once — it persists across RTSP reconnects.
+	//
+	// 2026-06-08 — fall back from MuxerVariantLowLatency to MuxerVariantFMP4.
+	// LL-HLS requires uniform part durations (per Apple spec); H.265 cellular
+	// cameras produce variable RTP timing (267 ms / 366 ms / 400 ms parts
+	// observed) due to packet-loss recovery, which makes hls.js / Safari give
+	// up on the stream after the first "part duration changed" error. Standard
+	// fMP4 HLS tolerates variable segment durations and works across all the
+	// trailer cameras at the cost of ~2-6 s additional latency (acceptable for
+	// monitoring use). LL-HLS can be re-enabled per-camera in a future PR once
+	// the H.265-via-cellular timing jitter is smoothed at the ingest layer.
 	mux := &gohlslib.Muxer{
 		Tracks:             hlsTracks,
-		Variant:            gohlslib.MuxerVariantLowLatency,
+		Variant:            gohlslib.MuxerVariantFMP4,
 		SegmentMinDuration: liveHLSSegmentMinDuration,
-		PartMinDuration:    liveHLSPartMinDuration,
 		OnEncodeError: func(err error) {
 			log.Printf("[LIVEHLS] encode error for camera %s: %v", m.cameraID, err)
 		},
