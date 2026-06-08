@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -290,12 +291,30 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Post("/users/{id}/mfa/reset", HandleAdminMFAReset(db))
 
 		// Storage status (available to all authenticated users)
+		//
+		// 2026-06-08 — query storage_locations on every request rather than
+		// reading cached cfg.StoragePath. cfg is set ONCE at startup from the
+		// storage_locations table (see cmd/server/main.go:124-151); if the
+		// user adds a row via the admin UI after startup, cfg stays empty
+		// until next restart and the "no storage configured" warning hangs
+		// around. Reading the DB live keeps the warning honest. (The recording
+		// engine + livehls still use cached cfg.StoragePath — they need an
+		// api restart to pick up a new path. Documented as a follow-up.)
 		r.Get("/storage/status", func(w http.ResponseWriter, r *http.Request) {
-			configured := cfg.StoragePath != ""
+			storagePath := cfg.StoragePath
+			hlsPath := cfg.HLSPath
+			locs, _ := db.ListStorageLocations(r.Context())
+			for _, l := range locs {
+				if l.Enabled && (l.Purpose == "recordings" || l.Purpose == "all") {
+					storagePath = filepath.Join(l.Path, "recordings")
+					hlsPath = filepath.Join(l.Path, "hls")
+					break
+				}
+			}
 			writeJSON(w, map[string]interface{}{
-				"configured":   configured,
-				"storage_path": cfg.StoragePath,
-				"hls_path":     cfg.HLSPath,
+				"configured":   storagePath != "",
+				"storage_path": storagePath,
+				"hls_path":     hlsPath,
 			})
 		})
 
