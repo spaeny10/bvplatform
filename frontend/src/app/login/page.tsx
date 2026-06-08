@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, FormEvent } from 'react';
+import { useState, FormEvent, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useRouter } from 'next/navigation';
 import { BRAND } from '@/lib/branding';
@@ -26,13 +26,29 @@ const PARTICLES = Array.from({ length: 24 }, (_, i) => ({
     opacity: 0.15 + Math.random() * 0.25,
 }));
 
+// Role → canonical post-login destination.
+function roleDestination(role: string): string {
+    if (role === 'soc_operator' || role === 'soc_supervisor') return '/operator';
+    if (role === 'site_manager' || role === 'customer') return '/portal';
+    return '/';
+}
+
 export default function LoginPage() {
-    const { login } = useAuth();
+    const { login, user } = useAuth();
     const router = useRouter();
     const [username, setUsername] = useState('');
     const [password, setPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
+
+    // SSO users land on /login because the URL was typed or bookmarked;
+    // they're already authenticated (AuthContext resolved via /auth/me).
+    // Redirect them immediately instead of showing the password form.
+    useEffect(() => {
+        if (user) {
+            router.replace(roleDestination(user.role));
+        }
+    }, [user, router]);
 
     const handleSubmit = async (e: FormEvent) => {
         e.preventDefault();
@@ -40,17 +56,11 @@ export default function LoginPage() {
         setLoading(true);
         try {
             await login(username, password);
-            // Role-based redirect after login
+            // Role-based redirect after login — read from localStorage
+            // (ironsight_user is written by AuthContext.login before setUser).
             const stored = localStorage.getItem('ironsight_user');
             const u = stored ? JSON.parse(stored) : null;
-            const role = u?.role ?? '';
-            if (role === 'soc_operator' || role === 'soc_supervisor') {
-                router.replace('/operator');
-            } else if (role === 'site_manager' || role === 'customer') {
-                router.replace('/portal');
-            } else {
-                router.replace('/');
-            }
+            router.replace(roleDestination(u?.role ?? ''));
         } catch (err: any) {
             setError(err.message ?? 'Login failed');
         } finally {

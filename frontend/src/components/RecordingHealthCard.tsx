@@ -58,6 +58,31 @@ function humanDuration(sec: number): string {
 }
 
 /**
+ * statusReason produces a human-readable tooltip explaining WHY a camera
+ * is in degraded / stale / off status. Mirrors the thresholds in
+ * internal/api/recording_health.go so the tooltip matches the badge.
+ */
+function statusReason(r: RecordingHealth): string {
+    if (r.status === 'healthy') return '';
+    if (r.status === 'off') return 'Recording is disabled for this camera.';
+    if (r.status === 'stale') {
+        if (!r.last_segment_at) return 'No segments recorded in the last 24 hours.';
+        return `No segment in the last ${humanDuration(r.last_gap_seconds)} (threshold: 10 min).`;
+    }
+    if (r.status === 'degraded') {
+        const reasons: string[] = [];
+        if (r.last_gap_seconds > 120) {
+            reasons.push(`${humanDuration(r.last_gap_seconds)} since last segment (threshold: 2 min)`);
+        }
+        if (r.longest_gap_seconds_24h > 120) {
+            reasons.push(`longest gap today: ${humanDuration(r.longest_gap_seconds_24h)} (threshold: 2 min)`);
+        }
+        return reasons.length > 0 ? reasons.join(' · ') : 'Recording lag detected.';
+    }
+    return '';
+}
+
+/**
  * RecordingHealthCard shows per-camera recording status for the caller's
  * authorized cameras. Surfaces silent-failure modes (stalled recordings,
  * long gaps, wrong recorder engine) that would otherwise only appear in
@@ -199,15 +224,19 @@ export default function RecordingHealthCard() {
                                     })()}
                                 </td>
                                 <td style={{ padding: '6px 4px' }}>
-                                    <span style={{
-                                        display: 'inline-block',
-                                        padding: '2px 8px',
-                                        borderRadius: 4,
-                                        background: STATUS_COLORS[r.status] + '22',
-                                        color: STATUS_COLORS[r.status],
-                                        fontSize: 11,
-                                        fontWeight: 600,
-                                    }}>
+                                    <span
+                                        title={statusReason(r)}
+                                        style={{
+                                            display: 'inline-block',
+                                            padding: '2px 8px',
+                                            borderRadius: 4,
+                                            background: STATUS_COLORS[r.status] + '22',
+                                            color: STATUS_COLORS[r.status],
+                                            fontSize: 11,
+                                            fontWeight: 600,
+                                            cursor: statusReason(r) ? 'help' : 'default',
+                                        }}
+                                    >
                                         {STATUS_LABELS[r.status].toUpperCase()}
                                     </span>
                                 </td>
