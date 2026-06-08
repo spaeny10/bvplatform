@@ -478,6 +478,7 @@ export default function AdminPage() {
   };
 
   return (
+    <ToastProvider>
     <div className="admin-shell">
       {/* ── Top Bar ── */}
       <div className="admin-topbar">
@@ -1196,14 +1197,12 @@ export default function AdminPage() {
 
         {/* ══════ NVR SETTINGS TAB ══════ */}
         {activeTab === 'settings' && (
-          <ToastProvider>
-            <SettingsPage
-              currentUserId={user?.id ?? ''}
-              currentUserRole={user?.role ?? 'viewer'}
-              cameras={cameras}
-              onRefresh={ensureCameras}
-            />
-          </ToastProvider>
+          <SettingsPage
+            currentUserId={user?.id ?? ''}
+            currentUserRole={user?.role ?? 'viewer'}
+            cameras={cameras}
+            onRefresh={ensureCameras}
+          />
         )}
 
         {/* ══════ HEALTH TAB ══════ */}
@@ -1316,6 +1315,7 @@ export default function AdminPage() {
       {configSiteId && <SiteConfigModal siteId={configSiteId} siteName={configSiteName} onClose={() => { setConfigSiteId(null); refetchSites(); refetchCompanies(); }} onDeleted={() => { refetchSites(); refetchCompanies(); }} />}
       {showAuditExport && <AuditLogExport onClose={() => setShowAuditExport(false)} />}
     </div>
+    </ToastProvider>
   );
 }
 

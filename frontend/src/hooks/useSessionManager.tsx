@@ -8,6 +8,16 @@ const HEARTBEAT_INTERVAL_MS = 60 * 1000;       // Check every 60s
 const IDLE_TIMEOUT_MS = 30 * 60 * 1000;        // 30 min idle → timeout warning
 const ACTIVITY_DEBOUNCE_MS = 5000;             // Debounce activity events
 
+// SSO sessions (X-Forwarded-Email path) do not use the ironsight_session
+// cookie — they are maintained entirely by oauth2-proxy. The ironsight_session
+// cookie is only present for local password-login users. We detect the
+// session mode by checking for the cookie at startup — SSO users have only
+// ironsight_csrf (set by RequireAuth), never ironsight_session.
+function isLocalSessionCookie(): boolean {
+    if (typeof document === 'undefined') return false;
+    return document.cookie.split('; ').some(c => c.startsWith('ironsight_session='));
+}
+
 export function useSessionManager() {
   const { user, logout } = useAuth();
   const [showWarning, setShowWarning] = useState(false);
@@ -23,6 +33,15 @@ export function useSessionManager() {
 
   useEffect(() => {
     if (!user) return;
+
+    // SSO sessions are maintained by oauth2-proxy (12-hour sliding window,
+    // refreshed on every authenticated request). The frontend cannot see the
+    // oauth2-proxy session lifetime, so a client-side countdown would be
+    // inaccurate and alarming. Suppress the warning entirely for SSO users.
+    // Local password-login users have ironsight_session and benefit from the
+    // idle/expiry warning.
+    if (!isLocalSessionCookie()) return;
+
     sessionStartRef.current = Date.now();
 
     const events = ['mousedown', 'keydown', 'scroll', 'touchstart'];

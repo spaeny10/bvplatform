@@ -17,6 +17,24 @@ const STATUS_LABEL: Record<ServiceStatus['status'], string> = {
     unknown: 'Unknown',
 };
 
+// isInternalEndpoint returns true for docker-network-internal addresses
+// (bare hostname, no dots, or 172.x / 10.x private IPs). These are
+// operator plumbing — not meaningful to display in the health table.
+function isInternalEndpoint(endpoint: string): boolean {
+    try {
+        const u = new URL(endpoint);
+        const host = u.hostname;
+        // Docker-compose service names are bare words with no dots.
+        if (!host.includes('.')) return true;
+        // RFC 1918 private ranges used by docker bridge networks.
+        if (/^(172\.(1[6-9]|2\d|3[01])|10\.|192\.168\.)/.test(host)) return true;
+        return false;
+    } catch {
+        // Not a parseable URL — treat as internal (e.g. "yolo:8501").
+        return true;
+    }
+}
+
 // ServicesHealthCard surfaces the four backing services that don't show
 // up in camera-recording health: the two GPU AI containers (YOLO,
 // Qwen), the mediamtx control API, and the worker process. Polls every
@@ -127,7 +145,9 @@ export default function ServicesHealthCard() {
                                     padding: '6px 4px', color: '#6b7280',
                                     fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
                                 }}>
-                                    {r.endpoint || '—'}
+                                    {/* Internal docker-network hostnames (e.g. http://yolo:8501)
+                                        are meaningless to operators — show a human label instead. */}
+                                    {r.endpoint && !isInternalEndpoint(r.endpoint) ? r.endpoint : 'internal service'}
                                 </td>
                                 <td style={{
                                     padding: '6px 4px', textAlign: 'right',
