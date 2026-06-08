@@ -75,8 +75,15 @@ const (
 	liveHLSSegmentMinDuration = 2 * time.Second
 
 	// liveHLSPartMinDuration is the LL-HLS partial-segment duration.
+	// 2026-06-08 bumped 200 ms → 1 s. H.265 cellular cameras produce
+	// variable RTP timing (267 ms / 366 ms / 400 ms parts observed)
+	// due to packet-loss recovery, which makes hls.js see a "part
+	// duration changed" event on every cycle at 200 ms target. At 1 s
+	// the natural variability is a smaller fraction of the target so
+	// hls.js stays in steady-state playback instead of constantly
+	// re-buffering.
 	// 200 ms matches the gohlslib default.
-	liveHLSPartMinDuration = 200 * time.Millisecond
+	liveHLSPartMinDuration = 1 * time.Second
 
 	// liveHLSReconnectBaseDelay is the starting back-off between RTSP
 	// reconnect attempts.  Doubles each failure up to liveHLSReconnectMax.
@@ -343,19 +350,23 @@ func (m *LiveHLSMuxer) start() error {
 
 	// Create the gohlslib Muxer once — it persists across RTSP reconnects.
 	//
-	// 2026-06-08 — fall back from MuxerVariantLowLatency to MuxerVariantFMP4.
-	// LL-HLS requires uniform part durations (per Apple spec); H.265 cellular
-	// cameras produce variable RTP timing (267 ms / 366 ms / 400 ms parts
-	// observed) due to packet-loss recovery, which makes hls.js / Safari give
-	// up on the stream after the first "part duration changed" error. Standard
-	// fMP4 HLS tolerates variable segment durations and works across all the
-	// trailer cameras at the cost of ~2-6 s additional latency (acceptable for
-	// monitoring use). LL-HLS can be re-enabled per-camera in a future PR once
-	// the H.265-via-cellular timing jitter is smoothed at the ingest layer.
+	// 2026-06-08 — back to MuxerVariantLowLatency. Tried MuxerVariantFMP4
+	// briefly (PR #39) hoping it would tolerate H.265 cellular timing jitter
+	// better, but gohlslib's fMP4 mode rotated segments out of its window
+	// before the api proxy could serve them — every seg*.mp4 came back HTTP
+	// 200 with 0 bytes, so the player loaded init.mp4 (753 bytes) then died
+	// with no media data → "flashes for a sec then disappears". LL-HLS at
+	// least serves part bodies (we observed 48 KB / 1 KB parts earlier)
+	// even though it logs the "part duration changed" warning; hls.js will
+	// stutter but eventually recover. PartMinDuration bumped 200 ms → 1 s
+	// so the natural H.265 timing variability (267/366/400 ms) is smaller
+	// relative to the target part length, which reduces the frequency of
+	// the spec-violation warning enough that hls.js stays happy.
 	mux := &gohlslib.Muxer{
 		Tracks:             hlsTracks,
-		Variant:            gohlslib.MuxerVariantFMP4,
+		Variant:            gohlslib.MuxerVariantLowLatency,
 		SegmentMinDuration: liveHLSSegmentMinDuration,
+		PartMinDuration:    liveHLSPartMinDuration,
 		OnEncodeError: func(err error) {
 			log.Printf("[LIVEHLS] encode error for camera %s: %v", m.cameraID, err)
 		},
