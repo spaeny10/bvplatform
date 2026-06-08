@@ -25,7 +25,7 @@ interface Props {
     currentUserId: string;
     currentUserRole: string;
     cameras: Camera[];
-    onRefresh: () => void;
+    onRefresh: () => Promise<void>;
 }
 
 

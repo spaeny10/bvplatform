@@ -200,14 +200,20 @@ export default function AdminPage() {
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [camerasLoaded, setCamerasLoaded] = useState(false);
 
-  const ensureCameras = useCallback(async () => {
-    if (camerasLoaded) return;
+  // Always re-fetches — used as onRefresh so add/delete/edit immediately
+  // reflect in the list without requiring a full page reload.
+  const refreshCameras = useCallback(async () => {
     try {
       const data = await listCameras();
       setCameras(Array.isArray(data) ? data : []);
     } catch { /* non-fatal */ }
     setCamerasLoaded(true);
-  }, [camerasLoaded]);
+  }, []);
+
+  const ensureCameras = useCallback(async () => {
+    if (camerasLoaded) return;
+    await refreshCameras();
+  }, [camerasLoaded, refreshCameras]);
 
   const [showAuditExport, setShowAuditExport] = useState(false);
 
@@ -1201,7 +1207,7 @@ export default function AdminPage() {
             currentUserId={user?.id ?? ''}
             currentUserRole={user?.role ?? 'viewer'}
             cameras={cameras}
-            onRefresh={ensureCameras}
+            onRefresh={refreshCameras}
           />
         )}
 

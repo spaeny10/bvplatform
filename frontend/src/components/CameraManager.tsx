@@ -4,13 +4,15 @@ import { useState } from 'react';
 import { Camera, createCamera, updateCamera, deleteCamera, rebootCamera, discoverCameras, getDevicePreview, DiscoveredDevice } from '@/lib/api';
 import VCAZoneEditor from '@/components/VCAZoneEditor';
 import MilesightAdvanced from '@/components/MilesightAdvanced';
+import { useToast } from '@/components/ToastProvider';
 
 interface CameraManagerProps {
     cameras: Camera[];
-    onRefresh: () => void;
+    onRefresh: () => Promise<void>;
 }
 
 export default function CameraManager({ cameras, onRefresh }: CameraManagerProps) {
+    const { push: pushToast } = useToast();
     const [showAddModal, setShowAddModal] = useState(false);
     const [showDiscovery, setShowDiscovery] = useState(false);
     const [discovering, setDiscovering] = useState(false);
@@ -46,8 +48,13 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
         setAdding(true);
         try {
             const created = await createCamera(addForm);
+            // Refresh the list first so the new camera is visible the
+            // moment the modal closes. The ONVIF probe already completed
+            // at this point — refreshCameras is a fast list fetch.
+            await onRefresh();
             setShowAddModal(false);
             setAddForm({ name: '', onvif_address: '', username: 'admin', password: '', device_class: 'continuous' });
+            pushToast({ type: 'success', title: `Camera added`, body: created?.name ?? addForm.name });
             // For sense_pushed cameras the create response carries the
             // freshly-minted webhook token. Build the absolute URL once
             // and present it; for continuous cameras nothing extra to show.
@@ -58,7 +65,6 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                     cameraName: created.name,
                 });
             }
-            onRefresh();
         } catch (err: any) {
             setAddError(err?.message || 'Failed to add camera — check the address, credentials, and that ONVIF is enabled.');
         } finally {
@@ -90,22 +96,32 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
     const handleBulkDelete = async () => {
         setBulkDeleting(true);
         const ids = Array.from(selected);
+        let failed = 0;
         for (let i = 0; i < ids.length; i++) {
-            try { await deleteCamera(ids[i]); } catch { /* continue */ }
+            try { await deleteCamera(ids[i]); } catch { failed++; }
         }
         setSelected(new Set());
         setConfirmBulkDelete(false);
         setBulkDeleting(false);
-        onRefresh();
+        await onRefresh();
+        if (failed > 0) {
+            pushToast({ type: 'error', title: 'Bulk delete partial', body: `${failed} camera${failed !== 1 ? 's' : ''} could not be removed` });
+        } else {
+            pushToast({ type: 'success', title: 'Cameras removed', body: `${ids.length} camera${ids.length !== 1 ? 's' : ''} deleted` });
+        }
     };
 
     const handleDelete = async (id: string) => {
+        const cameraName = cameras.find(c => c.id === id)?.name ?? id;
         try {
             await deleteCamera(id);
             setConfirmDeleteId(null);
-            onRefresh();
-        } catch (err) {
+            await onRefresh();
+            pushToast({ type: 'success', title: 'Camera removed', body: cameraName });
+        } catch (err: any) {
             console.error('Failed to delete camera:', err);
+            setConfirmDeleteId(null);
+            pushToast({ type: 'error', title: 'Delete failed', body: err?.message ?? 'Could not remove camera' });
         }
     };
 
@@ -185,9 +201,9 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                 });
             });
             await Promise.allSettled(promises);
+            await onRefresh();
             setShowDiscovery(false);
             setDiscoveryAuth({ username: 'admin', password: '' });
-            onRefresh();
         } catch (err) {
             console.error('Failed to bulk add cameras:', err);
         }
@@ -494,10 +510,17 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                             </div>
                         )}
 
+                        {adding && (
+                            <div style={{ padding: '8px 12px', borderRadius: 6, fontSize: 11, lineHeight: 1.5, background: 'rgba(59,130,246,0.06)', border: '1px solid rgba(59,130,246,0.18)', color: '#93c5fd', marginBottom: 8 }}>
+                                Connecting to camera and probing ONVIF — this can take up to 60 seconds on cellular-connected devices. Please wait.
+                                {/* TODO(P2): async ONVIF probe — return 202 + job ID, frontend polls status */}
+                            </div>
+                        )}
+
                         <div className="modal-actions">
-                            <button className="btn" onClick={() => { setShowAddModal(false); setAddError(null); }}>Cancel</button>
+                            <button className="btn" onClick={() => { setShowAddModal(false); setAddError(null); }} disabled={adding}>Cancel</button>
                             <button className="btn btn-primary" onClick={handleAdd} disabled={adding || !addForm.onvif_address.trim()}>
-                                {adding ? 'Connecting...' : 'Add Camera'}
+                                {adding ? 'Connecting…' : 'Add Camera'}
                             </button>
                         </div>
                     </div>
