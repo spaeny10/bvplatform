@@ -147,6 +147,15 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 	// whose cookie isn't yet recognised by the ticket mint.
 	r.With(RequireAuth(cfg, db)).Get("/api/auth/ws-ticket", HandleWSTicket(cfg))
 
+	// CSRF bootstrap endpoint. GET is CSRF-exempt; RequireAuth ensures only
+	// authenticated sessions can call it. Exists as a safety-net for SSO
+	// sessions: if the RequireAuth middleware fails to emit the ironsight_csrf
+	// cookie (middleware ResponseWriter wrapper chain issue), the frontend calls
+	// this once after /auth/me resolves to ensure the CSRF cookie is present
+	// before any non-idempotent request is attempted. Must NOT be inside the
+	// /api CSRFMiddleware group (that would require the cookie to already exist).
+	r.With(RequireAuth(cfg, db)).Get("/api/auth/csrf", HandleCSRF(cfg))
+
 	// API routes (JWT protected)
 	// P1-A-02 part 2: CSRFMiddleware is mounted here so all non-idempotent
 	// requests under /api/* require a valid X-CSRF-Token header matching the

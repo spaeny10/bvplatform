@@ -440,6 +440,44 @@ func HandleGetMe(db *database.DB) http.HandlerFunc {
 	}
 }
 
+// HandleCSRF is a dedicated GET endpoint that mints an ironsight_csrf cookie
+// and returns the token value in JSON. It exists as a safety-net for SSO
+// sessions: the RequireAuth middleware attempts to set the cookie on every
+// authenticated request, but ResponseWriter wrapper chains (sentry, metrics,
+// requestLogger) can cause http.SetCookie to silently drop headers in some
+// middleware orderings. Exposing a dedicated GET eliminates the
+// chicken-and-egg problem — the frontend calls this once after /auth/me when
+// the cookie is absent, before attempting any non-idempotent request.
+//
+// GET /api/auth/csrf is CSRF-exempt (safe method) and only requires a valid
+// session (RequireAuth). It is NOT mounted under the /api group's
+// CSRFMiddleware so it can be called before the CSRF token exists.
+func HandleCSRF(cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Reuse existing cookie if present and non-empty — avoids invalidating
+		// a token that a concurrent request may have just read.
+		if existing, err := r.Cookie(csrfCookieName); err == nil && existing.Value != "" {
+			writeJSON(w, map[string]string{"csrf_token": existing.Value})
+			return
+		}
+		token, err := generateCSRFToken()
+		if err != nil {
+			http.Error(w, "csrf token generation failed", http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     csrfCookieName,
+			Value:    token,
+			Path:     "/",
+			MaxAge:   int(12 * time.Hour / time.Second),
+			HttpOnly: false, // JS-readable for the double-submit pattern
+			Secure:   cfg.CookieSecure,
+			SameSite: http.SameSiteLaxMode,
+		})
+		writeJSON(w, map[string]string{"csrf_token": token})
+	}
+}
+
 // ── JWT Middleware ────────────────────────────────────────────────────────
 
 type contextKey string

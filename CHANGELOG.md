@@ -3,6 +3,7 @@
 ## 2026-06-08
 
 - **fix** prod-bugs PR-A (frontend quick wins): suppress session-expiry banner for SSO users (ironsight_session cookie absent = oauth2-proxy session, banner is inaccurate); redirect already-authenticated users away from /login based on role; wrap AdminPage root with ToastProvider so CompanyCard/useApiAction/useToast works in all admin tabs (previously only SettingsPage was wrapped, causing "useToast must be used within ToastProvider" on Companies tab); hide docker-internal endpoints (http://yolo:8501 etc.) in ServicesHealthCard — show "internal service" instead; add degraded/stale reason tooltip to RecordingHealthCard status badge (mirrors recording_health.go threshold logic).
+- **fix** Bug #4 (live feed 403): add `GET /api/auth/csrf` bootstrap endpoint (`HandleCSRF` in `auth_handler.go`, mounted before the CSRF middleware group in `router.go`) — SSO sessions never pass through `/auth/login` so they have no `ironsight_csrf` cookie; `RequireAuth` attempts to set it but `http.SetCookie` is silently dropped by the sentry/metrics/requestLogger `ResponseWriter` wrapper chain; dedicated GET endpoint is CSRF-exempt and re-uses the existing cookie value if present, eliminating the chicken-and-egg problem; `AuthContext.tsx` calls `GET /api/auth/csrf` once after `/auth/me` resolves when the cookie is absent — ensures the double-submit token exists before the first `POST /api/media/mint` (live feed) or any other non-idempotent request; branch `fix/prod-bugs-csrf-mint`.
 
 ## 2026-06-04
 
