@@ -139,6 +139,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
                 setToken(null); // JWT stays in HttpOnly cookie — never exposed to JS
                 setUser(u);
                 localStorage.setItem(USER_KEY, JSON.stringify(u));
+
+                // Ensure the CSRF double-submit cookie is present before any
+                // non-idempotent request is attempted. SSO sessions never go
+                // through /auth/login so they don't get the cookie from
+                // setSessionCookies(). RequireAuth tries to set it, but a
+                // ResponseWriter wrapper chain issue can silently drop the
+                // Set-Cookie header. Calling GET /api/auth/csrf is the
+                // reliable bootstrap path — it is CSRF-exempt (safe method)
+                // and idempotent (re-uses existing cookie value if present).
+                const hasCSRF = document.cookie
+                    .split('; ')
+                    .some(c => c.startsWith('ironsight_csrf='));
+                if (!hasCSRF) {
+                    fetch('/api/auth/csrf', { credentials: 'include' }).catch(() => { /* best-effort */ });
+                }
             })
             .catch(() => {
                 // No SSO header AND no valid session cookie — clear any stale state.
