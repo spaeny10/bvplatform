@@ -240,8 +240,15 @@ export default function VideoPlayer({
             if (cancelled) return;
             if (Hls.isSupported()) {
                 if (!hls) {
+                    // lowLatencyMode disabled: in LL mode hls.js requires PART-TARGET
+                    // to stay constant per the LL-HLS spec. gohlslib re-derives the
+                    // target each segment from observed part durations, so any H.265
+                    // cellular jitter (~30-150ms even at our 5s PartMinDuration) bumps
+                    // PART-TARGET and hls.js drops the stream as fatal. Classic HLS
+                    // mode ignores PART tags and consumes whole segments — players
+                    // get ~6s latency but the stream stays alive.
                     hls = new Hls({
-                        lowLatencyMode: true,
+                        lowLatencyMode: false,
                         backBufferLength: 10,
                         maxBufferLength: 30,
                     });

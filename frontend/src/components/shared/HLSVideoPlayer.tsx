@@ -86,7 +86,7 @@ export default function HLSVideoPlayer({ src, poster, autoPlay = true, muted = t
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
+        lowLatencyMode: false,
         backBufferLength: 30,
       });
       hlsRef.current = hls;

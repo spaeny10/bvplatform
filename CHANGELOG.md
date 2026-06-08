@@ -2,6 +2,7 @@
 
 ## 2026-06-08
 
+- **fix** live-stream player: disable `lowLatencyMode` in hls.js for both `VideoPlayer.tsx` (live feed) and `shared/HLSVideoPlayer.tsx` (re-used by PPE zone editor + other LL surfaces) — even after bumping `PartMinDuration` to 5s, gohlslib's `partTargetDuration` is the running max of observed parts in the segment so any cellular jitter still bumps `#EXT-X-PART-INF:PART-TARGET` from one manifest fetch to the next; hls.js with `lowLatencyMode: true` treats this as a fatal LL-HLS spec violation and drops the stream ("flash then disappear"); classic HLS mode ignores PART tags entirely and plays whole 6s segments instead. Latency ~6-10s but the stream stays alive. Server-side LL-HLS muxer config unchanged (still emits full segments alongside parts, so non-LL clients work transparently).
 - **fix** live-stream: bump `liveHLSPartMinDuration` 1s→5s and `liveHLSSegmentMinDuration` 2s→6s — H.265 cellular jitter (~150ms) was ~15% of the 1s part target, triggering gohlslib's LL-HLS spec-violation warning on every cycle and killing browser players; at 5s it's ~3% (noise); latency tradeoff ~10-15s accepted for security trailer use.
 - **fix** mediamtx API auth: add `authInternalUsers` block to `writeConfig` granting all actions to any source IP — ironsight-api container had a non-loopback docker bridge IP, so mediamtx's default 127.0.0.1-only API ACL returned 401 on every `AddStream`/`RemoveStream` call; new cameras now register immediately without a manual mediamtx restart; port 9997 is not exposed outside the docker bridge network.
 
