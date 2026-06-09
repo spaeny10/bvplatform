@@ -835,6 +835,20 @@ func HandlePlayback(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		}
 		var result []segInfo
 		for _, seg := range segments {
+			// Filter obviously-broken segments before handing them to the
+			// player. When ffmpeg gets killed mid-segment (cellular stall
+			// + watchdog kill) the file on disk may have no moov atom and
+			// the player can't load it. Heuristics that catch this without
+			// a full ffprobe round-trip:
+			//   - DurationMs <= 500ms — recorder didn't accumulate enough
+			//     video to be useful (we record at >=2s seg sizes normally)
+			//   - FileSize < 4096 bytes — fMP4 init+moof headers alone are
+			//     bigger than this; any real segment is much larger
+			// These trim the rotting "moov atom not found" leftovers
+			// without needing a backfill job.
+			if seg.DurationMs <= 500 || seg.FileSize < 4096 {
+				continue
+			}
 			leaf := strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")
 			tok, terr := auth.SignMediaToken(claims.UserID, id.String(), auth.MediaKindSegment, leaf, cfg.JWTSecret, DefaultMediaTTL)
 			if terr != nil {
