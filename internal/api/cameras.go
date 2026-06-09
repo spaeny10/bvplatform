@@ -835,18 +835,22 @@ func HandlePlayback(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		}
 		var result []segInfo
 		for _, seg := range segments {
-			// Filter obviously-broken segments before handing them to the
-			// player. When ffmpeg gets killed mid-segment (cellular stall
-			// + watchdog kill) the file on disk may have no moov atom and
-			// the player can't load it. Heuristics that catch this without
-			// a full ffprobe round-trip:
-			//   - DurationMs <= 500ms — recorder didn't accumulate enough
-			//     video to be useful (we record at >=2s seg sizes normally)
-			//   - FileSize < 4096 bytes — fMP4 init+moof headers alone are
-			//     bigger than this; any real segment is much larger
-			// These trim the rotting "moov atom not found" leftovers
-			// without needing a backfill job.
-			if seg.DurationMs <= 500 || seg.FileSize < 4096 {
+			// Filter broken segments before handing them to the player.
+			// When ffmpeg gets killed mid-segment (cellular stall +
+			// watchdog kill) the file has no moov atom and the player
+			// can't load it. The recording engine probes the codec on
+			// every new file; probe failure (which is exactly the
+			// moov-atom-missing case) writes back an empty video_codec
+			// + a fallback duration. Drop those here:
+			//   - video_codec == ''   recorder couldn't probe = corrupt
+			//   - DurationMs <= 500   leftover from very-truncated files
+			//   - FileSize < 4096     smaller than even an fMP4 init box
+			// Segments from before the codec-probe was added in the
+			// recorder may legitimately have an empty video_codec, so
+			// this filter strictly speaking has a small false-positive
+			// risk on very old recordings. Acceptable — those age out
+			// under retention anyway.
+			if seg.VideoCodec == "" || seg.DurationMs <= 500 || seg.FileSize < 4096 {
 				continue
 			}
 			leaf := strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")

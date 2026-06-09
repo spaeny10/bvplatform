@@ -891,19 +891,27 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				// player seeks past EOF and the decoder shows the last
 				// frame with packet-loss artifacts ("garbled recent
 				// recordings" bug).
+				//
+				// Codec-probe failure is the canary for "moov atom not
+				// found" — i.e. ffmpeg was killed before it could
+				// finalize the file. We DON'T register those rows in the
+				// segments table: the player can't load them anyway and
+				// they pollute the timeline with dead-end clicks. The
+				// retention sweeper handles the on-disk cleanup later.
 				var videoCodec string
 				durMs := r.segmentDur * 1000 // safe fallback if probe fails
 				if info.ModTime().After(startedAt) {
 					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
 					if codecErr != nil {
-						log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
-					} else {
-						videoCodec = vc
+						log.Printf("[REC] skipping segment %s — codec probe failed (likely truncated, no moov): %v", entry.Name(), codecErr)
+						seen[entry.Name()] = true
+						continue
 					}
+					videoCodec = vc
 					if dur, derr := ProbeVideoDuration(r.ffmpegPath, filePath); derr == nil && dur > 0 {
 						durMs = int(dur * 1000)
 					} else if derr != nil {
-						log.Printf("[REC] duration probe failed for %s: %v", entry.Name(), derr)
+						log.Printf("[REC] duration probe failed for %s (using fallback %ds): %v", entry.Name(), r.segmentDur, derr)
 					}
 				}
 
