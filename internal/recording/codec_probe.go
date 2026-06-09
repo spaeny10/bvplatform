@@ -57,6 +57,45 @@ func ProbeVideoCodec(ffmpegPath, filePath string) (string, error) {
 	return codec, nil
 }
 
+// ProbeVideoDuration reads the playback duration of a video file in seconds
+// via ffprobe. Returns the float seconds value of format.duration. Used by
+// the recording engine to record the ACTUAL file duration on disk into the
+// segments table (instead of hardcoding the configured segment length).
+// When ffmpeg restarts mid-segment due to packet loss / stall watchdog,
+// the file ends up shorter than the configured length and the playback
+// player would otherwise seek past EOF and show decoder garbage.
+func ProbeVideoDuration(ffmpegPath, filePath string) (float64, error) {
+	if ffmpegPath == "" {
+		return 0, fmt.Errorf("ffmpeg path not configured")
+	}
+	if filePath == "" {
+		return 0, fmt.Errorf("file path empty")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffprobeBin(ffmpegPath),
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=nokey=1:noprint_wrappers=1",
+		filePath,
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("ffprobe duration %s: %w (stderr: %s)", filePath, err, strings.TrimSpace(stderr.String()))
+	}
+	s := strings.TrimSpace(stdout.String())
+	if s == "" {
+		return 0, fmt.Errorf("ffprobe %s: empty duration", filePath)
+	}
+	var dur float64
+	if _, err := fmt.Sscanf(s, "%f", &dur); err != nil {
+		return 0, fmt.Errorf("ffprobe %s: parse duration %q: %w", filePath, s, err)
+	}
+	return dur, nil
+}
+
 // ffprobeBin derives the ffprobe binary path from the ffmpeg binary path,
 // preserving the platform-specific extension if any. `/usr/bin/ffmpeg` →
 // `/usr/bin/ffprobe`, `C:\bin\ffmpeg.exe` → `C:\bin\ffprobe.exe`.
