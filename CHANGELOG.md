@@ -1,5 +1,9 @@
 # Ironsight Backend — Changelog
 
+## 2026-06-09
+
+- **fix** live-stream: switch gohlslib variant `MuxerVariantLowLatency` -> `MuxerVariantFMP4` in `internal/streaming/livehls.go` — even after PR #42 (`lowLatencyMode: false` on hls.js) and PR #44 (vendored mediacommon `array_completeness=1`), the LL-HLS scaffolding in the served manifest (`#EXT-X-PART`, `#EXT-X-PART-INF`, `#EXT-X-SERVER-CONTROL CAN-BLOCK-RELOAD`, `#EXT-X-PRELOAD-HINT`, mixed 5 s + 1 s part durations) still tripped hls.js parser paths and dumped the entire manifest as a fatal error on the test user. FMP4 variant emits a plain HLS playlist with only `#EXTINF` segments + `#EXT-X-MAP` init — no part tags at all, nothing for hls.js to choke on. Latency goes ~6-10 s -> ~12-18 s, fine for security trailer monitoring. The PR #39 "0-byte fMP4" theory was misdiagnosed: 0-byte responses happen for ANY rotated-out segment regardless of variant; verified via direct curl that fresh segments serve ~157 KB. `PartMinDuration` field + `liveHLSPartMinDuration` constant removed (only meaningful for LL variant).
+
 ## 2026-06-08
 
 - **fix** live-stream: vendor `github.com/bluenviron/mediacommon/v2` at `v2.8.3` with `array_completeness=1` patch — upstream emits `hvc1` sample-entry but leaves `array_completeness=0` on VPS/SPS/PPS NALU arrays, violating ISO/IEC 14496-15 §8.4.1.1.1 and causing Chrome MSE `bufferAppendError / MANIFEST_INCOMPATIBLE_CODECS_ERROR`; vendored copy in `internal/vendored/mediacommon` with `Completeness: true` on all three `HEVCNaluArray` entries; `go.mod` replace directive wires it in; upstream PR filed separately; see `internal/streaming/livehls_h265_init_test.go` for byte-level verification of the hvcC box.
