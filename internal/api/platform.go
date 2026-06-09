@@ -481,7 +481,10 @@ func HandleListIncidents(db *database.DB) http.HandlerFunc {
 			// ~100 sites per customer; beyond that we should add a
 			// proper IN-clause variant.
 			if siteID == "" {
-				var merged []database.IncidentSummary
+				// Non-nil so zero incidents marshals as [] not null —
+				// the portal's `incidents.filter(...)` crashed on null
+				// for customer/site-manager roles (caught by e2e smoke).
+				merged := []database.IncidentSummary{}
 				for sid := range allowedIDs {
 					rows, qErr := db.ListIncidents(r.Context(), sid, severity, limit)
 					if qErr != nil {
@@ -499,6 +502,9 @@ func HandleListIncidents(db *database.DB) http.HandlerFunc {
 		if err != nil {
 			http.Error(w, err.Error(), 500)
 			return
+		}
+		if incidents == nil {
+			incidents = []database.IncidentSummary{}
 		}
 		writeJSON(w, incidents)
 	}
