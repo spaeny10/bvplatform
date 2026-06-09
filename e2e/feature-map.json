@@ -1,0 +1,14 @@
+{
+  "_comment": "Spec file -> feature-registry IDs (docs/feature-registry/README.md rollup). Consumed by scripts/registry-status.mjs.",
+  "auth.spec.ts": ["password-login", "session-csrf", "users-roles"],
+  "publicpages.spec.ts": ["status-page", "evidence-shares"],
+  "nvr.spec.ts": ["live-camera-grid", "live-hls-pipeline", "playback-timeline"],
+  "popout.spec.ts": ["live-popout"],
+  "operator.spec.ts": ["operator-console-shell", "alarm-investigation"],
+  "portal.spec.ts": ["portal-dashboard", "compliance-dashboard"],
+  "admin.spec.ts": ["sites-crud", "users-roles", "system-health", "audit-log", "system-settings", "camera-crud"],
+  "search.spec.ts": ["semantic-search"],
+  "reports.spec.ts": ["operator-presence-metrics"],
+  "analytics.spec.ts": ["analytics-page"],
+  "crawler.spec.ts": ["feature-flags"]
+}
