@@ -64,11 +64,17 @@ const (
 	// caller didn't request anything else.
 	DefaultMediaTTL = 5 * time.Minute
 
-	// LiveHLSMediaTTL is the token lifetime for kind=live-hls. Short
-	// (60s) because these tokens are refreshed every 30s by the frontend
-	// and leaking one would only expose ~30s of live view on that camera.
-	// P3-INFRA-06.
-	LiveHLSMediaTTL = 60 * time.Second
+	// LiveHLSMediaTTL is the token lifetime for kind=live-hls.
+	// Originally 60s with 30s refresh on the frontend, but live HLS
+	// playlists carry the same segment across multiple manifest fetches
+	// and hls.js validates that segment URLs are identical between
+	// playlist refreshes (it diffs by URL at the same media-sequence
+	// number and fires levelParsingError "media sequence mismatch N" on
+	// any change). Bumping to 5 min so the cached child tokens (see
+	// liveTokenCache below) outlive a segment's lifetime in the muxer's
+	// sliding window (~7 segs × 6s = ~42s). Combined with the cache, the
+	// same segment now produces the same URL every time it's listed.
+	LiveHLSMediaTTL = 5 * time.Minute
 
 	// MaxMediaTTL is the operator-facing ceiling for ttl_seconds on the
 	// mint endpoint. Evidence-export uses up to 1 h so a downloaded
@@ -880,6 +886,62 @@ func (r *liveHLSResponseRecorder) Header() http.Header         { return r.header
 func (r *liveHLSResponseRecorder) WriteHeader(code int)        { r.status = code }
 func (r *liveHLSResponseRecorder) Write(b []byte) (int, error) { return r.body.Write(b) }
 
+// ──────────────────── Live-HLS child token cache ────────────────────
+//
+// hls.js diffs segment URLs at the same media-sequence number across
+// playlist refreshes and fires "media sequence mismatch N — levelParsingError"
+// on any change. Without caching, every rewriteLiveHLSPlaylist call
+// mints a fresh JWT (with new iat/jti/exp) for the same segment, so the
+// URLs differ between refreshes and hls.js kills the stream.
+//
+// Cache key includes userID so two operators viewing the same camera
+// never share tokens — preserves per-user audit and tenant scope. TTL is
+// LiveHLSMediaTTL (5 min); we reuse a cached token until it has <10s
+// left, then re-sign. The reuse window comfortably outlives the muxer's
+// 7-segment sliding window (~42s), so a segment's URL stays stable for
+// its entire lifetime in the manifest.
+type liveTokenKey struct {
+	userID   uuid.UUID
+	cameraID uuid.UUID
+	path     string
+}
+
+type liveTokenEntry struct {
+	token  string
+	expiry time.Time
+}
+
+var liveTokenCache = struct {
+	mu      sync.Mutex
+	entries map[liveTokenKey]liveTokenEntry
+}{entries: make(map[liveTokenKey]liveTokenEntry)}
+
+// signLiveChildToken returns a child token for (userID, cameraID, path),
+// reusing a cached one if it has >10s remaining. Prunes expired entries
+// opportunistically when the map grows beyond 200 entries.
+func signLiveChildToken(userID, cameraID uuid.UUID, path, secret string, ttl time.Duration) (string, error) {
+	key := liveTokenKey{userID: userID, cameraID: cameraID, path: path}
+	liveTokenCache.mu.Lock()
+	defer liveTokenCache.mu.Unlock()
+	now := time.Now()
+	if entry, ok := liveTokenCache.entries[key]; ok && entry.expiry.Sub(now) > 10*time.Second {
+		return entry.token, nil
+	}
+	if len(liveTokenCache.entries) > 200 {
+		for k, v := range liveTokenCache.entries {
+			if v.expiry.Before(now) {
+				delete(liveTokenCache.entries, k)
+			}
+		}
+	}
+	tok, err := auth.SignMediaToken(userID.String(), cameraID.String(), auth.MediaKindLiveHLS, path, secret, ttl)
+	if err != nil {
+		return "", err
+	}
+	liveTokenCache.entries[key] = liveTokenEntry{token: tok, expiry: now.Add(ttl)}
+	return tok, nil
+}
+
 // rewriteLiveHLSPlaylist walks the gohlslib-generated M3U8 line by line
 // and replaces every bare URI (non-comment, non-blank) with a freshly
 // signed /media/v1/<child-token> URL.  Comment lines that embed a URI=
@@ -887,6 +949,8 @@ func (r *liveHLSResponseRecorder) Write(b []byte) (int, error) { return r.body.W
 //
 // Child tokens carry kind=live-hls and path=<gohlslib-resource-name>.
 // HandleMediaServe routes those tokens to muxer.ServeSegment.
+// Tokens are cached per (userID, cameraID, path) so URLs are stable
+// across playlist refreshes — see liveTokenCache above.
 func rewriteLiveHLSPlaylist(body []byte, cfg *config.Config, parent *auth.MediaClaims, ttl time.Duration) []byte {
 	var out bytes.Buffer
 	sc := bufio.NewScanner(bytes.NewReader(body))
@@ -901,12 +965,20 @@ func rewriteLiveHLSPlaylist(body []byte, cfg *config.Config, parent *auth.MediaC
 				out.WriteString(line)
 			}
 		} else {
-			// Bare URI line — mint a child token with path=<resource-name>.
-			tok, err := auth.SignMediaToken(
-				parent.UserID, parent.CameraID,
-				auth.MediaKindLiveHLS, trimmed,
-				cfg.JWTSecret, ttl,
-			)
+			// Bare URI line — get-or-mint a child token with path=<resource-name>.
+			// Cached per (user, camera, path) so URLs are deterministic across
+			// playlist refreshes (hls.js compares segment URLs at the same
+			// media-sequence number and dies on any mismatch).
+			userID, errU := uuid.Parse(parent.UserID)
+			cameraID, errC := uuid.Parse(parent.CameraID)
+			var tok string
+			var err error
+			if errU == nil && errC == nil {
+				tok, err = signLiveChildToken(userID, cameraID, trimmed, cfg.JWTSecret, ttl)
+			} else {
+				// Defensive fallback — should never hit since parent token already validated.
+				tok, err = auth.SignMediaToken(parent.UserID, parent.CameraID, auth.MediaKindLiveHLS, trimmed, cfg.JWTSecret, ttl)
+			}
 			if err != nil {
 				// validMediaPath rejected the name — leave it as-is.
 				out.WriteString(line)
@@ -937,11 +1009,16 @@ func rewriteLiveHLSAttributeURI(line string, cfg *config.Config, parent *auth.Me
 		return line
 	}
 	uri := line[start : start+end]
-	tok, err := auth.SignMediaToken(
-		parent.UserID, parent.CameraID,
-		auth.MediaKindLiveHLS, uri,
-		cfg.JWTSecret, ttl,
-	)
+	// Cached signer; URLs deterministic across playlist refreshes.
+	userID, errU := uuid.Parse(parent.UserID)
+	cameraID, errC := uuid.Parse(parent.CameraID)
+	var tok string
+	var err error
+	if errU == nil && errC == nil {
+		tok, err = signLiveChildToken(userID, cameraID, uri, cfg.JWTSecret, ttl)
+	} else {
+		tok, err = auth.SignMediaToken(parent.UserID, parent.CameraID, auth.MediaKindLiveHLS, uri, cfg.JWTSecret, ttl)
+	}
 	if err != nil {
 		return line
 	}
