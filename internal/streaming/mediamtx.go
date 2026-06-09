@@ -51,6 +51,13 @@ type mtxConfig struct {
 	APIAddress      string              `yaml:"apiAddress"`
 	RTSP            bool                `yaml:"rtsp"`
 	RTSPAddress     string              `yaml:"rtspAddress"`
+	// ReadBufferCount sizes mediamtx's per-source RTP reorder buffer.
+	// Default is 64 packets. Damaged/non-spec HEVC NAL fragmentation
+	// from Milesight cellular DVRs overflows this every ~30 s with
+	// "buffer length exceeds 64", triggering an upstream path teardown
+	// + reconnect and 5 s of 404s on every consumer. 2048 absorbs the
+	// jitter (mediamtx project recommends ≥1024 for lossy sources).
+	ReadBufferCount int                 `yaml:"readBufferCount"`
 	RTMP            bool                `yaml:"rtmp"`
 	RTMPAddress     string              `yaml:"rtmpAddress"`
 	// HLS: mediamtx native HLS server (P3-INFRA-06 pivot from gohlslib).
@@ -448,16 +455,21 @@ func (m *MediaMTXServer) writeConfig() error {
 		APIAddress:  listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
 		RTSP:        true, // Local RTSP relay — recording engine and gohlslib both pull from here
 		RTSPAddress: listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
-		RTMP:        false,
-		RTMPAddress: ":11935",
+		// Resize RTP reorder buffer to tolerate damaged HEVC NAL
+		// fragmentation from cellular Milesight DVRs (see field comment).
+		ReadBufferCount: 2048,
+		RTMP:            false,
+		RTMPAddress:     ":11935",
 		// P3-INFRA-06 pivot: mediamtx native HLS replaces gohlslib.
-		// fmp4 variant carries H.265 cleanly; alwaysRemux keeps segments
-		// available before the first viewer. Port 8888 is not published
-		// outside the docker bridge — ironsight-api proxies /api/live/*.
+		// fmp4 variant carries H.265 cleanly. HLSAlwaysRemux=false so
+		// the HLS muxer is on-demand instead of pinning a persistent
+		// upstream pull — pinning amplified the "buffer length exceeds
+		// 64" tear-down/reconnect rate on lossy sources, which the
+		// recorder used to share via the relay path.
 		HLS:            true,
 		HLSAddress:     listenPortSuffix(m.cfg.MediaMTXHLSAddr, "8888"),
 		HLSVariant:     "fmp4",
-		HLSAlwaysRemux: true,
+		HLSAlwaysRemux: false,
 		WebRTC:         false, // Disabled: P3-INFRA-06 replaced WebRTC with mediamtx HLS
 		Paths:       paths,
 	}

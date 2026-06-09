@@ -247,11 +247,32 @@ export default function VideoPlayer({
             hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
                 if (cancelled) return;
                 if (data.fatal) {
-                    const httpCode = data.response?.code ? ` HTTP ${data.response.code}` : '';
-                    const errMsg = data.error?.message ? ` — ${String(data.error.message).slice(0, 120)}` : '';
-                    const msg = `Stream unavailable — ${data.type}/${data.details}${httpCode}${errMsg}`;
+                    // Friendly headline based on the error class — operators see
+                    // this at a glance. Detail line keeps the full hls.js
+                    // type/details + HTTP code so we can still debug from a
+                    // screenshot without opening F12.
+                    const code = data.response?.code as number | undefined;
+                    let headline = 'Stream unavailable';
+                    if (data.type === 'networkError') {
+                        if (code === 500 || code === 502 || code === 503 || code === 504) headline = 'Camera offline';
+                        else if (code === 401 || code === 403) headline = 'Not authorized to view this camera';
+                        else if (code === 404) headline = 'Stream not found';
+                        else headline = 'Network error reaching camera';
+                    } else if (data.type === 'mediaError') {
+                        if (String(data.details).startsWith('manifestIncompatibleCodecs')
+                            || String(data.details).startsWith('bufferIncompatibleCodecs')) {
+                            headline = 'Browser cannot decode this stream (HEVC support missing)';
+                        } else {
+                            headline = 'Playback error in browser';
+                        }
+                    }
+                    const httpPart = code ? ` HTTP ${code}` : '';
+                    const errPart = data.error?.message ? ` — ${String(data.error.message).slice(0, 120)}` : '';
+                    const detail = `${data.type}/${data.details}${httpPart}${errPart}`;
                     console.error('[LIVE-PROXY] fatal error:', data.type, data.details, data);
-                    setError(msg);
+                    // Pass both lines as a single string with a `␟` (unit
+                    // separator) so the renderer can split without parsing JSON.
+                    setError(`${headline}␟${detail}`);
                     setLoading(false);
                 }
             });
@@ -314,7 +335,7 @@ export default function VideoPlayer({
                 if (controller.signal.aborted) return;
 
                 if (!segments || segments.length === 0) {
-                    setError('No recordings found');
+                    setError('No recordings available at this time');
                     setLoading(false);
                     return;
                 }
@@ -325,8 +346,10 @@ export default function VideoPlayer({
                 segWindowEndRef.current = new Date(segments[segments.length - 1].end_time).getTime();
             }
 
-            // Find the segment that contains the target time
-            let bestIdx = 0;
+            // Find the index of the segment closest to targetMs (containing it,
+            // or the latest one that started before it, or the earliest one
+            // overall if target is before everything we have).
+            let bestIdx = -1;
             for (let i = 0; i < segments.length; i++) {
                 const segStart = new Date(segments[i].start_time).getTime();
                 const segEnd = new Date(segments[i].end_time).getTime();
@@ -336,48 +359,73 @@ export default function VideoPlayer({
                 }
                 if (segStart <= targetMs) bestIdx = i;
             }
+            if (bestIdx < 0) bestIdx = 0; // target predates all segments — snap to earliest
 
-            const seg = segments[bestIdx];
+            // Recording engine can occasionally leave behind moov-less mp4
+            // files when ffmpeg gets killed mid-segment (e.g. during a
+            // cellular-camera stall). Those files load with HTMLMediaElement
+            // 'error' instead of 'loadedmetadata'. Walk forward from
+            // bestIdx and try the next segment if the current one fails,
+            // so a single bad file doesn't black-screen the whole timeline.
+            let chosenIdx = -1;
+            let lastErr: Error | null = null;
+            for (let attempt = bestIdx; attempt < segments.length && attempt < bestIdx + 5; attempt++) {
+                const cand = segments[attempt];
+                const needsReload = (cand.url !== currentSegUrlRef.current);
+                if (!needsReload) { chosenIdx = attempt; break; }
+
+                video.src = cand.url;
+                video.load();
+                try {
+                    await new Promise<void>((resolve, reject) => {
+                        const onLoaded = () => {
+                            video.removeEventListener('error', onError);
+                            resolve();
+                        };
+                        const onError = () => {
+                            video.removeEventListener('loadedmetadata', onLoaded);
+                            reject(new Error('segment load failed'));
+                        };
+                        const onAbort = () => {
+                            video.removeEventListener('loadedmetadata', onLoaded);
+                            video.removeEventListener('error', onError);
+                            reject(new DOMException('Aborted', 'AbortError'));
+                        };
+                        controller.signal.addEventListener('abort', onAbort, { once: true });
+                        video.addEventListener('loadedmetadata', onLoaded, { once: true });
+                        video.addEventListener('error', onError, { once: true });
+                    });
+                    chosenIdx = attempt;
+                    break;
+                } catch (e: any) {
+                    if (e?.name === 'AbortError') throw e;
+                    lastErr = e;
+                    // Try the next segment in the list (skip the corrupt one).
+                    continue;
+                }
+            }
+
+            if (controller.signal.aborted) return;
+            if (chosenIdx < 0) {
+                throw lastErr ?? new Error('all candidate segments failed to load');
+            }
+
+            const seg = segments[chosenIdx];
             const segStartMs = new Date(seg.start_time).getTime();
             const segEndMs = new Date(seg.end_time).getTime();
-
-            const needsReload = (seg.url !== currentSegUrlRef.current);
-
             currentSegUrlRef.current = seg.url;
             playlistStartRef.current = segStartMs;
             playlistEndRef.current = segEndMs;
             lastSeekTimeRef.current = targetMs;
 
-            if (needsReload) {
-                video.src = seg.url;
-                video.load();
-
-                await new Promise<void>((resolve, reject) => {
-                    const onLoaded = () => {
-                        video.removeEventListener('error', onError);
-                        resolve();
-                    };
-                    const onError = () => {
-                        video.removeEventListener('loadedmetadata', onLoaded);
-                        reject(new Error('Failed to load recording'));
-                    };
-                    const onAbort = () => {
-                        video.removeEventListener('loadedmetadata', onLoaded);
-                        video.removeEventListener('error', onError);
-                        reject(new DOMException('Aborted', 'AbortError'));
-                    };
-                    controller.signal.addEventListener('abort', onAbort, { once: true });
-                    video.addEventListener('loadedmetadata', onLoaded, { once: true });
-                    video.addEventListener('error', onError, { once: true });
-                });
-            }
-
-            if (controller.signal.aborted) return;
-
-            // Seek within the segment to the correct position
-            const offsetSec = Math.max(0, (targetMs - segStartMs) / 1000);
-            if (isFinite(video.duration) && offsetSec < video.duration) {
-                video.currentTime = offsetSec;
+            // Seek within the segment to the correct position (only if the
+            // target falls within this segment; otherwise we just play from
+            // the start of the segment we landed on).
+            if (targetMs >= segStartMs && targetMs <= segEndMs) {
+                const offsetSec = Math.max(0, (targetMs - segStartMs) / 1000);
+                if (isFinite(video.duration) && offsetSec < video.duration) {
+                    video.currentTime = offsetSec;
+                }
             }
 
             setLoading(false);
@@ -391,7 +439,12 @@ export default function VideoPlayer({
             }
         } catch (err: any) {
             if (err?.name === 'AbortError') return;
-            setError('Failed to load recordings');
+            // Show a more useful message — distinguish "nothing in this
+            // window" from "everything in this window is corrupt".
+            const segsExist = (segmentsRef.current?.length ?? 0) > 0;
+            setError(segsExist
+                ? 'Could not play recording — file may be corrupt or still being written'
+                : 'No recordings available at this time');
             setLoading(false);
         }
     }, [cameraId]);
@@ -714,16 +767,28 @@ export default function VideoPlayer({
                 </div>
             )}
 
-            {/* Error state */}
-            {error && (
-                <div className="video-cell-placeholder">
-                    <div className="icon">📹</div>
-                    <span style={{ fontSize: 12, wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center' }}>{error}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        {cameraName}
-                    </span>
-                </div>
-            )}
+            {/* Error state. Split a `headline␟detail` value into two lines —
+                operators see the friendly headline at a glance; the muted
+                detail line below keeps the full hls.js error info on screen
+                so a screenshot is enough to diagnose. Plain strings still
+                render as a single headline-style line. */}
+            {error && (() => {
+                const sep = '␟'; // ␟ unit-separator
+                const [headline, ...rest] = error.split(sep);
+                const detail = rest.join(sep);
+                return (
+                    <div className="video-cell-placeholder">
+                        <div className="icon">📹</div>
+                        <span style={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center' }}>{headline}</span>
+                        {detail && (
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center', marginTop: 2 }}>{detail}</span>
+                        )}
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                            {cameraName}
+                        </span>
+                    </div>
+                );
+            })()}
 
             {/* Wall-clock overlay (playback mode only). Click to toggle
                 visibility across every tile (custom event broadcasts the new

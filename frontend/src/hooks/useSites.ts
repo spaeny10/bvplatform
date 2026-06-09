@@ -60,6 +60,36 @@ export function useUpdateSite() {
   });
 }
 
+/**
+ * Save the monitoring_schedule jsonb column for a site. Distinct from
+ * useUpdateSite() so the backend writes ONLY the schedule column —
+ * routing the schedule payload through PUT /api/sites/{id} (which is
+ * what the modal used to do) silently dropped the schedule field AND
+ * blanked the site's name/address because SiteCreate had no place for
+ * monitoring_schedule.
+ */
+export function useUpdateSiteMonitoringSchedule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, monitoring_schedule }: { id: string; monitoring_schedule: any[] }) => {
+      const res = await (await import('@/lib/api')).authFetch(
+        `/api/sites/${id}/monitoring-schedule`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ monitoring_schedule }),
+        }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['sites'] });
+      queryClient.invalidateQueries({ queryKey: ['site', variables.id] });
+    },
+  });
+}
+
 /** Create a new site */
 export function useCreateSite() {
   const queryClient = useQueryClient();

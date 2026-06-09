@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -504,45 +503,36 @@ func nowInWindow(now time.Time, days []int, start, end string) bool {
 	return currentMinutes >= startMinutes || currentMinutes < endMinutes
 }
 
-// useLocalRelay checks if the MediaMTX RTSP relay is reachable so the
-// recorder can pull from it instead of opening a parallel RTSP session
-// against the (often bandwidth-limited cellular) camera. Probes the
-// configured mediamtx address, NOT a hardcoded 127.0.0.1:18554 — the api
-// runs inside its own docker container where 127.0.0.1 is the container
-// itself, not mediamtx. Mis-probing here caused recordings to silently
-// fall through to the direct-camera path, doubling RTSP load on every
-// camera and producing the FFmpeg-restart loop that left segments
-// truncated (root cause of "playback shows decoder garbage on recent
-// recordings", filed 2026-06-09).
-func (r *Recorder) useLocalRelay(_ context.Context, relayURI string) bool {
-	addr := r.mediaMTXRTSPAddr
-	if addr == "" {
-		return false
-	}
-	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	_ = relayURI
-	return true
+// useLocalRelay used to choose between mediamtx relay vs direct camera
+// for recording. It's intentionally retained as an unused helper for the
+// gort recorder path; the FFmpeg recorder now always dials the camera
+// directly (see runFFmpeg above for the rationale).
+func (r *Recorder) useLocalRelay(_ context.Context, _ string) bool {
+	_ = r.mediaMTXRTSPAddr
+	return false
 }
 
 // runFFmpeg executes the FFmpeg process for segment-based recording
 func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	os.MkdirAll(r.hlsDir, 0755)
 
-	// Prefer the MediaMTX relay (rtsp://<mediamtx-host:port>/<cameraID>) so
-	// we don't open a parallel RTSP session against the camera. Cellular
-	// cameras can't handle parallel pulls (mediamtx + ffmpeg = packet loss
-	// → ffmpeg stall watchdog kills + restarts → truncated segments).
+	// Recording dials the camera DIRECTLY, not through the mediamtx relay.
+	// The earlier "relay everything" approach (PR #48) backfired: mediamtx
+	// is sensitive to damaged HEVC NAL fragmentation from cellular sources
+	// and overflows its internal RTP reorder buffer ("buffer length
+	// exceeds 64") roughly every 30s. When mediamtx tears down + reconnects
+	// the upstream path, the recorder's ffmpeg sees a brief 404 window and
+	// either dies on startup or stops receiving frames mid-session, then
+	// the 180s stall watchdog kills it. The 0.3fps observation in stderr
+	// is the average across one of those frozen sessions, not steady state.
+	//
+	// Bypassing mediamtx for the recorder eliminates that failure mode at
+	// the cost of one extra RTSP session per camera against the camera
+	// itself — which we previously feared would saturate the cellular link
+	// but actually doesn't: mediamtx + 1 ffmpeg-recorder = 2 connections,
+	// still well under what the DVR can serve. Live HLS continues to use
+	// mediamtx via /api/live/ so the live path is unaffected.
 	inputURI := r.rtspURI
-	mtxBase := fmt.Sprintf("rtsp://%s", r.mediaMTXRTSPAddr)
-	localRelay := fmt.Sprintf("%s/%s", mtxBase, r.cameraID.String())
-	if r.useLocalRelay(ctx, localRelay) {
-		inputURI = localRelay
-		log.Printf("[REC] %s: using MediaMTX relay %s for recording", r.cameraName, mtxBase)
-	}
 
 	args := []string{
 		"-fflags", "+nobuffer+genpts",
@@ -550,16 +540,20 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		"-probesize", "256000",
 		"-analyzeduration", "500000",
 		"-rtsp_transport", "tcp",
+		// Allow only video+audio at the demuxer; drops the Milesight
+		// "Generic" metadata track that ffmpeg can't decode and that
+		// would otherwise allocate a stream context the rest of the
+		// pipeline can't satisfy.
+		"-allowed_media_types", "video+audio",
 		"-i", inputURI,
 	}
 
 	if r.subStreamURI != "" {
-		subRelay := fmt.Sprintf("%s/%s_sub", mtxBase, r.cameraID.String())
-		if r.useLocalRelay(ctx, subRelay) {
-			args = append(args, "-rtsp_transport", "tcp", "-i", subRelay)
-		} else {
-			args = append(args, "-rtsp_transport", "tcp", "-i", r.subStreamURI)
-		}
+		args = append(args,
+			"-rtsp_transport", "tcp",
+			"-allowed_media_types", "video+audio",
+			"-i", r.subStreamURI,
+		)
 	}
 
 	// LOCAL-09: probe the source codec once so we can conditionally rewrite
@@ -736,7 +730,12 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 				log.Printf("[REC] PANIC in stall watchdog for %s: %v", r.cameraName, rec)
 			}
 		}()
-		stallTimeout := time.Duration(r.segmentDur*2+60) * time.Second
+		// Stall watchdog headroom. Previously segmentDur*2+60 (180 s for
+		// 60 s segments) was tight enough that a transient cellular pause
+		// or sparse-keyframe stream got killed mid-recording. Bumping to
+		// segmentDur*5+60 (360 s) gives legitimate slow keyframes room to
+		// breathe before the watchdog steps in.
+		stallTimeout := time.Duration(r.segmentDur*5+60) * time.Second
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		var lastTotalSize int64
@@ -892,19 +891,27 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				// player seeks past EOF and the decoder shows the last
 				// frame with packet-loss artifacts ("garbled recent
 				// recordings" bug).
+				//
+				// Codec-probe failure is the canary for "moov atom not
+				// found" — i.e. ffmpeg was killed before it could
+				// finalize the file. We DON'T register those rows in the
+				// segments table: the player can't load them anyway and
+				// they pollute the timeline with dead-end clicks. The
+				// retention sweeper handles the on-disk cleanup later.
 				var videoCodec string
 				durMs := r.segmentDur * 1000 // safe fallback if probe fails
 				if info.ModTime().After(startedAt) {
 					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
 					if codecErr != nil {
-						log.Printf("[REC] codec probe failed for %s: %v", entry.Name(), codecErr)
-					} else {
-						videoCodec = vc
+						log.Printf("[REC] skipping segment %s — codec probe failed (likely truncated, no moov): %v", entry.Name(), codecErr)
+						seen[entry.Name()] = true
+						continue
 					}
+					videoCodec = vc
 					if dur, derr := ProbeVideoDuration(r.ffmpegPath, filePath); derr == nil && dur > 0 {
 						durMs = int(dur * 1000)
 					} else if derr != nil {
-						log.Printf("[REC] duration probe failed for %s: %v", entry.Name(), derr)
+						log.Printf("[REC] duration probe failed for %s (using fallback %ds): %v", entry.Name(), r.segmentDur, derr)
 					}
 				}
 

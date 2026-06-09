@@ -532,6 +532,17 @@ func (db *DB) UpdateSite(ctx context.Context, id string, c *SiteCreate) error {
 	return err
 }
 
+// UpdateSiteMonitoringSchedule writes ONLY the monitoring_schedule
+// jsonb column. Called from the dedicated schedule endpoint so a
+// schedule save never accidentally wipes other site fields.
+func (db *DB) UpdateSiteMonitoringSchedule(ctx context.Context, id string, schedule []byte) error {
+	_, err := db.Pool.Exec(ctx,
+		`UPDATE sites SET monitoring_schedule = $2::jsonb WHERE id = $1`,
+		id, string(schedule),
+	)
+	return err
+}
+
 func (db *DB) DeleteSite(ctx context.Context, id string) error {
 	_, err := db.Pool.Exec(ctx, `DELETE FROM sites WHERE id=$1`, id)
 	return err

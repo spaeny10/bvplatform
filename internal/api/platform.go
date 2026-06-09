@@ -329,6 +329,54 @@ func HandleUpdateSiteRecording(db *database.DB) http.HandlerFunc {
 	}
 }
 
+// HandleUpdateSiteMonitoringSchedule writes the monitoring_schedule
+// jsonb column on the sites row. The site config modal's Schedule tab
+// posts a JSON array of windows ({day, start, end, enabled}) and the
+// frontend was previously sending it to PUT /api/sites/{id} hoping
+// SiteCreate would carry it — SiteCreate doesn't, so the field was
+// silently dropped AND the rest of UpdateSite then wrote empty values
+// for name/address/feature_mode. This dedicated endpoint avoids both
+// bugs and mirrors the recording / SOP / contacts tabs.
+//
+// PUT /api/v1/sites/{id}/monitoring-schedule
+func HandleUpdateSiteMonitoringSchedule(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireAdminOrSupervisor(r) {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
+		id := chi.URLParam(r, "id")
+		var input struct {
+			MonitoringSchedule []map[string]interface{} `json:"monitoring_schedule"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		// Re-marshal to canonical JSON for the jsonb column. Nil
+		// becomes [] so we don't write JSON null.
+		schedule := input.MonitoringSchedule
+		if schedule == nil {
+			schedule = []map[string]interface{}{}
+		}
+		raw, err := json.Marshal(schedule)
+		if err != nil {
+			http.Error(w, "Invalid schedule payload", http.StatusBadRequest)
+			return
+		}
+		if err := db.UpdateSiteMonitoringSchedule(r.Context(), id, raw); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		site, err := db.GetSite(r.Context(), id)
+		if err != nil || site == nil {
+			writeJSON(w, map[string]string{"ok": "true"})
+			return
+		}
+		writeJSON(w, site)
+	}
+}
+
 // ═══════════════════════════════════════════════════════════════
 // Site SOPs
 // ═══════════════════════════════════════════════════════════════

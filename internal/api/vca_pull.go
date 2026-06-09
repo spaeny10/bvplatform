@@ -93,9 +93,29 @@ func HandleVCAPull(db *database.DB) http.HandlerFunc {
 
 		out := VCAPullResult{
 			CameraID: camID,
-			Rules:    fromCam,
+			// Initialise all the slice fields to non-nil so the JSON
+			// output is `[]` instead of `null`. The frontend reads
+			// `.length` on each (camera_only.length etc.) and a null
+			// value crashes the VCA editor with
+			// "Cannot read properties of null (reading 'length')".
+			Rules:      []database.VCARule{},
+			DBOnly:     []database.VCARule{},
+			CameraOnly: []database.VCARule{},
+			Modified:   []VCAPullModification{},
 		}
-		out.DBOnly, out.CameraOnly, out.Modified = diffVCARules(inDB, fromCam)
+		if fromCam != nil {
+			out.Rules = fromCam
+		}
+		dbOnly, camOnly, mod := diffVCARules(inDB, fromCam)
+		if dbOnly != nil {
+			out.DBOnly = dbOnly
+		}
+		if camOnly != nil {
+			out.CameraOnly = camOnly
+		}
+		if mod != nil {
+			out.Modified = mod
+		}
 
 		if apply {
 			if err := applyCameraVCAToDB(r.Context(), db, camID, fromCam); err != nil {

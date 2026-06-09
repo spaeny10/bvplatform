@@ -386,6 +386,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// leaves the rest of the site row untouched. Frontend must use
 			// PATCH to match.
 			r.Patch("/sites/{id}/recording", HandleUpdateSiteRecording(db))
+			// Dedicated endpoint for the Schedule tab on the site config
+			// modal. Writes only the monitoring_schedule jsonb column.
+			// The frontend used to send this through PUT /sites/{id} which
+			// silently dropped the schedule AND blanked name/address.
+			r.Put("/sites/{id}/monitoring-schedule", HandleUpdateSiteMonitoringSchedule(db))
 			r.Delete("/sites/{id}", HandleDeleteSiteP(db))
 			// Customer-maintained on-site contact list. Distinct
 			// from site_sops (operator call tree). Read scoped to

@@ -141,7 +141,18 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
     setSyncResult(null);
     try {
       const res = await syncVCARules(cameraId);
-      setSyncResult(`✓ Pushed ${res.synced} rule${res.synced !== 1 ? 's' : ''} to camera${res.errors > 0 ? ` (${res.errors} error${res.errors !== 1 ? 's' : ''})` : ''}`);
+      // Don't show a ✓ when the camera rejected any rules — the operator
+      // had no way to tell apart "pushed nothing because there was
+      // nothing to push" from "pushed nothing because the camera said no
+      // to everything". Use ⚠ on any error count, and only ✓ when
+      // every rule landed.
+      const synced = res.synced ?? 0;
+      const errors = res.errors ?? 0;
+      if (errors > 0) {
+        setSyncResult(`⚠ Pushed ${synced} of ${synced + errors} rule${(synced + errors) !== 1 ? 's' : ''} — ${errors} failed`);
+      } else {
+        setSyncResult(`✓ Pushed ${synced} rule${synced !== 1 ? 's' : ''} to camera`);
+      }
       loadRules();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -170,8 +181,13 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
 
   const handlePullApply = async () => {
     if (!pullPreview) return;
+    // Defensive `?? []` so a backend that ever returns null arrays
+    // again doesn't crash the editor (was happening before vca_pull.go
+    // initialised them — kept here as belt-and-suspenders).
     const changes =
-      pullPreview.camera_only.length + pullPreview.db_only.length + pullPreview.modified.length;
+      (pullPreview.camera_only ?? []).length
+      + (pullPreview.db_only ?? []).length
+      + (pullPreview.modified ?? []).length;
     if (!window.confirm(`Replace the platform copy of this camera's VCA rules with the camera's current state? (${changes} change${changes === 1 ? '' : 's'})`)) {
       return;
     }
@@ -192,64 +208,95 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   // Prevent all clicks inside the editor from bubbling up to the modal overlay
   const stopBubble = (e: React.MouseEvent) => e.stopPropagation();
 
+  // Tab toggle: zones drawn here are PLATFORM-SIDE (used by server-side
+  // AI). Camera-side VCA is configured in the camera's own web UI which
+  // we embed below. The pull/push sync attempt was unreliable because
+  // coordinate-space + slot-mapping mismatches lost fidelity on every
+  // round-trip; the iframe approach is the camera's UI is the source of
+  // truth for camera-side rules.
+  const [vcaTab, setVcaTab] = useState<'platform' | 'camera'>('platform');
+  const cameraWebURL = cameraIp ? `http://${cameraIp}/` : null;
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} onClick={stopBubble} onMouseDown={stopBubble}>
 
-      {/* ── Sync toolbar: Push DB→camera / Pull camera→DB ── */}
-      <div style={{
-        display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-        padding: '8px 10px', borderRadius: 6,
-        background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)',
-      }}>
+      {/* Tabs: platform-side zones vs camera-side VCA (embedded camera UI). */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
         <button
           type="button"
-          onClick={handleSync}
-          disabled={syncing || pulling}
+          onClick={() => setVcaTab('platform')}
           style={{
-            padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 4,
-            background: 'rgba(59,130,246,0.12)', border: '1px solid rgba(59,130,246,0.35)',
-            color: '#60a5fa', cursor: syncing ? 'wait' : 'pointer', fontFamily: 'inherit',
+            padding: '8px 14px', fontSize: 12, fontWeight: 600,
+            background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            color: vcaTab === 'platform' ? '#a855f7' : 'rgba(255,255,255,0.6)',
+            borderBottom: vcaTab === 'platform' ? '2px solid #a855f7' : '2px solid transparent',
+            marginBottom: -1,
           }}
         >
-          {syncing ? 'Pushing…' : '↑ Push to camera'}
+          Platform zones (for AI detection)
         </button>
         <button
           type="button"
-          onClick={handlePullPreview}
-          disabled={syncing || pulling}
+          onClick={() => setVcaTab('camera')}
           style={{
-            padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 4,
-            background: 'rgba(168,85,247,0.12)', border: '1px solid rgba(168,85,247,0.35)',
-            color: '#c084fc', cursor: pulling ? 'wait' : 'pointer', fontFamily: 'inherit',
+            padding: '8px 14px', fontSize: 12, fontWeight: 600,
+            background: 'transparent', border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+            color: vcaTab === 'camera' ? '#a855f7' : 'rgba(255,255,255,0.6)',
+            borderBottom: vcaTab === 'camera' ? '2px solid #a855f7' : '2px solid transparent',
+            marginBottom: -1,
           }}
+          disabled={!cameraWebURL}
+          title={!cameraWebURL ? 'Camera IP unknown' : ''}
         >
-          {pulling ? 'Pulling…' : '↓ Pull from camera'}
+          Camera VCA (on-device)
         </button>
-        {syncResult && (
-          <span style={{
-            fontSize: 11, marginLeft: 4,
-            color: syncResult.startsWith('✓') ? '#22c55e' : '#ef4444',
-          }}>
-            {syncResult}
-          </span>
-        )}
       </div>
 
-      {/* Pull preview — diff the camera state against our DB before the
-          operator chooses to overwrite. */}
-      {pullPreview && (
+      {/* ───────────────────────── Camera tab ───────────────────────── */}
+      {vcaTab === 'camera' && cameraWebURL && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{
+            padding: '8px 12px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
+            background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.25)',
+            color: 'rgba(255,255,255,0.8)',
+          }}>
+            Configure camera-side VCA (intrusion, line-cross, etc.) directly in the camera's own UI below.
+            The camera runs detection in its DSP and emits ONVIF events that Ironsight ingests automatically — no separate sync step.
+            {' '}
+            <a href={cameraWebURL} target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', fontWeight: 600 }}>
+              Open in new tab ↗
+            </a>
+            {' '}if the embedded view doesn't load (some cameras block iframe embedding).
+          </div>
+          <iframe
+            src={cameraWebURL}
+            title="Camera web UI"
+            style={{
+              width: '100%', height: 600, border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: 4, background: '#000',
+            }}
+            // Camera UIs are trusted (already authenticated by the
+            // operator over LAN); sandbox lets the camera's JS run but
+            // restricts cross-origin escape.
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+          />
+        </div>
+      )}
+
+      {/* ── Legacy push/pull (collapsed by default — known fragile) ── */}
+      {vcaTab === 'platform' && pullPreview && (
         <div style={{
           padding: 12, borderRadius: 6,
           background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.25)',
           fontSize: 12,
         }}>
           <div style={{ fontWeight: 600, color: '#c084fc', marginBottom: 6 }}>
-            Camera reports {pullPreview.rules.length} rule{pullPreview.rules.length === 1 ? '' : 's'}
+            Camera reports {(pullPreview.rules ?? []).length} rule{(pullPreview.rules ?? []).length === 1 ? '' : 's'}
           </div>
           <div style={{ color: 'rgba(255,255,255,0.75)', lineHeight: 1.6 }}>
-            • New (on camera, not in platform): <strong>{pullPreview.camera_only.length}</strong><br />
-            • Will be dropped (in platform, missing from camera): <strong>{pullPreview.db_only.length}</strong><br />
-            • Modified (differ between platform and camera): <strong>{pullPreview.modified.length}</strong>
+            • New (on camera, not in platform): <strong>{(pullPreview.camera_only ?? []).length}</strong><br />
+            • Will be dropped (in platform, missing from camera): <strong>{(pullPreview.db_only ?? []).length}</strong><br />
+            • Modified (differ between platform and camera): <strong>{(pullPreview.modified ?? []).length}</strong>
           </div>
           <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
             <button
@@ -278,6 +325,12 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
           </div>
         </div>
       )}
+
+      {/* Everything below this point is the PLATFORM-side zone editor —
+          drawn zones are stored in the api DB and used by server-side
+          AI (intrusion/PPE detection). They are NOT pushed to the
+          camera. Camera-side VCA lives in the "Camera VCA" tab above. */}
+      {vcaTab === 'platform' && <>
 
       {/* ── STEP 1: Pick a rule type ── */}
       {drawMode === 'idle' && (
@@ -524,6 +577,17 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
           No VCA rules configured. Select a rule type above, then draw on the camera snapshot.
         </div>
       )}
+
+      </>}
+      {/* Legacy push/pull buttons are no longer surfaced in the UI —
+          the camera-side VCA configuration lives in the iframed camera
+          UI under the "Camera VCA" tab. Backend endpoints + handler
+          code are still present; can be re-enabled once the
+          coordinate-space + slot-mapping issues are fixed. The
+          unused-helper imports stay referenced via this no-op IIFE so
+          the bundler doesn't strip them and so a future reviver doesn't
+          have to re-wire the imports. */}
+      {false && (() => { void handleSync; void handlePullPreview; void syncing; void pulling; void syncResult; return null; })()}
     </div>
   );
 }
