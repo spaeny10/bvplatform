@@ -70,10 +70,15 @@ const (
 	liveHLSIdleTimeout = 30 * time.Second
 
 	// liveHLSSegmentMinDuration is the gohlslib target segment length.
-	// 6 s keeps each segment large enough that H.265 keyframe jitter
-	// (~150 ms) is invisible at the segment boundary, and is the standard
-	// HLS segment size most CDNs / players expect.
-	liveHLSSegmentMinDuration = 6 * time.Second
+	// 2 s instead of the HLS standard 6 s so the first segment is
+	// available ~2 s after the muxer starts pulling RTSP instead of
+	// 6 s — this is the dominant component of click-to-first-frame
+	// latency for new viewers ("takes a long time to connect" in user
+	// testing). H.265 keyframe jitter (~150 ms) is still invisible at a
+	// 2 s boundary. Side-effect: more segments per minute in the muxer's
+	// window, so memory + churn go up slightly, but for trailer
+	// monitoring (4 cams × few viewers) that's a rounding error.
+	liveHLSSegmentMinDuration = 2 * time.Second
 
 	// liveHLSReconnectBaseDelay is the starting back-off between RTSP
 	// reconnect attempts.  Doubles each failure up to liveHLSReconnectMax.
