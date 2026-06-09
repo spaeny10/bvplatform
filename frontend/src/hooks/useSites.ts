@@ -73,7 +73,7 @@ export function useUpdateSiteMonitoringSchedule() {
   return useMutation({
     mutationFn: async ({ id, monitoring_schedule }: { id: string; monitoring_schedule: any[] }) => {
       const res = await (await import('@/lib/api')).authFetch(
-        `/api/sites/${id}/monitoring-schedule`,
+        `/api/v1/sites/${id}/monitoring-schedule`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
