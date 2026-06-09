@@ -117,7 +117,33 @@ func HandleLiveProxy(cfg *config.Config, db *database.DB) http.HandlerFunc {
 			return
 		}
 
-		// For binary segments (init.mp4, seg*.mp4): stream directly.
+		// init.mp4: buffer + patch hvcC array_completeness bit.
+		//
+		// mediamtx's upstream mediacommon emits an hvc1 sample-entry but
+		// leaves array_completeness=0 on the VPS/SPS/PPS HEVCNaluArray
+		// entries. Chromium MSE rejects this with
+		// manifestIncompatibleCodecsError because hvc1 requires complete
+		// arrays per ISO/IEC 14496-15 §8.4.1.1.1. PR #44 vendored a
+		// patched mediacommon for the gohlslib path; this is the same
+		// patch applied as a byte-level fixup on the fly so we can keep
+		// using stock mediamtx. Tiny file (~750 B), trivial overhead.
+		if strings.HasSuffix(strings.ToLower(wildcard), "init.mp4") {
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				http.Error(w, "read error", http.StatusBadGateway)
+				return
+			}
+			patched := patchHVCCCompleteness(body)
+			if ct != "" {
+				w.Header().Set("Content-Type", ct)
+			}
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			w.Write(patched)
+			return
+		}
+
+		// For binary segments (seg*.mp4): stream directly.
 		if ct != "" {
 			w.Header().Set("Content-Type", ct)
 		}
@@ -125,6 +151,70 @@ func HandleLiveProxy(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		io.Copy(w, resp.Body)
 	}
+}
+
+// patchHVCCCompleteness sets the array_completeness bit (high bit of
+// each NALU array's first byte) inside the hvcC box of an fMP4 init
+// segment. mediamtx (via upstream mediacommon) emits these as 0 for
+// hvc1 sample entries, which Chromium MSE rejects as malformed.
+// Setting the bit to 1 makes Chromium accept the codec.
+//
+// Box layout we walk:
+//
+//	'hvcC' (4 bytes)
+//	configurationVersion (1)        offset +4
+//	profile_space/tier/profile_idc (1)  +5
+//	profile_compatibility_flags (4)     +6
+//	constraint_indicator_flags (6)      +10
+//	general_level_idc (1)               +16
+//	min_spatial_segmentation_idc (2)    +17
+//	parallelismType (1)                 +19
+//	chroma_format_idc (1)               +20
+//	bit_depth_luma_minus8 (1)           +21
+//	bit_depth_chroma_minus8 (1)         +22
+//	avg_frame_rate (2)                  +23
+//	constant_frame_rate/temporal etc (1) +25
+//	num_of_arrays (1)                   +26
+//	then for each array:
+//	  array_completeness/NAL_unit_type (1)  ← we OR 0x80 here
+//	  num_nalus (2)
+//	  for each nalu: nalu_length (2), nalu_bytes (nalu_length)
+func patchHVCCCompleteness(body []byte) []byte {
+	out := make([]byte, len(body))
+	copy(out, body)
+	marker := []byte("hvcC")
+	start := bytes.Index(out, marker)
+	if start < 0 {
+		return out // no hvcC box found, leave untouched
+	}
+	// num_of_arrays sits at offset start+26 (the +4 skips 'hvcC' itself,
+	// then 22 bytes of fixed configurationVersion → length_size_minus_one
+	// fields). The first array entry's flag byte is at start+27, which
+	// is where we begin OR'ing the array_completeness bit.
+	off := start + 26
+	if off >= len(out) {
+		return out
+	}
+	numArrays := int(out[off])
+	off++
+	for i := 0; i < numArrays && off < len(out); i++ {
+		// Set array_completeness (top bit) on this array's first byte.
+		out[off] |= 0x80
+		off++
+		if off+2 > len(out) {
+			return out
+		}
+		numNalus := int(out[off])<<8 | int(out[off+1])
+		off += 2
+		for j := 0; j < numNalus && off < len(out); j++ {
+			if off+2 > len(out) {
+				return out
+			}
+			naluLen := int(out[off])<<8 | int(out[off+1])
+			off += 2 + naluLen
+		}
+	}
+	return out
 }
 
 // rewriteLiveProxyPlaylist rewrites a mediamtx HLS playlist so that every

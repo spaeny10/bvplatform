@@ -31,20 +31,21 @@ type Engine struct {
 
 // Recorder manages a single camera's FFmpeg recording process
 type Recorder struct {
-	cameraID     uuid.UUID
-	cameraName   string
-	rtspURI      string
-	subStreamURI string
-	outputDir    string
-	hlsDir       string
-	segmentDur   int
-	cmd          *exec.Cmd
-	cancel       context.CancelFunc
-	running      bool
-	mu           sync.Mutex
-	db           *database.DB
-	ffmpegPath   string
-	hasAudio     bool // set once at startup via ffprobe
+	cameraID         uuid.UUID
+	cameraName       string
+	rtspURI          string
+	subStreamURI     string
+	outputDir        string
+	hlsDir           string
+	segmentDur       int
+	mediaMTXRTSPAddr string // host:port for the local mediamtx RTSP relay; used to avoid pulling a 2nd RTSP session from the camera
+	cmd              *exec.Cmd
+	cancel           context.CancelFunc
+	running          bool
+	mu               sync.Mutex
+	db               *database.DB
+	ffmpegPath       string
+	hasAudio         bool // set once at startup via ffprobe
 
 	// Event-based recording
 	recordingMode string // "continuous" or "event"
@@ -151,17 +152,18 @@ func (e *Engine) StartRecording(cameraID uuid.UUID, cameraName, rtspURI, subStre
 	}
 
 	recorder := &Recorder{
-		cameraID:      cameraID,
-		cameraName:    cameraName,
-		rtspURI:       rtspURI,
-		subStreamURI:  subStreamURI,
-		outputDir:     outputDir,
-		hlsDir:        filepath.Join(e.cfg.HLSPath, cameraID.String()),
-		segmentDur:    e.cfg.SegmentDuration,
-		db:            e.db,
-		ffmpegPath:    e.cfg.FFmpegPath,
-		recordingMode: mode,
-		schedule:      schedule,
+		cameraID:         cameraID,
+		cameraName:       cameraName,
+		rtspURI:          rtspURI,
+		subStreamURI:     subStreamURI,
+		outputDir:        outputDir,
+		hlsDir:           filepath.Join(e.cfg.HLSPath, cameraID.String()),
+		segmentDur:       e.cfg.SegmentDuration,
+		mediaMTXRTSPAddr: e.cfg.MediaMTXRTSPAddr,
+		db:               e.db,
+		ffmpegPath:       e.cfg.FFmpegPath,
+		recordingMode:    mode,
+		schedule:         schedule,
 	}
 
 	// Set up ring buffer directory and clip writer for event mode
@@ -502,10 +504,22 @@ func nowInWindow(now time.Time, days []int, start, end string) bool {
 	return currentMinutes >= startMinutes || currentMinutes < endMinutes
 }
 
-// useLocalRelay checks if the MediaMTX local RTSP relay is available by
-// probing the TCP port. Returns true if the relay is reachable.
+// useLocalRelay checks if the MediaMTX RTSP relay is reachable so the
+// recorder can pull from it instead of opening a parallel RTSP session
+// against the (often bandwidth-limited cellular) camera. Probes the
+// configured mediamtx address, NOT a hardcoded 127.0.0.1:18554 — the api
+// runs inside its own docker container where 127.0.0.1 is the container
+// itself, not mediamtx. Mis-probing here caused recordings to silently
+// fall through to the direct-camera path, doubling RTSP load on every
+// camera and producing the FFmpeg-restart loop that left segments
+// truncated (root cause of "playback shows decoder garbage on recent
+// recordings", filed 2026-06-09).
 func (r *Recorder) useLocalRelay(_ context.Context, relayURI string) bool {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:18554", 1*time.Second)
+	addr := r.mediaMTXRTSPAddr
+	if addr == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
 		return false
 	}
@@ -518,14 +532,16 @@ func (r *Recorder) useLocalRelay(_ context.Context, relayURI string) bool {
 func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	os.MkdirAll(r.hlsDir, 0755)
 
-	// Prefer local MediaMTX relay (rtsp://127.0.0.1:18554/<cameraID>) to avoid
-	// consuming an RTSP slot on the camera. Bandwidth-limited cameras (cellular/5G)
-	// cannot handle parallel RTSP connections from MediaMTX + recording + HLS.
+	// Prefer the MediaMTX relay (rtsp://<mediamtx-host:port>/<cameraID>) so
+	// we don't open a parallel RTSP session against the camera. Cellular
+	// cameras can't handle parallel pulls (mediamtx + ffmpeg = packet loss
+	// → ffmpeg stall watchdog kills + restarts → truncated segments).
 	inputURI := r.rtspURI
-	localRelay := fmt.Sprintf("rtsp://127.0.0.1:18554/%s", r.cameraID.String())
+	mtxBase := fmt.Sprintf("rtsp://%s", r.mediaMTXRTSPAddr)
+	localRelay := fmt.Sprintf("%s/%s", mtxBase, r.cameraID.String())
 	if r.useLocalRelay(ctx, localRelay) {
 		inputURI = localRelay
-		log.Printf("[REC] %s: using MediaMTX local relay for recording", r.cameraName)
+		log.Printf("[REC] %s: using MediaMTX relay %s for recording", r.cameraName, mtxBase)
 	}
 
 	args := []string{
@@ -538,7 +554,7 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	}
 
 	if r.subStreamURI != "" {
-		subRelay := fmt.Sprintf("rtsp://127.0.0.1:18554/%s_sub", r.cameraID.String())
+		subRelay := fmt.Sprintf("%s/%s_sub", mtxBase, r.cameraID.String())
 		if r.useLocalRelay(ctx, subRelay) {
 			args = append(args, "-rtsp_transport", "tcp", "-i", subRelay)
 		} else {
@@ -869,7 +885,15 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				//
 				// Probe failure on a fresh segment is non-fatal: leave
 				// VideoCodec empty and the serve handler will lazy-probe.
+				// Probe codec AND actual file duration. Hardcoding
+				// duration = r.segmentDur is wrong when ffmpeg restarted
+				// mid-segment: the file ends up shorter (5-46s observed
+				// on 2026-06-09) but the DB row says 60s, so the playback
+				// player seeks past EOF and the decoder shows the last
+				// frame with packet-loss artifacts ("garbled recent
+				// recordings" bug).
 				var videoCodec string
+				durMs := r.segmentDur * 1000 // safe fallback if probe fails
 				if info.ModTime().After(startedAt) {
 					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
 					if codecErr != nil {
@@ -877,15 +901,20 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 					} else {
 						videoCodec = vc
 					}
+					if dur, derr := ProbeVideoDuration(r.ffmpegPath, filePath); derr == nil && dur > 0 {
+						durMs = int(dur * 1000)
+					} else if derr != nil {
+						log.Printf("[REC] duration probe failed for %s: %v", entry.Name(), derr)
+					}
 				}
 
 				segment := &database.Segment{
 					CameraID:   r.cameraID,
 					StartTime:  startTime,
-					EndTime:    startTime.Add(time.Duration(r.segmentDur) * time.Second),
+					EndTime:    startTime.Add(time.Duration(durMs) * time.Millisecond),
 					FilePath:   filePath,
 					FileSize:   info.Size(),
-					DurationMs: r.segmentDur * 1000,
+					DurationMs: durMs,
 					HasAudio:   r.hasAudio,
 					VideoCodec: videoCodec,
 				}
