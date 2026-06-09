@@ -8,8 +8,14 @@ FROM docker.io/library/golang:1.25-bookworm AS build
 WORKDIR /src
 
 # Copy module files first so `go mod download` caches independently of
-# source changes. This keeps incremental builds fast.
+# source changes. This keeps incremental builds fast. The vendored
+# upstream tree (internal/vendored/) must be present alongside go.mod
+# because go.mod has `replace` directives that point at it; without it
+# `go mod download` fails resolving `github.com/bluenviron/mediacommon/v2
+# (replaced by ./internal/vendored/mediacommon)` with "no such file or
+# directory". Copy it before the download step.
 COPY go.mod go.sum ./
+COPY internal/vendored ./internal/vendored
 RUN go mod download
 
 COPY . .
