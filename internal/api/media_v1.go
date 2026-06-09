@@ -398,6 +398,18 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Strip optional segment extension so HLS demuxers that validate
+		// URL by filename suffix (ffmpeg, hls.js) accept the rewritten
+		// segment URLs. JWT tokens never legally contain these suffixes
+		// because the base64url alphabet doesn't produce trailing literal
+		// ".mp4"/".m4s"/".m3u8". The mint-side rewriter appends the
+		// extension from the original resource name (see rewriteLiveHLSPlaylist).
+		for _, ext := range []string{".mp4", ".m4s", ".m3u8", ".m4v", ".m4a", ".ts"} {
+			if strings.HasSuffix(tokenStr, ext) {
+				tokenStr = strings.TrimSuffix(tokenStr, ext)
+				break
+			}
+		}
 		claims, err := auth.ParseMediaToken(tokenStr, cfg.JWTSecret)
 		if err != nil {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -899,7 +911,11 @@ func rewriteLiveHLSPlaylist(body []byte, cfg *config.Config, parent *auth.MediaC
 				// validMediaPath rejected the name — leave it as-is.
 				out.WriteString(line)
 			} else {
-				out.WriteString("/media/v1/" + tok)
+				// Append the original resource's extension so HLS
+				// demuxers (ffmpeg, hls.js) that validate by URL
+				// filename suffix accept the rewritten URL. The
+				// serve handler strips it before JWT parsing.
+				out.WriteString("/media/v1/" + tok + filepath.Ext(trimmed))
 			}
 		}
 		out.WriteByte('\n')
@@ -929,5 +945,6 @@ func rewriteLiveHLSAttributeURI(line string, cfg *config.Config, parent *auth.Me
 	if err != nil {
 		return line
 	}
-	return line[:start] + "/media/v1/" + tok + line[start+end:]
+	// Preserve the original extension on the URL so HLS demuxers accept it.
+	return line[:start] + "/media/v1/" + tok + filepath.Ext(uri) + line[start+end:]
 }
