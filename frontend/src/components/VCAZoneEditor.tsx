@@ -141,7 +141,18 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
     setSyncResult(null);
     try {
       const res = await syncVCARules(cameraId);
-      setSyncResult(`✓ Pushed ${res.synced} rule${res.synced !== 1 ? 's' : ''} to camera${res.errors > 0 ? ` (${res.errors} error${res.errors !== 1 ? 's' : ''})` : ''}`);
+      // Don't show a ✓ when the camera rejected any rules — the operator
+      // had no way to tell apart "pushed nothing because there was
+      // nothing to push" from "pushed nothing because the camera said no
+      // to everything". Use ⚠ on any error count, and only ✓ when
+      // every rule landed.
+      const synced = res.synced ?? 0;
+      const errors = res.errors ?? 0;
+      if (errors > 0) {
+        setSyncResult(`⚠ Pushed ${synced} of ${synced + errors} rule${(synced + errors) !== 1 ? 's' : ''} — ${errors} failed`);
+      } else {
+        setSyncResult(`✓ Pushed ${synced} rule${synced !== 1 ? 's' : ''} to camera`);
+      }
       loadRules();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -170,8 +181,13 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
 
   const handlePullApply = async () => {
     if (!pullPreview) return;
+    // Defensive `?? []` so a backend that ever returns null arrays
+    // again doesn't crash the editor (was happening before vca_pull.go
+    // initialised them — kept here as belt-and-suspenders).
     const changes =
-      pullPreview.camera_only.length + pullPreview.db_only.length + pullPreview.modified.length;
+      (pullPreview.camera_only ?? []).length
+      + (pullPreview.db_only ?? []).length
+      + (pullPreview.modified ?? []).length;
     if (!window.confirm(`Replace the platform copy of this camera's VCA rules with the camera's current state? (${changes} change${changes === 1 ? '' : 's'})`)) {
       return;
     }
@@ -244,12 +260,12 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
           fontSize: 12,
         }}>
           <div style={{ fontWeight: 600, color: '#c084fc', marginBottom: 6 }}>
-            Camera reports {pullPreview.rules.length} rule{pullPreview.rules.length === 1 ? '' : 's'}
+            Camera reports {(pullPreview.rules ?? []).length} rule{(pullPreview.rules ?? []).length === 1 ? '' : 's'}
           </div>
           <div style={{ color: 'rgba(255,255,255,0.75)', lineHeight: 1.6 }}>
-            • New (on camera, not in platform): <strong>{pullPreview.camera_only.length}</strong><br />
-            • Will be dropped (in platform, missing from camera): <strong>{pullPreview.db_only.length}</strong><br />
-            • Modified (differ between platform and camera): <strong>{pullPreview.modified.length}</strong>
+            • New (on camera, not in platform): <strong>{(pullPreview.camera_only ?? []).length}</strong><br />
+            • Will be dropped (in platform, missing from camera): <strong>{(pullPreview.db_only ?? []).length}</strong><br />
+            • Modified (differ between platform and camera): <strong>{(pullPreview.modified ?? []).length}</strong>
           </div>
           <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
             <button

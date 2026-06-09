@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useSite, useUpdateSite } from '@/hooks/useSites';
+import { useSite, useUpdateSiteMonitoringSchedule } from '@/hooks/useSites';
 import type { MonitoringWindow } from '@/types/ironsight';
 import ScheduleWindowsEditor, { Preset } from './ScheduleWindowsEditor';
 
@@ -35,7 +35,7 @@ interface Props {
 
 export default function SiteScheduleModal({ siteId, onClose, embedded }: Props) {
   const { data: site } = useSite(siteId);
-  const updateSite = useUpdateSite();
+  const updateSchedule = useUpdateSiteMonitoringSchedule();
   const [windows, setWindows] = useState<MonitoringWindow[]>([]);
   const [dirty, setDirty] = useState(false);
 
@@ -47,9 +47,9 @@ export default function SiteScheduleModal({ siteId, onClose, embedded }: Props) 
 
   const handleSave = async () => {
     try {
-      await updateSite.mutateAsync({
+      await updateSchedule.mutateAsync({
         id: siteId,
-        data: { monitoring_schedule: windows } as any,
+        monitoring_schedule: windows,
       });
       onClose();
     } catch { /* error displayed below */ }
@@ -65,7 +65,7 @@ export default function SiteScheduleModal({ siteId, onClose, embedded }: Props) 
         emptyHint="No monitoring windows configured. Use a preset or add a custom window."
       />
 
-      {updateSite.isError && (
+      {updateSchedule.isError && (
         <div style={{ padding: '10px 0', fontSize: 11, color: '#EF4444' }}>
           Failed to save schedule — check backend logs.
         </div>
@@ -75,9 +75,9 @@ export default function SiteScheduleModal({ siteId, onClose, embedded }: Props) 
         <button
           className="admin-btn admin-btn-primary"
           onClick={handleSave}
-          disabled={!dirty || updateSite.isPending}
+          disabled={!dirty || updateSchedule.isPending}
         >
-          {updateSite.isPending ? 'Saving...' : 'Save Schedule'}
+          {updateSchedule.isPending ? 'Saving...' : 'Save Schedule'}
         </button>
       </div>
     </div>
