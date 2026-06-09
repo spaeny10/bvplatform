@@ -65,16 +65,17 @@ const (
 	DefaultMediaTTL = 5 * time.Minute
 
 	// LiveHLSMediaTTL is the token lifetime for kind=live-hls.
-	// Originally 60s with 30s refresh on the frontend, but live HLS
-	// playlists carry the same segment across multiple manifest fetches
-	// and hls.js validates that segment URLs are identical between
-	// playlist refreshes (it diffs by URL at the same media-sequence
-	// number and fires levelParsingError "media sequence mismatch N" on
-	// any change). Bumping to 5 min so the cached child tokens (see
-	// liveTokenCache below) outlive a segment's lifetime in the muxer's
-	// sliding window (~7 segs × 6s = ~42s). Combined with the cache, the
-	// same segment now produces the same URL every time it's listed.
-	LiveHLSMediaTTL = 5 * time.Minute
+	// 1 hour to fully overshadow any practical playlist polling cycle
+	// (hls.js polls every ~6 s, segments persist in window ~42 s, and
+	// the master refresh interval is well under 1 h). Previously 5 min,
+	// which combined with the in-process token cache occasionally
+	// produced 401s when a cached token had <60s remaining and was
+	// served in a manifest the client kept polling past expiry.
+	// Operator-impact risk of a leaked live token over a longer TTL is
+	// low — the surface is "watch one camera's video for up to 1 h"
+	// and the kind=live-hls token can't be used for snapshots or
+	// recordings.
+	LiveHLSMediaTTL = 1 * time.Hour
 
 	// MaxMediaTTL is the operator-facing ceiling for ttl_seconds on the
 	// mint endpoint. Evidence-export uses up to 1 h so a downloaded
@@ -509,7 +510,29 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 					w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 					_, _ = w.Write(rewritten)
 				} else {
-					runningMuxer.ServeSegment(w, r, claims.Path)
+					// Wrap the response so we can detect gohlslib's
+					// rotated-segment race: a segment listed in the live
+					// playlist briefly survives after rotation and
+					// ServeSegment returns HTTP 200 with zero bytes. hls.js
+					// can't parse an empty fMP4 response and hangs in the
+					// "connecting" state forever. Convert that case to a
+					// proper 404 so hls.js retries and moves on.
+					segRec := &liveHLSResponseRecorder{header: make(http.Header)}
+					runningMuxer.ServeSegment(segRec, r, claims.Path)
+					if segRec.body.Len() == 0 && (segRec.status == 0 || segRec.status == http.StatusOK) {
+						log.Printf("[MEDIA-SERVE] live-hls 0-byte segment for %s/%s — converting to 404", camUUID, claims.Path)
+						http.Error(w, "segment not available", http.StatusNotFound)
+						return
+					}
+					for k, vv := range segRec.header {
+						for _, v := range vv {
+							w.Header().Add(k, v)
+						}
+					}
+					if segRec.status != 0 {
+						w.WriteHeader(segRec.status)
+					}
+					_, _ = w.Write(segRec.body.Bytes())
 				}
 				return
 			}
