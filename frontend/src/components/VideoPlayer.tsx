@@ -247,11 +247,32 @@ export default function VideoPlayer({
             hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
                 if (cancelled) return;
                 if (data.fatal) {
-                    const httpCode = data.response?.code ? ` HTTP ${data.response.code}` : '';
-                    const errMsg = data.error?.message ? ` — ${String(data.error.message).slice(0, 120)}` : '';
-                    const msg = `Stream unavailable — ${data.type}/${data.details}${httpCode}${errMsg}`;
+                    // Friendly headline based on the error class — operators see
+                    // this at a glance. Detail line keeps the full hls.js
+                    // type/details + HTTP code so we can still debug from a
+                    // screenshot without opening F12.
+                    const code = data.response?.code as number | undefined;
+                    let headline = 'Stream unavailable';
+                    if (data.type === 'networkError') {
+                        if (code === 500 || code === 502 || code === 503 || code === 504) headline = 'Camera offline';
+                        else if (code === 401 || code === 403) headline = 'Not authorized to view this camera';
+                        else if (code === 404) headline = 'Stream not found';
+                        else headline = 'Network error reaching camera';
+                    } else if (data.type === 'mediaError') {
+                        if (String(data.details).startsWith('manifestIncompatibleCodecs')
+                            || String(data.details).startsWith('bufferIncompatibleCodecs')) {
+                            headline = 'Browser cannot decode this stream (HEVC support missing)';
+                        } else {
+                            headline = 'Playback error in browser';
+                        }
+                    }
+                    const httpPart = code ? ` HTTP ${code}` : '';
+                    const errPart = data.error?.message ? ` — ${String(data.error.message).slice(0, 120)}` : '';
+                    const detail = `${data.type}/${data.details}${httpPart}${errPart}`;
                     console.error('[LIVE-PROXY] fatal error:', data.type, data.details, data);
-                    setError(msg);
+                    // Pass both lines as a single string with a `␟` (unit
+                    // separator) so the renderer can split without parsing JSON.
+                    setError(`${headline}␟${detail}`);
                     setLoading(false);
                 }
             });
@@ -746,16 +767,28 @@ export default function VideoPlayer({
                 </div>
             )}
 
-            {/* Error state */}
-            {error && (
-                <div className="video-cell-placeholder">
-                    <div className="icon">📹</div>
-                    <span style={{ fontSize: 12, wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center' }}>{error}</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                        {cameraName}
-                    </span>
-                </div>
-            )}
+            {/* Error state. Split a `headline␟detail` value into two lines —
+                operators see the friendly headline at a glance; the muted
+                detail line below keeps the full hls.js error info on screen
+                so a screenshot is enough to diagnose. Plain strings still
+                render as a single headline-style line. */}
+            {error && (() => {
+                const sep = '␟'; // ␟ unit-separator
+                const [headline, ...rest] = error.split(sep);
+                const detail = rest.join(sep);
+                return (
+                    <div className="video-cell-placeholder">
+                        <div className="icon">📹</div>
+                        <span style={{ fontSize: 13, fontWeight: 500, wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center' }}>{headline}</span>
+                        {detail && (
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', wordBreak: 'break-word', maxWidth: '90%', textAlign: 'center', marginTop: 2 }}>{detail}</span>
+                        )}
+                        <span style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 4 }}>
+                            {cameraName}
+                        </span>
+                    </div>
+                );
+            })()}
 
             {/* Wall-clock overlay (playback mode only). Click to toggle
                 visibility across every tile (custom event broadcasts the new
