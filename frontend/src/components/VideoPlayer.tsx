@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment } from '@/lib/api';
-import { createMediaRefresher } from '@/lib/media';
 
 interface VideoPlayerProps {
     cameraId: string;
@@ -204,20 +203,20 @@ export default function VideoPlayer({
     }, [hasPTZ, isLive, cameraId]);
 
 
-    // ---- LIVE MODE EFFECT (LL-HLS via gohlslib, P3-INFRA-06) ----
+    // ---- LIVE MODE EFFECT (mediamtx native HLS via /api/live/*, P3-INFRA-06 pivot) ----
     //
-    // P3-INFRA-06 replaced the WebRTC/WHEP path with gohlslib-backed
-    // LL-HLS. The browser compatibility story:
+    // Replaces gohlslib LL-HLS: mediamtx serves HLS natively at
+    // /api/live/{cameraID}/index.m3u8 (proxied + auth-gated by the Go API).
+    // No media tokens — auth is the existing SSO session cookie.
+    // No token-refresh loop — the URL is stable; mediamtx manages the
+    // sliding window internally. lowLatencyMode: false (classic HLS,
+    // whole fMP4 segments) for the same reason as before: avoids LL-HLS
+    // PART-TARGET jitter errors on hls.js.
+    //
+    // Browser compat:
     //   Safari + iOS Safari: native HLS + HEVC — works natively.
-    //   Chrome 107+ with hardware H.265 decode: hls.js + HEVC — works.
-    //   Firefox: HLS served but H.265 not decoded — gets a "codec not
-    //     supported" error. A future PR will add a Firefox banner.
-    //
-    // Token TTL is 60 s; createMediaRefresher fires every 30 s
-    // (Math.max(30_000, 60_000 - 60_000) = 30_000 ms). On each refresh
-    // we call hls.loadSource(newURL) which causes hls.js to reload the
-    // playlist from the live edge — safe for LL-HLS because the server
-    // maintains a full 7-segment window.
+    //   Chrome 107+ with hardware H.265: hls.js + fMP4 HEVC — works.
+    //   Firefox: H.265 MSE not supported — codec error surfaced on screen.
 
     useEffect(() => {
         if (!isLive) return;
@@ -227,79 +226,45 @@ export default function VideoPlayer({
         setLoading(true);
         setError('');
 
-        // The backend LiveHLSManager always pulls the sub-stream from
-        // mediamtx (lower bitrate, designed for live monitoring). The
-        // HD/SD quality toggle in the UI is kept for future use but
-        // currently has no effect on the live-HLS path — both HD and SD
-        // request the same sub-stream token. A future PR can add a
-        // quality parameter once the muxer supports per-stream selection.
         let cancelled = false;
         let hls: Hls | null = null;
 
-        const attachHLS = (url: string) => {
-            if (cancelled) return;
-            if (Hls.isSupported()) {
-                if (!hls) {
-                    // lowLatencyMode disabled: in LL mode hls.js requires PART-TARGET
-                    // to stay constant per the LL-HLS spec. gohlslib re-derives the
-                    // target each segment from observed part durations, so any H.265
-                    // cellular jitter (~30-150ms even at our 5s PartMinDuration) bumps
-                    // PART-TARGET and hls.js drops the stream as fatal. Classic HLS
-                    // mode ignores PART tags and consumes whole segments — players
-                    // get ~6s latency but the stream stays alive.
-                    hls = new Hls({
-                        lowLatencyMode: false,
-                        backBufferLength: 10,
-                        maxBufferLength: 30,
-                    });
-                    hlsRef.current = hls;
-                    hls.attachMedia(video);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                        if (cancelled) return;
-                        video.play().catch(() => { });
-                        setLoading(false);
-                    });
-                    hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
-                        if (cancelled) return;
-                        if (data.fatal) {
-                            const reason = (data.response?.code ? `HTTP ${data.response.code} ` : '')
-                                + (data.error?.message || data.reason || '');
-                            const msg = `Stream unavailable — ${data.type}/${data.details}${reason ? ` (${reason})` : ''}`;
-                            console.error('[LIVE-HLS] fatal error:', data.type, data.details, data);
-                            setError(msg);
-                            setLoading(false);
-                        }
-                    });
-                } else {
-                    // Token refresh — swap the URL without recreating the player.
-                    hls.loadSource(url);
-                }
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                // Safari: native HLS. Just set src; browser handles LL-HLS natively.
-                video.src = url;
+        const liveURL = `/api/live/${cameraId}/index.m3u8`;
+
+        if (Hls.isSupported()) {
+            hls = new Hls({
+                lowLatencyMode: false,
+                backBufferLength: 10,
+                maxBufferLength: 30,
+            });
+            hlsRef.current = hls;
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                if (cancelled) return;
                 video.play().catch(() => { });
                 setLoading(false);
-            } else {
-                setError('Browser does not support HLS live view');
-                setLoading(false);
-                return;
-            }
-        };
-
-        // Mint the first token and start the hls.js session. The refresher
-        // fires attachHLS again every 30 s with a new URL so the 60 s token
-        // never expires under the player.
-        const refresher = createMediaRefresher(
-            { camera_id: cameraId, kind: 'live-hls', path: 'live' },
-            (url) => { attachHLS(url); },
-        );
-        refresher.start().catch((err: any) => {
-            if (!cancelled) {
-                console.error('[LIVE-HLS] mint failed:', err);
-                setError(`Stream unavailable — mint failed (${err?.message || err})`);
-                setLoading(false);
-            }
-        });
+            });
+            hls.on(Hls.Events.ERROR, (_evt: any, data: any) => {
+                if (cancelled) return;
+                if (data.fatal) {
+                    const httpCode = data.response?.code ? ` HTTP ${data.response.code}` : '';
+                    const errMsg = data.error?.message ? ` — ${String(data.error.message).slice(0, 120)}` : '';
+                    const msg = `Stream unavailable — ${data.type}/${data.details}${httpCode}${errMsg}`;
+                    console.error('[LIVE-PROXY] fatal error:', data.type, data.details, data);
+                    setError(msg);
+                    setLoading(false);
+                }
+            });
+            hls.loadSource(liveURL);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Safari: native HLS. Session cookie is sent automatically.
+            video.src = liveURL;
+            video.play().catch(() => { });
+            setLoading(false);
+        } else {
+            setError('Browser does not support HLS live view');
+            setLoading(false);
+        }
 
         const updateRes = () => {
             if (video.videoWidth && video.videoHeight) {
@@ -313,7 +278,6 @@ export default function VideoPlayer({
             cancelled = true;
             video.removeEventListener('resize', updateRes);
             video.removeEventListener('loadedmetadata', updateRes);
-            refresher.dispose();
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;

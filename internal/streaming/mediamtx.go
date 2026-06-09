@@ -53,10 +53,16 @@ type mtxConfig struct {
 	RTSPAddress     string              `yaml:"rtspAddress"`
 	RTMP            bool                `yaml:"rtmp"`
 	RTMPAddress     string              `yaml:"rtmpAddress"`
+	// HLS: mediamtx native HLS server (P3-INFRA-06 pivot from gohlslib).
+	// HLSVariant=fmp4 produces ISOBMFF segments that carry H.265 cleanly.
+	// HLSAlwaysRemux=true keeps segments available even before the first
+	// external viewer connects, so /api/live/* responds immediately.
 	HLS             bool                `yaml:"hls"`
 	HLSAddress      string              `yaml:"hlsAddress"`
-	// P3-INFRA-06: WebRTC removed — live view is now served via gohlslib
-	// LL-HLS in ironsight-api.  mediamtx is RTSP relay only.
+	HLSVariant      string              `yaml:"hlsVariant"`
+	HLSAlwaysRemux  bool                `yaml:"hlsAlwaysRemux"`
+	// P3-INFRA-06: WebRTC removed — live view is now served via mediamtx
+	// native HLS proxied through /api/live/*.
 	WebRTC bool `yaml:"webrtc"`
 	Paths  map[string]*mtxPath `yaml:"paths"`
 }
@@ -444,9 +450,15 @@ func (m *MediaMTXServer) writeConfig() error {
 		RTSPAddress: listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
 		RTMP:        false,
 		RTMPAddress: ":11935",
-		HLS:         false, // HLS is served by ironsight-api via gohlslib, not mediamtx
-		HLSAddress:  ":18888",
-		WebRTC:      false, // Disabled: P3-INFRA-06 replaced WebRTC with LL-HLS
+		// P3-INFRA-06 pivot: mediamtx native HLS replaces gohlslib.
+		// fmp4 variant carries H.265 cleanly; alwaysRemux keeps segments
+		// available before the first viewer. Port 8888 is not published
+		// outside the docker bridge — ironsight-api proxies /api/live/*.
+		HLS:            true,
+		HLSAddress:     listenPortSuffix(m.cfg.MediaMTXHLSAddr, "8888"),
+		HLSVariant:     "fmp4",
+		HLSAlwaysRemux: true,
+		WebRTC:         false, // Disabled: P3-INFRA-06 replaced WebRTC with mediamtx HLS
 		Paths:       paths,
 	}
 
