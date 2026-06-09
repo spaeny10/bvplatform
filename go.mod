@@ -57,3 +57,5 @@ require (
 	golang.org/x/text v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/bluenviron/mediacommon/v2 => ./internal/vendored/mediacommon
