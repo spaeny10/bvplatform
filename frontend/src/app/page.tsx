@@ -20,6 +20,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Logo from '@/components/shared/Logo';
 import UserChip from '@/components/shared/UserChip';
+import { FeatureGate } from '@/components/shared/FeatureGate';
 import { getSiteCameras } from '@/lib/ironsight-api';
 import { useSite } from '@/hooks/useSites';
 
@@ -505,12 +506,14 @@ function HomeInner() {
                     >
                         Alert Feed {events.length > 0 && <span className={badgeBounce ? 'alert-badge-bounce' : ''} onAnimationEnd={() => setBadgeBounce(false)}>({events.length})</span>}
                     </button>
-                    <button
-                        className={`nav-link ${page === 'analytics' ? 'active' : ''}`}
-                        onClick={() => switchPage('analytics')}
-                    >
-                        Analytics
-                    </button>
+                    <FeatureGate flag="analytics">
+                        <button
+                            className={`nav-link ${page === 'analytics' ? 'active' : ''}`}
+                            onClick={() => switchPage('analytics')}
+                        >
+                            Analytics
+                        </button>
+                    </FeatureGate>
                     <button
                         className={`nav-link ${page === 'map' ? 'active' : ''}`}
                         onClick={() => switchPage('map')}
@@ -519,15 +522,19 @@ function HomeInner() {
                     </button>
                     {/* Ironsight Interfaces */}
                     <span style={{ width: 1, height: 20, background: 'var(--border-color)', margin: '0 4px' }} />
-                    <a href="/operator" className="nav-link" style={{ textDecoration: 'none' }}>
-                        SOC Monitor
-                    </a>
+                    <FeatureGate flag="operator_console">
+                        <a href="/operator" className="nav-link" style={{ textDecoration: 'none' }}>
+                            SOC Monitor
+                        </a>
+                    </FeatureGate>
                     <a href="/portal" className="nav-link" style={{ textDecoration: 'none' }}>
                         📊 Portal
                     </a>
-                    <a href="/search" className="nav-link" style={{ textDecoration: 'none' }}>
-                        🔍 Search
-                    </a>
+                    <FeatureGate flag="semantic_search">
+                        <a href="/search" className="nav-link" style={{ textDecoration: 'none' }}>
+                            🔍 Search
+                        </a>
+                    </FeatureGate>
                 </div>
 
                 <div className="navbar-status" style={{ gap: 8 }}>

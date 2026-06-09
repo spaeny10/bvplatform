@@ -347,6 +347,17 @@ type Config struct {
 	DigestSendHour       int    // 0-23 UTC
 	DigestScope          string // "org" | "site" (only "org" implemented)
 	DigestNoActivitySkip bool   // skip digest for orgs with no PPE activity
+
+	// FeaturesOverride lets a deployment flip individual feature flags
+	// without a rebuild (2026-06 MVP descope: parked surfaces default
+	// OFF in api.DefaultFeatureFlags; test re-enables what it needs).
+	// Unknown names are accepted on purpose — the canonical list lives
+	// in docs/feature-registry/README.md and the handler merges this
+	// map over its defaults, so a typo shows up as an extra flag in
+	// GET /api/v1/features rather than a silent no-op.
+	//
+	// Env var: FEATURES_OVERRIDE  e.g. "semantic_search=true,analytics=false"
+	FeaturesOverride map[string]bool
 }
 
 // Load reads configuration from environment variables with defaults
@@ -504,8 +515,39 @@ func Load() *Config {
 		DigestSendHour:        clampHour(getEnvInt("DIGEST_SEND_HOUR", 13)),
 		DigestScope:           digestScopeFromEnv(),
 		DigestNoActivitySkip:  getEnvBool("DIGEST_NO_ACTIVITY_SKIP", true),
+
+		// Feature flags — 2026-06 MVP descope. Merged over
+		// api.DefaultFeatureFlags by HandleFeatureFlags.
+		FeaturesOverride: parseFeaturesOverride(getEnv("FEATURES_OVERRIDE", "")),
 	}
 	return cfg
+}
+
+// parseFeaturesOverride parses "name=true,name2=false" into a map.
+// Malformed entries are dropped silently rather than failing boot —
+// a typo'd flag name still shows up (see Config.FeaturesOverride doc),
+// but a malformed pair like "name" or "name=" carries no usable
+// intent, so skipping is the least-surprise behavior.
+func parseFeaturesOverride(s string) map[string]bool {
+	out := map[string]bool{}
+	for _, pair := range strings.Split(s, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		name, val, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		switch strings.TrimSpace(strings.ToLower(val)) {
+		case "true", "1":
+			out[name] = true
+		case "false", "0":
+			out[name] = false
+		}
+	}
+	return out
 }
 
 // metricsAuthFromEnv parses METRICS_AUTH. Valid values are "none" (default,

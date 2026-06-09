@@ -19,6 +19,7 @@ import UserChip from '@/components/shared/UserChip';
 import Logo from '@/components/shared/Logo';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 
 function OperatorConsoleInner() {
   const router = useRouter();
@@ -430,6 +431,13 @@ function OperatorConsoleInner() {
   );
 }
 
+// Parked at MVP (2026-06 descope): the full SOC dispatch console
+// (locks/handoffs/SLA/presence/wrap-up) is replaced by the simple
+// alert feed on the NVR home until post-MVP revival.
 export default function OperatorConsolePage() {
-  return <OperatorConsoleInner />;
+  return (
+    <FeaturePageGate flag="operator_console">
+      <OperatorConsoleInner />
+    </FeaturePageGate>
+  );
 }

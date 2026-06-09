@@ -10,6 +10,7 @@ import ComplianceSummaryCards from '@/components/portal/ComplianceSummaryCards';
 import ComplianceViolationsChart from '@/components/portal/ComplianceViolationsChart';
 import ComplianceCamerasTable from '@/components/portal/ComplianceCamerasTable';
 import ComplianceFindingsTable from '@/components/portal/ComplianceFindingsTable';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 import './compliance.css';
 
 const PERIODS: { value: CompliancePeriod; label: string }[] = [
@@ -164,10 +165,13 @@ function CompliancePage() {
   );
 }
 
+// Parked at MVP (2026-06 descope): rides with the PPE/compliance suite.
 export default function CompliancePageWrapper() {
   return (
-    <ThemeProvider>
-      <CompliancePage />
-    </ThemeProvider>
+    <FeaturePageGate flag="compliance">
+      <ThemeProvider>
+        <CompliancePage />
+      </ThemeProvider>
+    </FeaturePageGate>
   );
 }

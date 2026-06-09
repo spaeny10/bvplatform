@@ -27,6 +27,8 @@ import { listCameras, Camera, listUsers, createUser, deleteUser, updateUserPassw
 import { useAuth } from '@/contexts/AuthContext';
 import { ToastProvider, useToast } from '@/components/ToastProvider';
 import { SkeletonRows } from '@/components/shared/Skeleton';
+import { FeatureGate } from '@/components/shared/FeatureGate';
+import { useFeatureFlags } from '@/lib/feature-flags';
 
 type Tab = 'sites' | 'operators' | 'users' | 'settings' | 'health' | 'audit' | 'integrations' | 'labeling';
 
@@ -465,6 +467,9 @@ export default function AdminPage() {
     if ((tab === 'users' || tab === 'operators') && !usersLoaded) loadPlatformUsers();
   }, [ensureCameras, usersLoaded, loadPlatformUsers]);
 
+  // Integrations + ML Labeling are parked at MVP (2026-06 descope) —
+  // their tabs only render when the matching feature flag is on.
+  const { flags: featureFlags } = useFeatureFlags();
   const tabs: { key: Tab; label: string; count?: number; external?: string }[] = [
     { key: 'sites',        label: 'Sites & Customers', count: sites.length },
     { key: 'operators',    label: 'Operators',          count: operators.length },
@@ -472,8 +477,8 @@ export default function AdminPage() {
     { key: 'settings',     label: 'NVR Settings' },
     { key: 'health',       label: 'Health' },
     { key: 'audit',        label: 'Audit Trail' },
-    { key: 'integrations', label: 'Integrations' },
-    { key: 'labeling',     label: 'ML Labeling',        external: '/admin/labeling' },
+    ...(featureFlags.integrations ? [{ key: 'integrations' as Tab, label: 'Integrations' }] : []),
+    ...(featureFlags.labeling ? [{ key: 'labeling' as Tab, label: 'ML Labeling', external: '/admin/labeling' }] : []),
   ];
 
   const statusColors: Record<string, string> = {
@@ -493,9 +498,13 @@ export default function AdminPage() {
           <span style={{ fontWeight: 400, color: 'var(--text-secondary, #8891A5)', fontSize: 14, marginLeft: 4 }}>Admin</span>
         </div>
         <div className="admin-nav">
-          <Link href="/operator" className="admin-nav-item">SOC Monitor</Link>
+          <FeatureGate flag="operator_console">
+            <Link href="/operator" className="admin-nav-item">SOC Monitor</Link>
+          </FeatureGate>
           <Link href="/portal" className="admin-nav-item">Portal</Link>
-          <Link href="/reports" className="admin-nav-item">Reports</Link>
+          <FeatureGate flag="operator_console">
+            <Link href="/reports" className="admin-nav-item">Reports</Link>
+          </FeatureGate>
           <span className="admin-nav-item active">Admin</span>
           <Link href="/" className="admin-nav-item">NVR</Link>
         </div>

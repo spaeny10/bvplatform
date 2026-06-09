@@ -5,6 +5,7 @@ import Link from 'next/link';
 import Logo from '@/components/shared/Logo';
 import UserChip from '@/components/shared/UserChip';
 import SignedImage from '@/components/shared/SignedImage';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 import { authFetch } from '@/lib/api';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -93,7 +94,16 @@ function StatsBar({ stats }: { stats: LabelingStats | null }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function LabelingPage() {
+// Parked at MVP (2026-06 descope): rides with the server-side AI pipeline.
+export default function LabelingPageGated() {
+  return (
+    <FeaturePageGate flag="labeling">
+      <LabelingPage />
+    </FeaturePageGate>
+  );
+}
+
+function LabelingPage() {
   const [stats, setStats] = useState<LabelingStats | null>(null);
   const [job, setJob] = useState<LabelJob | null>(null);
   const [queueEmpty, setQueueEmpty] = useState(false);

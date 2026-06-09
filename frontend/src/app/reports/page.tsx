@@ -8,6 +8,7 @@ import SLAReportCard from '@/components/reports/SLAReportCard';
 import VerificationQueueCard from '@/components/reports/VerificationQueueCard';
 import EvidenceSharesCard from '@/components/reports/EvidenceSharesCard';
 import SupportTicketsCard from '@/components/reports/SupportTicketsCard';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 
 // Reports surface for SOC supervisors and admins.
 //
@@ -30,7 +31,18 @@ const TABS: Array<{ key: Tab; label: string; subtitle: string }> = [
   { key: 'support',     label: 'Support', subtitle: 'Customer ticket inbox' },
 ];
 
-export default function ReportsPage() {
+// Parked at MVP (2026-06 descope): all four tabs are SOC-supervisor
+// surfaces (SLA, four-eyes queue, share lifecycle, ticket inbox) that
+// ride with the parked operator console.
+export default function ReportsPageGated() {
+  return (
+    <FeaturePageGate flag="operator_console">
+      <ReportsPage />
+    </FeaturePageGate>
+  );
+}
+
+function ReportsPage() {
   const { user } = useAuth();
   const [tab, setTab] = useState<Tab>('performance');
 
