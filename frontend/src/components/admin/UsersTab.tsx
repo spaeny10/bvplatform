@@ -359,7 +359,7 @@ export default function UsersTab({
                         </div>
                         <div>
                             <label className="admin-label">Password *</label>
-                            <input className="admin-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Min 8 characters" />
+                            <input className="admin-input" type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Min 12 characters" />
                         </div>
                         {newUserType === 'internal' ? (
                             <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>

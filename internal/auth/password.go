@@ -18,7 +18,7 @@ const MinPasswordLength = 12
 var (
 	ErrPasswordTooShort  = errors.New("password must be at least 12 characters")
 	ErrPasswordNoVariety = errors.New("password must contain letters and at least one digit or symbol")
-	ErrPasswordCommon    = errors.New("password is too common; choose something else")
+	ErrPasswordCommon    = errors.New("password is too common — try a longer phrase, mix of words, or numbers and symbols")
 )
 
 // commonPasswords is a short blocklist of the most frequently seen

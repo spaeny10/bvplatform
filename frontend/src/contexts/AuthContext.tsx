@@ -191,10 +191,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, []);
 
     const logout = useCallback(() => {
-        // P1-A-02 part 2: POST /auth/logout to clear the session cookies
-        // server-side (HandleLogout sets Max-Age=0). Fire-and-forget — the
-        // redirect happens regardless so the user isn't stuck if the request
-        // fails. CSRF is required on the logout POST.
+        // Two-stage logout:
+        //   1. POST /auth/logout — clears the api's ironsight_session cookie
+        //      (server-side, HandleLogout sets Max-Age=0). CSRF required.
+        //   2. Redirect to /oauth2/sign_out — clears the _oauth2_proxy SSO
+        //      cookie. Without this step the SSO cookie persists, NPM's
+        //      auth_request still passes on the next /login navigation, and
+        //      oauth2-proxy silently re-authenticates the user back into the
+        //      app ("sign out doesn't sign out" symptom).
+        //   The rd=/login query tells oauth2-proxy where to land after.
         const csrfToken = typeof window !== 'undefined'
             ? (document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='))?.split('=')[1] ?? '')
             : '';
@@ -207,7 +212,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(USER_KEY);
         setToken(null);
         setUser(null);
-        window.location.href = '/login';
+        window.location.href = '/oauth2/sign_out?rd=%2Flogin';
     }, []);
 
     const hasPermission = useCallback((route: string) => {
