@@ -10,8 +10,6 @@ github.com/bluenviron/gohlslib/v2 v2.3.2 h1:Q6ZAYRFZ++rSfK0sm8vOEYhtH7KKBpfzQden
 github.com/bluenviron/gohlslib/v2 v2.3.2/go.mod h1:kA0hTg96hmTZjeZ/Vxwpu/Njy0emAoidEoDGQ/KlMH0=
 github.com/bluenviron/gortsplib/v5 v5.5.1 h1:jZJb1dLsBMhxW1cFz/CwLhUW5diaqHf/617QyQGx4nY=
 github.com/bluenviron/gortsplib/v5 v5.5.1/go.mod h1:otcPqR836QZej/EYx7njn8vl4TLj8Ya3QAf+GBwh2cQ=
-github.com/bluenviron/mediacommon/v2 v2.8.3 h1:T6xb7ZK3eBixi/HynzhtGRCEIrazwcmGIeu0WDTVISY=
-github.com/bluenviron/mediacommon/v2 v2.8.3/go.mod h1:CsYjGgzIz8RbloQf4BHR4uReogZsB4PEKWfePVIzJv8=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
 github.com/bsm/ginkgo/v2 v2.12.0/go.mod h1:SwYbGRRDovPVboqFv0tPTcG1sN61LM1Z4ARdbAV9g4c=
 github.com/bsm/gomega v1.27.10 h1:yeMWxP2pV2fG3FgAODIY8EiRE3dy0aeFYt4l7wh6yKA=
@@ -95,6 +93,7 @@ github.com/pion/transport/v4 v4.0.1/go.mod h1:nEuEA4AD5lPdcIegQDpVLgNoDGreqM/Yqm
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
 github.com/pkg/errors v0.9.1 h1:FEBLx1zS214owpjy7qsBeixbURkuhQAwrK5UwLGTwt4=
 github.com/pkg/errors v0.9.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
+github.com/pkg/profile v1.4.0/go.mod h1:NWz/XGvpEW1FyYQ7fCx4dqYBLlfTcE+A9FLAkNKqjFE=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pressly/goose/v3 v3.27.1 h1:6uEvcprBybDmW4hcz3gYujhARhye+GoWKhEWyzD5sh4=

@@ -38,6 +38,11 @@ paths = [
     # quote (now-rotated) credentials as part of the recommendation
     # text. Real rotations are tracked in INFRA_MASTER.md.
     '''audit/.*\.md$''',
+    # Vendored third-party Go modules — upstream test fixtures and
+    # binary blobs (mp4 boxes, RTP captures) routinely trip gitleaks'
+    # entropy detector. We don't modify upstream code beyond the
+    # documented patches; treat as we'd treat a normal go.mod dep.
+    '''internal/vendored/.*''',
 ]
 
 # Literal strings that are intentional fixtures and not credentials.
