@@ -481,6 +481,14 @@ func HandleMediaServe(cfg *config.Config, db *database.DB, auditor *mediaAuditor
 					http.Error(w, "stream not available", http.StatusServiceUnavailable)
 					return
 				}
+				// Track viewer activity on EVERY live-hls fetch, not just
+				// the master playlist. With the 5-min token TTL + cache the
+				// master is only re-minted every ~4 min, but hls.js polls
+				// the variant playlist every ~6s and segments continuously;
+				// without this call the muxer's 30s idle timer fires while
+				// playback is actively in progress and the next variant
+				// poll gets a 503 ("stream not available").
+				runningMuxer.RecordViewer()
 				// Media playlists (.m3u8) contain relative segment URIs that
 				// also need to be rewritten to /media/v1/<token> form.
 				// Binary segments (.mp4) are proxied directly.
