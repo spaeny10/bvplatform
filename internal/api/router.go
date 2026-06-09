@@ -594,6 +594,14 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		r.Get("/playback/{id}", HandlePlayback(cfg, db))
 		r.Get("/playback/{id}/playlist.m3u8", HandlePlaybackHLS(cfg, db))
 
+		// P3-INFRA-06 pivot: mediamtx native HLS live-view proxy.
+		// Proxies /api/live/{cameraID}/* to http://<MediaMTXHLSAddr>/<cameraID>_sub/*.
+		// Auth is the existing session cookie (RequireAuth + CSRFMiddleware above).
+		// .m3u8 responses are rewritten so segment URLs stay within /api/live/*.
+		// CSRF: GET-only path (playlist + segments are GETs); CSRFMiddleware
+		// exempts safe methods — no X-CSRF-Token header required.
+		r.Get("/live/{cameraID}/*", HandleLiveProxy(cfg, db))
+
 		// P1-A-03 mint endpoint. JWT-authenticated; caller asks for a
 		// short-lived signed URL bound to (camera_id, kind, path) and
 		// gets back /media/v1/<token>. Tenant scope is enforced here

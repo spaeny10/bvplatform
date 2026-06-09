@@ -192,6 +192,11 @@ type Config struct {
 	MediaMTXRTSPAddr   string // host[:port] the local RTSP relay listens on (recording engine pulls from this)
 	MediaMTXAPIAddr    string // host[:port] of MediaMTX's HTTP control API — runtime path adds/removes go here
 	// so we stop round-tripping YAML config through a shared volume.
+	// MediaMTXHLSAddr is the host:port of mediamtx's built-in HLS server.
+	// The Go API proxies /api/live/* requests to this address.
+	// Default: ironsight-test-mediamtx:8888 for compose; 127.0.0.1:8888 for embedded.
+	// Env var: MEDIAMTX_HLS_ADDR
+	MediaMTXHLSAddr string
 
 	// WebRTCAdditionalHosts is a list of hostnames or IPs MediaMTX advertises
 	// in WebRTC ICE candidates in addition to its own bound interface(s). In
@@ -388,6 +393,10 @@ func Load() *Config {
 		MediaMTXWebRTCAddr: getEnv("MEDIAMTX_WEBRTC_ADDR", "127.0.0.1:8889"),
 		MediaMTXRTSPAddr:   getEnv("MEDIAMTX_RTSP_ADDR", "127.0.0.1:18554"),
 		MediaMTXAPIAddr:    getEnv("MEDIAMTX_API_ADDR", "127.0.0.1:9997"),
+		// MEDIAMTX_HLS_ADDR: compose deployments use the mediamtx container name;
+		// embedded/dev uses loopback. Must NOT include a scheme — http:// is prepended
+		// in the live_proxy handler.
+		MediaMTXHLSAddr: getEnv("MEDIAMTX_HLS_ADDR", "127.0.0.1:8888"),
 
 		// Empty = only advertise interfaces MediaMTX picks up itself
 		// (the docker bridge IP, in compose). For LAN browsers, set
