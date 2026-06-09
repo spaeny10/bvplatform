@@ -70,15 +70,16 @@ const (
 	liveHLSIdleTimeout = 30 * time.Second
 
 	// liveHLSSegmentMinDuration is the gohlslib target segment length.
-	// 2 s instead of the HLS standard 6 s so the first segment is
-	// available ~2 s after the muxer starts pulling RTSP instead of
-	// 6 s — this is the dominant component of click-to-first-frame
-	// latency for new viewers ("takes a long time to connect" in user
-	// testing). H.265 keyframe jitter (~150 ms) is still invisible at a
-	// 2 s boundary. Side-effect: more segments per minute in the muxer's
-	// window, so memory + churn go up slightly, but for trailer
-	// monitoring (4 cams × few viewers) that's a rounding error.
-	liveHLSSegmentMinDuration = 2 * time.Second
+	// 6 s is the HLS standard and what gohlslib's keyframe coalescer
+	// works cleanly with for our H.265 cameras. A previous attempt to
+	// drop this to 2 s for faster startup backfired: gohlslib emits
+	// "segment duration changed from 2s to 4s" warnings when keyframes
+	// don't align with the 2 s target, and hls.js dies on the resulting
+	// mid-stream EXTINF jitter the same way it died on the LL-HLS
+	// part-duration jitter (see PR #46 history). Startup latency is
+	// instead addressed by pre-warming muxers at api boot — see
+	// LiveHLSManager.WarmAll().
+	liveHLSSegmentMinDuration = 6 * time.Second
 
 	// liveHLSReconnectBaseDelay is the starting back-off between RTSP
 	// reconnect attempts.  Doubles each failure up to liveHLSReconnectMax.
@@ -226,6 +227,29 @@ func (m *LiveHLSManager) GetRunning(cameraID uuid.UUID) *LiveHLSMuxer {
 		return nil
 	}
 	return mux
+}
+
+// WarmCameras ensures a muxer is running for every cameraID and refreshes
+// the per-muxer idle timer so they don't get torn down between viewers.
+// Call this on a 20-25s ticker (well under the 30s liveHLSIdleTimeout).
+// Click-to-first-frame for the first viewer is then ~0s instead of the
+// 6-10s the cold-start path requires (DESCRIBE RTSP, build tracks,
+// wait for first keyframe + segment fill).
+//
+// Errors on individual cameras are logged but never returned — one
+// offline camera shouldn't keep the others cold.
+func (m *LiveHLSManager) WarmCameras(cameraIDs []uuid.UUID) {
+	for _, id := range cameraIDs {
+		mux, err := m.GetOrStart(id)
+		if err != nil {
+			log.Printf("[LIVEHLS] warm: GetOrStart camera %s failed: %v", id, err)
+			continue
+		}
+		// RecordViewer here keeps the muxer's idle timer reset; without
+		// it the muxer would tear itself down 30s after the last real
+		// viewer disconnects even though we want it always-warm.
+		mux.RecordViewer()
+	}
 }
 
 // StopAll tears down every active muxer.  Call on graceful shutdown.

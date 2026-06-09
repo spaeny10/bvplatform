@@ -214,6 +214,35 @@ func main() {
 	// no viewers. Pulls RTSP from mediamtx relay at MediaMTXRTSPAddr.
 	liveHLSMgr := streaming.NewLiveHLSManager(cfg.MediaMTXRTSPAddr)
 
+	// Pre-warm pool: hold an always-on muxer for every active camera so
+	// the first viewer's click-to-first-frame is near-zero instead of
+	// ~6-10s (RTSP DESCRIBE + first-keyframe wait + 6s segment fill).
+	// One goroutine, 20s tick, re-reads camera list each round so newly
+	// added cameras get warmed without an api restart. 20s sits well
+	// under liveHLSIdleTimeout (30s) so muxers never time out between
+	// ticks. Errors on individual cameras are logged inside WarmCameras
+	// and never propagate — one offline camera doesn't cool the others.
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		warmOnce := func() {
+			cams, err := db.ListCameras(context.Background())
+			if err != nil {
+				log.Printf("[LIVEHLS] warm: ListCameras failed: %v", err)
+				return
+			}
+			ids := make([]uuid.UUID, 0, len(cams))
+			for _, c := range cams {
+				ids = append(ids, c.ID)
+			}
+			liveHLSMgr.WarmCameras(ids)
+		}
+		warmOnce() // immediate first warm at boot
+		for range ticker.C {
+			warmOnce()
+		}
+	}()
+
 	// Batch-job workers. In single-binary mode (RUN_WORKERS=true, the
 	// default) we instantiate and start them in-process below. In the
 	// container split (RUN_WORKERS=false) the sibling `worker` service
