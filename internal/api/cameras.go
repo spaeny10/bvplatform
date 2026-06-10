@@ -565,6 +565,12 @@ func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) ht
 			return
 		}
 
+		// Capture the pre-update URIs so we can tell whether the source
+		// actually CHANGED (vs. a PATCH that merely echoes the current value).
+		// A pointer being non-nil only means the field was present in the
+		// request body, not that it differs.
+		prev, _ := db.GetCamera(r.Context(), id)
+
 		if err := db.UpdateCamera(r.Context(), id, update); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -572,20 +578,29 @@ func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) ht
 
 		camera, _ := db.GetCamera(r.Context(), id)
 
-		// BUG-4: if the RTSP source URIs changed, the running mediamtx is
-		// still pointing at the old source — re-register so live view picks
-		// up the new URI without a container restart. Same fire-and-forget +
-		// synchronous-confirm pattern as HandleCreateCamera.
-		if mtxServer != nil && camera != nil && (update.RtspURI != nil || update.SubStreamURI != nil) {
-			mtxServer.AddStream(camera.ID, camera.Name, camera.RTSPUri, camera.SubStreamUri)
+		// BUG-4: if the RTSP source URIs actually CHANGED, the running mediamtx
+		// is still pointing at the old source under the SAME path name (the
+		// path name is the camera UUID, which doesn't change), so a plain
+		// re-register short-circuits on present-by-name and never pushes the
+		// new source. ReplaceStreamSource deletes the stale path and re-adds it
+		// with the new source so live view picks up the new URI without a
+		// container restart. Recording reads the DB directly, so it's already
+		// correct regardless of this.
+		uriChanged := prev != nil && camera != nil &&
+			(camera.RTSPUri != prev.RTSPUri || camera.SubStreamUri != prev.SubStreamUri)
+		if mtxServer != nil && camera != nil && uriChanged {
+			// Update the in-memory stream map to the new source first — use the
+			// map-only setter (not AddStream) so we don't race AddStream's
+			// detached control-API add against the delete+re-add below.
+			mtxServer.SetStreamSource(camera.ID, camera.Name, camera.RTSPUri, camera.SubStreamUri)
 			if err := mtxServer.PersistConfig(); err != nil {
 				log.Printf("[API] Failed to persist MediaMTX config for %s: %v", camera.Name, err)
 			}
-			ensureCtx, ensureCancel := context.WithTimeout(r.Context(), 6*time.Second)
-			if err := mtxServer.EnsureStreamRegistered(ensureCtx, camera.ID, 5*time.Second); err != nil {
-				log.Printf("[API] MediaMTX path not confirmed after update for %s — live view may be delayed until next mediamtx restart: %v", camera.Name, err)
+			replaceCtx, replaceCancel := context.WithTimeout(r.Context(), 6*time.Second)
+			if err := mtxServer.ReplaceStreamSource(replaceCtx, camera.ID, 5*time.Second); err != nil {
+				log.Printf("[API] MediaMTX path NOT replaced after URI change for %s — live view will keep using the OLD source until the mediamtx container is reloaded (recording is unaffected; it reads the DB directly): %v", camera.Name, err)
 			}
-			ensureCancel()
+			replaceCancel()
 		}
 
 		writeJSON(w, camera)

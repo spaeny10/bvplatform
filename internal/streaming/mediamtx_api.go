@@ -263,6 +263,114 @@ func (m *MediaMTXServer) EnsureStreamRegistered(ctx context.Context, cameraID uu
 	}
 }
 
+// ReplaceStreamSource forces the RUNNING mediamtx to pick up a NEW source for
+// an existing camera whose path NAME has not changed (the path name is the
+// camera UUID, so an rtsp_uri / sub_stream_uri change keeps the same name).
+//
+// Why EnsureStreamRegistered can't do this: it polls /v3/paths/list FIRST and
+// returns immediately when the path is present BY NAME — but after a URI edit
+// the stale path is still present under that UUID, so it sees present==true
+// and never pushes the new source. /v3/paths/list reports name only; the
+// source is never compared. So the only thing that would otherwise push the
+// new source is AddStream's fire-and-forget PATCH against /v3/config/* — the
+// same endpoint family observed to hang 10s+ on the deployed mediamtx.
+//
+// Approach: DELETE both paths (clears the stale source), re-ADD them with the
+// current source from the stream map, then poll /v3/paths/list until the main
+// path re-appears. Delete+add is preferred over PATCH because the runtime
+// /v3/config/paths/patch endpoint hangs on the deployed instance.
+//
+// VERIFIED DEPLOYMENT REALITY (mediamtx v1.19.0 on the bob test stack,
+// 2026-06): the ENTIRE /v3/config/* family — add, delete, patch, and even the
+// read-only /v3/config/{global,paths}/get — hangs (HTTP 000 after a 12s curl
+// timeout), while /v3/paths/list answers reliably. mediamtx also does NOT
+// hot-reload its YAML on file change. So on this instance there is no reliable
+// way to push a runtime source change at all: this function's delete will time
+// out and it returns a clear "live view needs a mediamtx reload for the new
+// URI" error, which the caller logs. The existing paths in /v3/paths/list got
+// there from the bootstrap YAML at container start, not from the runtime API.
+// We still ATTEMPT delete+add (a) so the fix works automatically if a future
+// mediamtx restores the /v3/config/* endpoints, and (b) so EnsureStreamRegistered's
+// present-by-name short-circuit can never silently keep a stale source — this
+// path is source-aware (force delete+add) by construction.
+//
+// Like EnsureStreamRegistered: embedded mode is a no-op (config regenerates
+// from the in-memory map on restart), and it only blocks on the MAIN path —
+// the _sub path is sourceOnDemand and won't appear in /v3/paths/list until a
+// viewer reads it, so we re-issue its add but don't wait on it.
+//
+// Non-fatal by design: returns the error for logging, but the camera row is
+// already persisted (recording reads the DB directly, so recording is correct
+// regardless). On failure the live mediamtx path needs a container reload to
+// pick up the new URI — the caller logs that clearly.
+func (m *MediaMTXServer) ReplaceStreamSource(ctx context.Context, cameraID uuid.UUID, timeout time.Duration) error {
+	if m.cfg.MediaMTXEmbedded {
+		return nil
+	}
+
+	m.mu.Lock()
+	info, ok := m.streams[cameraID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("camera %s not registered in mediamtx stream map", cameraID)
+	}
+
+	mainName := cameraID.String()
+	mainPath := mtxAPIPath{Source: info.rtspURI, SourceOnDemand: false, RTSPTransport: "tcp"}
+	subName := cameraID.String() + "_sub"
+	subPath := mtxAPIPath{Source: info.subStreamURI, SourceOnDemand: true, RTSPTransport: "tcp"}
+
+	// Delete the stale path(s) first so the re-add installs the new source.
+	// apiRemovePath treats 404 as success, so a not-yet-present path is fine.
+	if derr := m.apiRemovePath(ctx, mainName); derr != nil {
+		// If delete itself is unreliable on this mediamtx, surface it — the
+		// caller logs that a restart may be needed. We still attempt the add
+		// below in case the path was already gone.
+		return fmt.Errorf("mediamtx delete of stale path %s failed (live view needs a mediamtx reload for the new URI): %w", mainName, derr)
+	}
+	if info.subStreamURI != "" {
+		if derr := m.apiRemovePath(ctx, subName); derr != nil {
+			return fmt.Errorf("mediamtx delete of stale sub path %s failed (live view needs a mediamtx reload for the new URI): %w", subName, derr)
+		}
+	}
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		// Always re-issue the add — we just deleted the path, so it is not
+		// present and we must (re)install it with the new source. This is the
+		// key difference from EnsureStreamRegistered, which short-circuits on a
+		// present-by-name path and would never push a changed source.
+		if aerr := m.apiAddPath(ctx, mainName, mainPath); aerr != nil {
+			lastErr = aerr
+		}
+		if info.subStreamURI != "" {
+			if aerr := m.apiAddPath(ctx, subName, subPath); aerr != nil {
+				lastErr = aerr
+			}
+		}
+
+		present, err := m.apiPathPresent(ctx, mainName)
+		if err != nil {
+			lastErr = err
+		} else if present {
+			return nil
+		}
+
+		if !time.Now().Before(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("mediamtx path %s not re-confirmed within %s (live view needs a mediamtx reload for the new URI): %w", mainName, timeout, lastErr)
+			}
+			return fmt.Errorf("mediamtx path %s not re-confirmed within %s (live view needs a mediamtx reload for the new URI)", mainName, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+}
+
 // ── low-level helpers ──────────────────────────────────────────
 
 type apiError struct {
