@@ -35,3 +35,11 @@ test:
 deps:
 	go mod tidy
 	go mod download
+
+# Regenerate generated docs (route/API coverage matrix + registry rollup)
+docs-gen:
+	go run ./cmd/docgen -write
+
+# Verify generated docs are current + lint the feature registry
+docs-check:
+	go run ./cmd/docgen -check

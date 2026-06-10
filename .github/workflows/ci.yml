@@ -80,6 +80,13 @@ jobs:
         env:
           GORACE: halt_on_error=0
 
+      - name: Docs drift check (warn-only)
+        # Cross-references router.go routes against frontend API calls and
+        # lints docs/feature-registry/. Emits ::warning annotations; never
+        # fails the build (promote with -strict once the registry settles).
+        # Triage: run `go run ./cmd/docgen -write` and commit the result.
+        run: go run ./cmd/docgen -check
+
   # ── Frontend (Next.js) ──────────────────────────────────────────────
   frontend:
     name: Frontend (Next.js)

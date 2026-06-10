@@ -8,7 +8,7 @@ repo requires all four jobs to pass before merge.
 
 | Job | What | Local reproduction |
 |---|---|---|
-| **Backend (Go)** | `go vet`, `golangci-lint`, `go build` (all 4 binaries), `go test ./... -race` | `make ci-backend` (TODO) or run the four commands by hand |
+| **Backend (Go)** | `go vet`, `golangci-lint`, `go build` (all 4 binaries), `go test ./... -race`, docs drift check (warn-only) | `make ci-backend` (TODO) or run the four commands by hand; `make docs-check` for the drift check |
 | **Frontend (Next.js)** | `npm ci`, `tsc --noEmit`, `npm run lint`, `npm run build` | `cd frontend && npm ci && npx tsc --noEmit -p . && npm run lint && npm run build` |
 | **Migrations** | Spin up Postgres+TimescaleDB, `goose up` → `goose reset` → `goose up` (idempotency round-trip) | See "Migration tests locally" below |
 | **Secret scan (gitleaks)** | gitleaks v2 with the `.gitleaks.toml` allowlist | `gitleaks detect --source . --config .gitleaks.toml` |
@@ -93,6 +93,27 @@ AFTER the dedicated `tsc --noEmit` and `npm run lint` jobs — if both
 of those passed in CI and the build still failed, the issue is
 build-time only (server components / route conventions / static
 generation). Run `npm run build` locally to repro.
+
+### Docs drift warning
+
+`cmd/docgen` cross-references the route table extracted from
+`internal/api/router.go` against every fetch-family call site under
+`frontend/src/`, and lints the hand-authored blocks in
+`docs/feature-registry/`. The CI step is **warn-only** (`::warning`
+annotations on the run; exit 0) so it never blocks a merge.
+
+Triage:
+- "api-coverage.md is stale" / "rollup table is stale" → run
+  `make docs-gen` (or `go run ./cmd/docgen -write`) and commit.
+- "frontend calls X but no backend route matches" → the call 404s at
+  runtime. Fix the path/method, register the missing route, or delete
+  the dead caller.
+- "registry …" warnings → the feature block violates the schema
+  documented in `docs/feature-registry/README.md` (field order, enums,
+  nonexistent file paths, routes not in router.go).
+
+To make the check blocking later, change the CI step to
+`go run ./cmd/docgen -check -strict`.
 
 ## Adding a new check
 
