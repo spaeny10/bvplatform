@@ -2,27 +2,26 @@
 // MSE-over-WebSocket client for the go2rtc sidecar, proxied through
 // /api/live2/{cameraID}/ws (auth = session cookie, same as the HLS path).
 //
-// Protocol (go2rtc MSE mode):
-//   1. Open the WS. go2rtc sends a JSON control frame announcing the
-//      stream; the first message we care about is {type:"mse", value:"<codecs string>"}.
-//   2. We create a MediaSource + SourceBuffer with that exact codecs
-//      string, reply {type:"mse", value:"<codecs we support>"} is NOT
-//      required — go2rtc starts the fMP4 byte stream once the WS is open
-//      with ?src=. Binary frames after the init segment are appended to
-//      the SourceBuffer in order.
+// Protocol (go2rtc MSE mode) — all bench-confirmed on bob 2026-06-10:
+//   1. Open the WS. On open the client MUST send
+//      {type:"mse", value:"<comma-joined codecs it can decode>"} — go2rtc
+//      stays silent until it receives this. Join with bare commas (go2rtc
+//      splits on "," without trimming) and list hvc1 first for the H.265
+//      fleet.
+//   2. go2rtc replies {type:"mse", value:"video/mp4; codecs=\"...\""} — the
+//      FULL mime, used as-is for addSourceBuffer.
 //   3. The first binary frame is the fMP4 init segment (ftyp+moov);
-//      subsequent frames are media (moof+mdat).
+//      subsequent frames are media (moof+mdat), appended in order.
 //
-// HEVC / hvcC note (mirrors live_proxy.go patchHVCCCompleteness): the HLS
-// path byte-patches the hvcC box's array_completeness bit because Chromium
-// MSE rejects hvc1 sample entries with incomplete NAL arrays. go2rtc's MSE
-// muxer is generally believed to emit complete arrays, but this is NOT yet
-// verified on the Milesight HEVC substream on real hardware.
-// TODO(bench): on bob, if Chromium logs
-// `manifestIncompatibleCodecsError`/`bufferIncompatibleCodecs` on the first
-// init segment, apply the same array_completeness patch to the init
-// segment here (see patchInitSegmentHvcc below — wired but a no-op until a
-// bench run confirms it's needed).
+// HEVC / hvcC: go2rtc's MSE muxer emits the hvcC box with
+// array_completeness=0 — Chromium parses the init (dimensions) but silently
+// won't DECODE (buffer fills, currentTime never advances, readyState stalls
+// at HAVE_METADATA). We byte-patch the init segment's array_completeness bit,
+// same as live_proxy.go patchHVCCCompleteness for the HLS path. See
+// PATCH_INIT_HVCC below (default true — required for the HEVC fleet).
+//
+// Live edge: go2rtc fragments carry non-zero timestamps; we seek currentTime
+// to the live edge once buffered so playback starts (see seekToLiveEdge).
 
 export interface MsePlayerHandle {
   /** Tear down the WS + MediaSource and detach from the <video>. */
@@ -264,15 +263,15 @@ export function startMsePlayer(
 }
 
 // PATCH_INIT_HVCC gates the array_completeness fixup on the fMP4 init
-// segment (see applyHvccPatch). Default false: the patch is only KNOWN to be
-// needed for mediamtx's mediacommon HLS muxer (live_proxy.go), and go2rtc's
-// MSE muxer is believed to emit complete NAL arrays. Kept as a flag, not a
-// dead branch, so both functions stay live for the type checker.
-//
-// TODO(bench): on the bob bench, if Chromium throws
-// manifestIncompatibleCodecsError / bufferIncompatibleCodecs on the HEVC
-// substream's first init segment, flip this to true.
-const PATCH_INIT_HVCC = false;
+// segment (see applyHvccPatch). go2rtc's MSE muxer emits the hvcC box with
+// array_completeness=0, same as mediamtx's mediacommon — so Chromium accepts
+// the init (parses dimensions → readyState 1) but silently REFUSES to decode
+// HEVC frames: the buffer fills (buffered [0,Ns]) yet currentTime never
+// advances and readyState never reaches HAVE_CURRENT_DATA. Bench-confirmed on
+// bob 2026-06-10: with this false the 504 substream stalled at readyState 1
+// with a 9s buffered range; the patch is the same one live_proxy.go applies
+// to the HLS init. Required for the HEVC fleet.
+const PATCH_INIT_HVCC = true;
 
 // patchInitSegmentHvcc applies (or skips) the array_completeness fixup on an
 // fMP4 init segment depending on PATCH_INIT_HVCC. Mirrors the server-side
