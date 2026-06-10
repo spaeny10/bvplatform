@@ -215,9 +215,22 @@ func HandleGetCamera(db *database.DB) http.HandlerFunc {
 	}
 }
 
-// HandleCreateCamera adds a new camera
+// HandleCreateCamera adds a new camera. Admin / supervisor only —
+// camera rows carry device credentials and the onvif_address the
+// web-UI proxy dials (F-14: same gate as reboot/Milesight config; a
+// viewer or customer account must not be able to register devices).
 func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *Hub, subReg *SubscriberRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
+
 		var input database.CameraCreate
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -501,12 +514,36 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 	}
 }
 
-// HandleUpdateCamera updates camera settings
+// HandleUpdateCamera updates camera settings. Admin / supervisor only
+// (F-14): updates can overwrite onvif_address, the RTSP URI, and the
+// stored device credentials — the exact fields the web-UI proxy and
+// recording engine dial. The CanAccessCamera check is defense-in-depth
+// tenant scoping on top of the role gate (UpdateCamera's WHERE clause
+// has no org/site filter of its own).
 func HandleUpdateCamera(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
+
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
 			http.Error(w, "invalid camera ID", http.StatusBadRequest)
+			return
+		}
+		ok, accErr := CanAccessCamera(r.Context(), db, claims, id)
+		if accErr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, "camera not found", http.StatusNotFound)
 			return
 		}
 
@@ -586,8 +623,19 @@ func HandleRebootCamera(db *database.DB) http.HandlerFunc {
 
 // HandleDeleteCamera removes a camera and cleans up all associated resources
 // (event subscriber, PTZ cache, recording, HLS stream, MediaMTX stream).
+// Admin / supervisor only (F-14) — destructive, consistent with create/update.
 func HandleDeleteCamera(db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, subReg *SubscriberRegistry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden: admin only", http.StatusForbidden)
+			return
+		}
+
 		id, err := uuid.Parse(chi.URLParam(r, "id"))
 		if err != nil {
 			http.Error(w, "invalid camera ID", http.StatusBadRequest)

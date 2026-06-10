@@ -74,6 +74,13 @@ func (rl *loginRateLimiter) allow(key string) bool {
 // port-aware limiter. net.SplitHostPort strips the port; if it
 // fails (no port, IPv6 literal without brackets, etc.) we fall back
 // to the raw string.
+//
+// F-15: the key comes from clientIP(), which only honors the
+// RIGHT-most X-Forwarded-For hop — the one appended by our own
+// trusted reverse proxy (NPM). The left-most hop is client-supplied;
+// keying on it let an attacker reset this bucket on every request by
+// rotating the header, defeating the brute-force throttle. See the
+// clientIP doc comment for the full trusted-proxy assumption.
 func RateLimitLogin(perMinute int) func(http.Handler) http.Handler {
 	rl := newLoginRateLimiter(perMinute, time.Minute)
 	return func(next http.Handler) http.Handler {

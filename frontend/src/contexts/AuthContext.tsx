@@ -30,7 +30,7 @@ interface AuthContextValue {
     // in the HttpOnly ironsight_session cookie and is never accessible to JS.
     token: string | null;
     login: (identifier: string, password: string) => Promise<void>;
-    logout: () => void;
+    logout: () => Promise<void>;
     isAuthenticated: boolean;
     hasPermission: (route: string) => boolean;
     canAccess: (roles: UserRole[]) => boolean;
@@ -190,24 +190,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(data.user);
     }, []);
 
-    const logout = useCallback(() => {
+    const logout = useCallback(async () => {
         // Two-stage logout:
         //   1. POST /auth/logout — clears the api's ironsight_session cookie
-        //      (server-side, HandleLogout sets Max-Age=0). CSRF required.
+        //      and revokes the JWT's jti (server-side, HandleLogout). CSRF
+        //      required. AWAITED before navigating: this POST is the ONLY
+        //      path that revokes the token, and navigating away mid-flight
+        //      cancels the fetch (and the server-side insert via context
+        //      cancellation), leaving the session valid — the intermittent
+        //      "sign out doesn't sign out" race (F-18). keepalive:true lets
+        //      the request complete even if the page unloads anyway.
         //   2. Redirect to /oauth2/sign_out — clears the _oauth2_proxy SSO
         //      cookie. Without this step the SSO cookie persists, NPM's
         //      auth_request still passes on the next /login navigation, and
         //      oauth2-proxy silently re-authenticates the user back into the
-        //      app ("sign out doesn't sign out" symptom).
+        //      app.
         //   The rd=/login query tells oauth2-proxy where to land after.
         const csrfToken = typeof window !== 'undefined'
             ? (document.cookie.split('; ').find(r => r.startsWith('ironsight_csrf='))?.split('=')[1] ?? '')
             : '';
-        fetch('/auth/logout', {
-            method: 'POST',
-            credentials: 'include',
-            headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {},
-        }).catch(() => { /* best-effort */ });
+        try {
+            await fetch('/auth/logout', {
+                method: 'POST',
+                credentials: 'include',
+                keepalive: true,
+                headers: csrfToken ? { 'X-CSRF-Token': csrfToken } : {},
+            });
+        } catch { /* best-effort — still clear local state and redirect */ }
         localStorage.removeItem(TOKEN_KEY);
         localStorage.removeItem(USER_KEY);
         setToken(null);
