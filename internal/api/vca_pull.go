@@ -450,21 +450,14 @@ func absDelta(a, b float64) float64 {
 }
 
 // applyCameraVCAToDB replaces the camera's rule set in our DB with what
-// the camera reports. We delete everything first and re-create, which
-// keeps the code simple and matches what "pull" means to operators —
-// a full overwrite, not a merge.
+// the camera reports — a full overwrite, not a merge, which matches what
+// "pull" means to operators. Delete + re-create run in one transaction
+// (ReplaceVCARules) so a mid-way failure can't leave the camera with a
+// wiped or partial rule set.
 func applyCameraVCAToDB(ctx context.Context, db *database.DB, camID uuid.UUID, rules []database.VCARule) error {
-	existing, err := db.ListVCARules(ctx, camID)
-	if err != nil {
-		return err
-	}
-	for _, r := range existing {
-		if err := db.DeleteVCARule(ctx, r.ID); err != nil {
-			return fmt.Errorf("delete existing rule %s: %w", r.ID, err)
-		}
-	}
+	creates := make([]*database.VCARuleCreate, 0, len(rules))
 	for _, r := range rules {
-		create := &database.VCARuleCreate{
+		creates = append(creates, &database.VCARuleCreate{
 			RuleType:     r.RuleType,
 			Name:         r.Name,
 			Enabled:      r.Enabled,
@@ -474,10 +467,7 @@ func applyCameraVCAToDB(ctx context.Context, db *database.DB, camID uuid.UUID, r
 			ThresholdSec: r.ThresholdSec,
 			Schedule:     r.Schedule,
 			Actions:      r.Actions,
-		}
-		if _, err := db.CreateVCARule(ctx, camID, create); err != nil {
-			return fmt.Errorf("create rule %q: %w", r.Name, err)
-		}
+		})
 	}
-	return nil
+	return db.ReplaceVCARules(ctx, camID, creates)
 }

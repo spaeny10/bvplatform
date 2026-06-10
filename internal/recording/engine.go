@@ -669,7 +669,7 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		)
 	}
 
-	r.cmd = exec.CommandContext(ctx, r.ffmpegPath, args...)
+	cmd := exec.CommandContext(ctx, r.ffmpegPath, args...)
 	// P1-C-05: force the ffmpeg subprocess to interpret strftime in UTC
 	// so segment filenames (`seg_%Y%m%d_%H%M%S.mp4`, `ring_*` etc.) are
 	// always in UTC regardless of the host timezone. Without TZ=UTC, a
@@ -678,14 +678,14 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	// boundaries by 5 hours every spring/fall on DST flips. Existing
 	// pre-fix filenames stay accessible because parseSegmentTimestamp's
 	// behaviour for already-recorded files isn't going to be re-run.
-	r.cmd.Env = append(os.Environ(), "TZ=UTC")
-	r.cmd.Stdout = nil
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	cmd.Stdout = nil
 	// Capture FFmpeg stderr to a per-camera file (truncated each run) so we can
 	// surface the full startup output on crash. This replaces the discarded
 	// stderr that was masking EINVAL failures.
 	stderrPath := filepath.Join(r.outputDir, "ffmpeg_stderr.log")
 	if f, ferr := os.Create(stderrPath); ferr == nil {
-		r.cmd.Stderr = f
+		cmd.Stderr = f
 		r.stderrPath = stderrPath
 		// Close the file when FFmpeg exits OR when we leave this function
 		// for any other reason (Wait returns, stall watchdog kills FFmpeg,
@@ -711,9 +711,20 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	}
 
 	log.Printf("[REC] Starting FFmpeg for %s", r.cameraName)
-	if err := r.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ffmpeg: %w", err)
 	}
+	// Publish the cmd under the mutex AFTER Start so cmd.Process is set
+	// and immutable by the time Stop() can see it: Stop() reads r.cmd
+	// under r.mu to kill the active process, and the restart cycle
+	// reassigns it on every run — the previous lock-free write was a
+	// data race. A Stop() that fires in the window before publication
+	// still kills this process via r.cancel() (same ctx given to
+	// CommandContext). The local `cmd` stays the handle for this run
+	// (Wait + watchdog) so the mutex is never held across Wait().
+	r.mu.Lock()
+	r.cmd = cmd
+	r.mu.Unlock()
 
 	// Start segment watcher (scoped to this FFmpeg run via runCtx)
 	go r.watchSegments(runCtx)
@@ -739,13 +750,23 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		var lastTotalSize int64
+		watchStart := time.Now()
+
+		// Watch the directory ffmpeg actually writes to. In event mode
+		// segments land in r.ringDir; r.outputDir only gains per-clip
+		// subdirectories, so scanning it top-level would never see a
+		// fresh .mp4 and the watchdog would be permanently blind.
+		watchDir := r.outputDir
+		if r.recordingMode == "event" {
+			watchDir = r.ringDir
+		}
 
 		for {
 			select {
 			case <-runCtx.Done():
 				return
 			case <-ticker.C:
-				entries, err := os.ReadDir(r.outputDir)
+				entries, err := os.ReadDir(watchDir)
 				if err != nil {
 					continue
 				}
@@ -766,18 +787,29 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 					lastTotalSize = totalSize
 					continue // progress detected, reset stall window
 				}
-				if !latestMod.IsZero() && time.Since(latestMod) > stallTimeout {
-					log.Printf("[REC] Stream stall detected for %s (no segment growth in %v) — killing FFmpeg", r.cameraName, stallTimeout)
-					if r.cmd != nil && r.cmd.Process != nil {
-						r.cmd.Process.Kill()
+				if latestMod.IsZero() {
+					// No segment has ever appeared in this run (brand-new
+					// camera, or event-mode ring already swept clean after
+					// a stall). A camera that accepts the RTSP connection
+					// but never delivers frames blocks cmd.Wait() just as
+					// hard as one that stops mid-run — give it one full
+					// stall window from process start, then kill.
+					if time.Since(watchStart) <= stallTimeout {
+						continue
 					}
-					return
+				} else if time.Since(latestMod) <= stallTimeout {
+					continue
 				}
+				log.Printf("[REC] Stream stall detected for %s (no segment growth in %v) — killing FFmpeg", r.cameraName, stallTimeout)
+				if cmd.Process != nil {
+					cmd.Process.Kill()
+				}
+				return
 			}
 		}
 	}()
 
-	return r.cmd.Wait()
+	return cmd.Wait()
 }
 
 // watchSegments monitors the output directory for new segments and registers them in the DB
@@ -877,13 +909,12 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				// scans every existing file in the camera dir — for a
 				// 9.5 K-file backlog at ~100 ms/probe that's a 16-minute
 				// stall before any fresh segment gets indexed, which we
-				// can't accept. Old segments inherit a NULL `video_codec`
-				// and get lazy-probed on first playback request via the
-				// /media/v1 handler (which writes back via
-				// db.UpdateSegmentVideoCodec).
+				// can't accept. Old segments inherit a NULL `video_codec`,
+				// which playback treats as "unknown, playable": the
+				// /media/v1 serve handler probes the file per-request
+				// (maybeTranscodeForBrowser) to pick pass-through vs
+				// transcode. Nothing writes the codec back to the DB.
 				//
-				// Probe failure on a fresh segment is non-fatal: leave
-				// VideoCodec empty and the serve handler will lazy-probe.
 				// Probe codec AND actual file duration. Hardcoding
 				// duration = r.segmentDur is wrong when ffmpeg restarted
 				// mid-segment: the file ends up shorter (5-46s observed

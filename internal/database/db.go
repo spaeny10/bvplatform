@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"ironsight/internal/crypto"
@@ -530,7 +531,16 @@ func (db *DB) ListVCARules(ctx context.Context, cameraID uuid.UUID) ([]VCARule, 
 	return rules, nil
 }
 
-func (db *DB) CreateVCARule(ctx context.Context, cameraID uuid.UUID, c *VCARuleCreate) (*VCARule, error) {
+// pgxExecutor is satisfied by both *pgxpool.Pool and pgx.Tx, so the VCA
+// insert below can run standalone or inside ReplaceVCARules' transaction.
+type pgxExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// vcaRuleFromCreate builds the row that CreateVCARule/ReplaceVCARules
+// insert, applying the shared defaults (schedule "always", record+notify
+// actions).
+func vcaRuleFromCreate(cameraID uuid.UUID, c *VCARuleCreate) *VCARule {
 	r := &VCARule{
 		ID:           uuid.New(),
 		CameraID:     cameraID,
@@ -550,15 +560,49 @@ func (db *DB) CreateVCARule(ctx context.Context, cameraID uuid.UUID, c *VCARuleC
 	if r.Actions == nil {
 		r.Actions = []string{"record", "notify"}
 	}
+	return r
+}
+
+func insertVCARule(ctx context.Context, exec pgxExecutor, r *VCARule) error {
 	regionJSON, _ := json.Marshal(r.Region)
 	actionsJSON, _ := json.Marshal(r.Actions)
-	_, err := db.Pool.Exec(ctx,
+	_, err := exec.Exec(ctx,
 		`INSERT INTO vca_rules (id, camera_id, rule_type, name, enabled, sensitivity,
 		 region, direction, threshold_sec, schedule, actions)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		r.ID, r.CameraID, r.RuleType, r.Name, r.Enabled, r.Sensitivity,
 		regionJSON, r.Direction, r.ThresholdSec, r.Schedule, actionsJSON)
-	return r, err
+	return err
+}
+
+func (db *DB) CreateVCARule(ctx context.Context, cameraID uuid.UUID, c *VCARuleCreate) (*VCARule, error) {
+	r := vcaRuleFromCreate(cameraID, c)
+	return r, insertVCARule(ctx, db.Pool, r)
+}
+
+// ReplaceVCARules atomically replaces a camera's active VCA rule set with
+// the given rules. The hard delete of the existing rows and the inserts
+// run in one transaction so a mid-way failure rolls everything back —
+// without this, a create error after the deletes left the camera with
+// zero or partial rules and the AI pipeline silently lost its zones.
+// Soft-deleted rows are untouched (same scope DeleteVCARule operated on).
+func (db *DB) ReplaceVCARules(ctx context.Context, cameraID uuid.UUID, creates []*VCARuleCreate) error {
+	tx, err := db.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("ReplaceVCARules begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM vca_rules WHERE camera_id = $1 AND deleted_at IS NULL`, cameraID); err != nil {
+		return fmt.Errorf("ReplaceVCARules delete existing: %w", err)
+	}
+	for _, c := range creates {
+		if err := insertVCARule(ctx, tx, vcaRuleFromCreate(cameraID, c)); err != nil {
+			return fmt.Errorf("ReplaceVCARules create rule %q: %w", c.Name, err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (db *DB) UpdateVCARule(ctx context.Context, id uuid.UUID, c *VCARuleCreate) error {
@@ -602,7 +646,8 @@ func (db *DB) UpdateVCARuleSync(ctx context.Context, id uuid.UUID, synced bool, 
 
 // InsertSegment records a new video segment. video_codec is written when
 // non-empty; an empty VideoCodec field results in a NULL column value, which
-// the serve handler later replaces via lazy probe-on-first-request.
+// playback treats as "unknown, playable" — the /media/v1 serve handler
+// probes the file per-request to decide pass-through vs transcode.
 func (db *DB) InsertSegment(ctx context.Context, s *Segment) error {
 	var codec interface{}
 	if s.VideoCodec != "" {
@@ -616,10 +661,9 @@ func (db *DB) InsertSegment(ctx context.Context, s *Segment) error {
 }
 
 // UpdateSegmentVideoCodec backfills the video_codec column for an existing
-// segment row. Used by the serve handler when it lazy-probes a segment that
-// was recorded before migration 0002 landed. No-op (no error) if the row
-// doesn't exist — that race is harmless; the next playback request will
-// re-probe.
+// segment row. Currently unwired — kept for a future one-time ffprobe
+// backfill of NULL-codec rows (the serve path doesn't need it: it probes
+// the file per-request). No-op (no error) if the row doesn't exist.
 func (db *DB) UpdateSegmentVideoCodec(ctx context.Context, segmentID int64, codec string) error {
 	_, err := db.Pool.Exec(ctx, `
 		UPDATE segments SET video_codec = $1 WHERE id = $2 AND video_codec IS NULL`,
