@@ -38,6 +38,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -66,25 +67,32 @@ var live2Dialer = websocket.DefaultDialer
 var go2rtcHTTPClient = &http.Client{Timeout: 5 * time.Second}
 
 // ensureGo2RTCStream idempotently registers the camera's sub-stream with the
-// running go2rtc via PUT /api/streams. The source is mediamtx's RTSP relay —
-// the same {cameraID}_sub path the recorder/HLS already use — so no extra
-// cellular pull is created. Returns an error only on a transport failure or a
-// non-2xx response; a repeat registration for an existing stream is fine.
+// running go2rtc via PUT /api/streams, then CONFIRMS via GET. The source is
+// mediamtx's RTSP relay — the same {cameraID}_sub path the recorder/HLS
+// already use — so no extra cellular pull is created.
+//
+// Why we don't trust the PUT status code: go2rtc 1.9.14's PUT /api/streams
+// handler unconditionally parses the request body as YAML and returns
+// 400 ("yaml: line 1: did not find expected key") on an empty body — even
+// though the query-param registration (name + src) succeeds and the stream
+// appears in GET /api/streams immediately. Bench-confirmed on bob 2026-06-10:
+// every PUT 400s yet every stream registers. So we ignore the PUT status
+// (beyond transport errors) and verify the stream is actually present with a
+// follow-up GET; only an absent stream or a transport failure is an error.
+// A repeat registration for an existing stream is a no-op.
 func ensureGo2RTCStream(ctx context.Context, cfg *config.Config, cameraIDStr string) error {
 	name := cameraIDStr + "_sub"
 	rtspSrc := fmt.Sprintf("rtsp://%s/%s", cfg.MediaMTXRTSPAddr, name)
 
-	u := url.URL{
-		Scheme: "http",
-		Host:   cfg.Go2RTCAddr,
-		Path:   "/api/streams",
-	}
+	base := url.URL{Scheme: "http", Host: cfg.Go2RTCAddr, Path: "/api/streams"}
+
+	putURL := base
 	q := url.Values{}
 	q.Set("name", name)
 	q.Set("src", rtspSrc)
-	u.RawQuery = q.Encode()
+	putURL.RawQuery = q.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, putURL.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -92,10 +100,32 @@ func ensureGo2RTCStream(ctx context.Context, cfg *config.Config, cameraIDStr str
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// Status is deliberately not checked — see the doc comment above.
 	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("go2rtc PUT /api/streams returned %d", resp.StatusCode)
+	resp.Body.Close()
+
+	// Confirm the stream is registered. go2rtc returns the full stream map
+	// keyed by name; the PUT is synchronous (in-memory), so the key is
+	// present immediately on success.
+	getReq, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
+	if err != nil {
+		return err
+	}
+	getResp, err := go2rtcHTTPClient.Do(getReq)
+	if err != nil {
+		return err
+	}
+	defer getResp.Body.Close()
+	body, err := io.ReadAll(getResp.Body)
+	if err != nil {
+		return err
+	}
+	var streams map[string]json.RawMessage
+	if err := json.Unmarshal(body, &streams); err != nil {
+		return fmt.Errorf("go2rtc GET /api/streams: %w", err)
+	}
+	if _, ok := streams[name]; !ok {
+		return fmt.Errorf("go2rtc stream %q not registered after PUT", name)
 	}
 	return nil
 }
