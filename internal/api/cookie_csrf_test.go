@@ -313,11 +313,11 @@ func TestCSRF_WebUIExemptionAnchored(t *testing.T) {
 	handler := CSRFMiddleware(sentinel)
 
 	for _, path := range []string{
-		"/api/sites/web-ui/thing",                    // substring smuggle, wrong subtree
-		"/api/cameras/not-a-uuid/web-ui",             // non-UUID id segment
-		"/api/cameras/web-ui/extra",                  // missing id segment entirely
-		"/api/users/x/web-ui/",                       // substring under another resource
-		"/web-ui/outside-api",                        // outside /api
+		"/api/sites/web-ui/thing",                                      // substring smuggle, wrong subtree
+		"/api/cameras/not-a-uuid/web-ui",                               // non-UUID id segment
+		"/api/cameras/web-ui/extra",                                    // missing id segment entirely
+		"/api/users/x/web-ui/",                                         // substring under another resource
+		"/web-ui/outside-api",                                          // outside /api
 		"/api/cameras/11111111-2222-3333-4444-555555555555/web-uixtra", // suffix mutation
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)

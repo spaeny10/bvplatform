@@ -79,6 +79,7 @@ func auditPlayback(
 //   - take the right-most XFF hop when the header is present;
 //   - else X-Real-IP (set only by NPM; absent on direct connections);
 //   - else the raw RemoteAddr (direct connection, dev/local).
+//
 // A client connecting directly to the API port can still forge these
 // headers about itself, but it can no longer impersonate *other* clients
 // going through the proxy, and rotating the spoofable left-most hop no
