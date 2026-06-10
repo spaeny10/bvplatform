@@ -351,22 +351,24 @@ func (r *Recorder) recordLoop(ctx context.Context) {
 			appmetrics.SetCustomAlert("ffmpeg_subprocess_crash", "warning",
 				"FFmpeg exited for camera "+r.cameraName+": "+err.Error())
 			// Detect fast crashes (< 5s) — likely bandwidth/connection errors.
-			// After 3 fast crashes, drop sub stream to reduce RTSP connections.
+			// We keep counting them (and the crash alert above fires), but we
+			// no longer drop the sub stream: the sub is now the RECORDED
+			// stream and the sole ffmpeg input. Dropping it would fall back to
+			// the heavy full-res main over cellular (worse), so the sub is
+			// never dropped.
 			if time.Since(startTime) < 5*time.Second {
 				fastCrashCount++
-				if fastCrashCount >= 3 && r.subStreamURI != "" {
-					log.Printf("[REC] %s: %d fast crashes — dropping sub stream (bandwidth limit?)", r.cameraName, fastCrashCount)
-					r.subStreamURI = ""
-					fastCrashCount = 0
-				}
 			} else {
 				fastCrashCount = 0
 			}
-			// Slow-crash mitigation: if we've crashed ≥3 times in the last 15 minutes
-			// (regardless of how long each run lasted), drop the sub stream. Cellular
-			// cameras stay up for several minutes and then die from CSeq desync —
-			// each RTSP connection we hold open is another chance for the session to
-			// corrupt. One stream is more stable than two.
+			// Slow-crash bookkeeping: track recent crash times in a 15-minute
+			// sliding window so the crash rate is observable. We used to drop
+			// the sub stream after ≥3 crashes here, but the sub is now the
+			// RECORDED stream and ffmpeg's only input — dropping it would
+			// force a fallback to the heavy full-res main over cellular
+			// (worse) or break input selection, so the sub is never dropped.
+			// The crash alert above still fires; we just keep restarting on
+			// the sub.
 			now := time.Now()
 			recentCrashes = append(recentCrashes, now)
 			windowStart := now.Add(-15 * time.Minute)
@@ -377,11 +379,6 @@ func (r *Recorder) recordLoop(ctx context.Context) {
 				}
 			}
 			recentCrashes = pruned
-			if len(recentCrashes) >= 3 && r.subStreamURI != "" {
-				log.Printf("[REC] %s: %d crashes in last 15min — dropping sub stream (cellular/flaky link?)", r.cameraName, len(recentCrashes))
-				r.subStreamURI = ""
-				recentCrashes = nil
-			}
 			stderrTail := ""
 			if r.stderrPath != "" {
 				if data, rerr := os.ReadFile(r.stderrPath); rerr == nil {
@@ -532,7 +529,19 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	// but actually doesn't: mediamtx + 1 ffmpeg-recorder = 2 connections,
 	// still well under what the DVR can serve. Live HLS continues to use
 	// mediamtx via /api/live/ so the live path is unaffected.
+	//
+	// Record the SUB stream, not the full-res main. The main is H.265
+	// full-res and is too heavy to pull+record continuously over the
+	// cellular uplink: its ffmpeg frame counter freezes mid-session while
+	// the sub keeps flowing, the stall watchdog kills ffmpeg, and the
+	// in-progress segment is discarded ("moov atom not found") — ~50%
+	// recording gaps. The sub is H.264/low-bitrate and stays gapless on
+	// cellular, so we make it the recorder's SOLE input. Live view is
+	// unaffected: mediamtx serves it independently from the camera sub.
 	inputURI := r.rtspURI
+	if r.subStreamURI != "" {
+		inputURI = r.subStreamURI
+	}
 
 	args := []string{
 		"-fflags", "+nobuffer+genpts",
@@ -548,14 +557,6 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 		"-i", inputURI,
 	}
 
-	if r.subStreamURI != "" {
-		args = append(args,
-			"-rtsp_transport", "tcp",
-			"-allowed_media_types", "video+audio",
-			"-i", r.subStreamURI,
-		)
-	}
-
 	// LOCAL-09: probe the source codec once so we can conditionally rewrite
 	// the codec_tag from `hev1` (what Milesight emits) to `hvc1` (what Safari
 	// recognises) for HEVC sources. MUST NOT pass `-tag:v hvc1` on H.264
@@ -564,47 +565,30 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 	// (fail-safe: keep whatever ffmpeg picks by default, which is correct
 	// for the source codec).
 	hvc1Tag := []string{}
-	switch probeStreamVideoCodec(r.ffmpegPath, r.rtspURI) {
+	switch probeStreamVideoCodec(r.ffmpegPath, inputURI) {
 	case "hevc", "h265":
 		hvc1Tag = []string{"-tag:v", "hvc1"}
 	}
 
-	// 1) HLS live stream output
-	if r.subStreamURI != "" {
-		// Dual stream HLS
-		args = append(args,
-			"-map", "0:v:0", // Main stream video
-			"-map", "1:v:0", // Sub stream video
-			"-c:v", "copy",
-		)
-		args = append(args, hvc1Tag...)
-		args = append(args,
-			"-f", "hls",
-			"-hls_time", "1",
-			"-hls_list_size", "5",
-			"-hls_flags", "delete_segments+append_list+independent_segments",
-			"-var_stream_map", "v:0,name:main v:1,name:sub",
-			"-hls_segment_filename", filepath.Join(r.hlsDir, "%v_seg_%03d.ts"),
-			"-y",
-			filepath.Join(r.hlsDir, "%v_live.m3u8"),
-		)
-	} else {
-		// Single stream HLS
-		args = append(args,
-			"-map", "0:v:0",
-			"-c:v", "copy",
-		)
-		args = append(args, hvc1Tag...)
-		args = append(args,
-			"-f", "hls",
-			"-hls_time", "1",
-			"-hls_list_size", "5",
-			"-hls_flags", "delete_segments+append_list",
-			"-hls_segment_filename", filepath.Join(r.hlsDir, "seg_%03d.ts"),
-			"-y",
-			filepath.Join(r.hlsDir, "live.m3u8"),
-		)
-	}
+	// 1) HLS live stream output. Always single-variant from input 0, which
+	// is now the sub stream (see inputURI selection above). The old
+	// dual-variant var_stream_map (HD main + SD sub) is gone: the live HD/SD
+	// toggle goes away, which is acceptable because live view is served by
+	// mediamtx via /api/live/, and main-over-cellular HD stalls anyway.
+	args = append(args,
+		"-map", "0:v:0",
+		"-c:v", "copy",
+	)
+	args = append(args, hvc1Tag...)
+	args = append(args,
+		"-f", "hls",
+		"-hls_time", "1",
+		"-hls_list_size", "5",
+		"-hls_flags", "delete_segments+append_list",
+		"-hls_segment_filename", filepath.Join(r.hlsDir, "seg_%03d.ts"),
+		"-y",
+		filepath.Join(r.hlsDir, "live.m3u8"),
+	)
 
 	// Create a child context that lives only for this FFmpeg execution.
 	// This ensures watchSegments and ringBufferCleanup goroutines are
@@ -741,12 +725,14 @@ func (r *Recorder) runFFmpeg(ctx context.Context) error {
 				log.Printf("[REC] PANIC in stall watchdog for %s: %v", r.cameraName, rec)
 			}
 		}()
-		// Stall watchdog headroom. Previously segmentDur*2+60 (180 s for
-		// 60 s segments) was tight enough that a transient cellular pause
-		// or sparse-keyframe stream got killed mid-recording. Bumping to
-		// segmentDur*5+60 (360 s) gives legitimate slow keyframes room to
-		// breathe before the watchdog steps in.
-		stallTimeout := time.Duration(r.segmentDur*5+60) * time.Second
+		// Stall watchdog headroom. Now that the recorder pulls the SUB
+		// stream (H.264/low-bitrate, reliable over cellular), the long
+		// headroom we previously needed for slow HEVC keyframes on the
+		// full-res main is no longer warranted. segmentDur*2 (120 s for
+		// 60 s segments) means "two missed segments = stalled": 3× tighter
+		// than the old 360 s, so we recover from a real stall fast, while
+		// still tolerating one slow segment without a false kill.
+		stallTimeout := time.Duration(r.segmentDur*2) * time.Second
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		var lastTotalSize int64
