@@ -192,7 +192,10 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
             background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.25)',
             color: 'rgba(255,255,255,0.8)',
           }}>
-            Configure camera-side VCA (intrusion, line-cross, etc.) directly in the camera's own UI below.
+            This embeds the camera's <strong>full web UI</strong> below (served through the Ironsight proxy, so it works
+            from anywhere you can reach Ironsight). It opens on the camera's own live preview — that's the camera's
+            home page, not an Ironsight live stream. To configure camera-side VCA, navigate to
+            <strong> Settings → Event / VCA</strong> (intrusion, line-cross, etc.) inside the embedded UI.
             The camera runs detection in its DSP and emits ONVIF events that Ironsight ingests automatically — no separate sync step.
             {cameraDirectURL && (
               <>
@@ -200,7 +203,7 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
                 <a href={cameraDirectURL} target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', fontWeight: 600 }}>
                   Open directly ↗
                 </a>
-                {' '}(bypasses the Ironsight proxy — works only on the camera LAN).
+                {' '}(opens the camera's IP directly, bypassing the proxy — only reachable from a network with a route to the camera).
               </>
             )}
           </div>
@@ -211,9 +214,9 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
               width: '100%', height: 600, border: '1px solid rgba(255,255,255,0.1)',
               borderRadius: 4, background: '#000',
             }}
-            // Camera UIs are trusted (already authenticated by the
-            // operator over LAN); sandbox lets the camera's JS run but
-            // restricts cross-origin escape.
+            // Camera UIs are trusted (the operator authenticates to the
+            // camera through the same-origin proxy below); sandbox lets the
+            // camera's JS run but restricts cross-origin escape.
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />
         </div>
