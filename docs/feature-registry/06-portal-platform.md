@@ -14,13 +14,13 @@ core; the SOC-supervisor share/ticket consoles are parked behind flags.
 | **Tier** | core |
 | **Status** | partial |
 | **Definition** | Admin CRUD for customer organizations and their portal users, from the admin Sites & Customers tab. Companies own sites; company users get portal logins. |
-| **Frontend** | `frontend/src/components/admin/SitesAndCustomersTab.tsx` · `frontend/src/components/admin/CompanyCard.tsx` · `frontend/src/components/admin/CustomerAccessModal.tsx` · `frontend/src/hooks/useCustomers.ts` |
+| **Frontend** | `frontend/src/components/admin/SitesAndCustomersTab.tsx` · `frontend/src/components/admin/CompanyCard.tsx` · `frontend/src/hooks/useCustomers.ts` |
 | **Routes** | `GET /api/v1/companies` · `POST /api/v1/companies` · `PUT /api/v1/companies/{id}` · `DELETE /api/v1/companies/{id}` · `GET /api/v1/companies/{companyId}/users` · `POST /api/v1/companies/{companyId}/users` · `DELETE /api/v1/companies/{companyId}/users/{userId}` |
 | **Tables** | organizations, company_users |
 | **Flag** | — |
 | **Docs** | [data-model.md](../data-model.md) |
 | **Smoke test** | Admin → Sites & Customers → + Add Company → create. Switch to companies view; new card appears with 0 sites. |
-| **Notes** | Cannot be `working`: `getCompany` (ironsight-api.ts:185) calls `GET /api/v1/companies/{id}` which has no backend route (api-coverage Table C, 404) — harmless today only because the `useCompany` hook has no component callers. Inverse gap too: `PUT`/`DELETE` company and `DELETE` company user exist in the backend with no UI (Table B) — there is no edit/delete-company button anywhere. The `POST /api/v1/companies/{companyId}/users` create route exists server-side, but its zero-caller `createCompanyUser` client was deleted in the 2026-06 dead-code cleanup (Table B now); per-site user assignment is broken, see [[site-assignments]]. |
+| **Notes** | Cannot be `working`: `getCompany` (ironsight-api.ts:185) calls `GET /api/v1/companies/{id}` which has no backend route (api-coverage Table C, 404) — harmless today only because the `useCompany` hook has no component callers. Inverse gap too: `PUT`/`DELETE` company and `DELETE` company user exist in the backend with no UI (Table B) — there is no edit/delete-company button anywhere. The `POST /api/v1/companies/{companyId}/users` create route exists server-side, but its zero-caller `createCompanyUser` client was deleted in the 2026-06 dead-code cleanup (Table B now); per-site user assignment now rides `users.assigned_site_ids` instead of `company_users` (F-04), see [[site-assignments]]. |
 
 ## Sites CRUD + site detail {#sites-crud}
 
@@ -79,12 +79,12 @@ core; the SOC-supervisor share/ticket consoles are parked behind flags.
 | **Status** | partial |
 | **Definition** | Attach cameras (and speakers) from the master device registry to a site with a location label; assign company users to sites for portal access scoping. |
 | **Frontend** | `frontend/src/components/admin/AssignCameraModal.tsx` · `frontend/src/hooks/useCameraAssignment.ts` · `frontend/src/components/admin/CustomerAccessModal.tsx` |
-| **Routes** | `POST /api/v1/sites/{siteId}/camera-assignments` · `DELETE /api/v1/sites/{siteId}/camera-assignments/{cameraId}` · `POST /api/v1/sites/{siteId}/speaker-assignments` · `DELETE /api/v1/sites/{siteId}/speaker-assignments/{speakerId}` · `GET /api/v1/cameras` · `GET /api/v1/speakers` |
+| **Routes** | `POST /api/v1/sites/{siteId}/camera-assignments` · `DELETE /api/v1/sites/{siteId}/camera-assignments/{cameraId}` · `POST /api/v1/sites/{siteId}/speaker-assignments` · `DELETE /api/v1/sites/{siteId}/speaker-assignments/{speakerId}` · `GET /api/v1/cameras` · `GET /api/v1/speakers` · `GET /api/users` · `PATCH /api/users/{id}` |
 | **Tables** | cameras, speakers, device_assignments |
 | **Flag** | — |
 | **Docs** | — |
 | **Smoke test** | Admin → site config → Cameras tab → check a camera onto the site. Site detail page camera list shows it; uncheck and it disappears. |
-| **Notes** | Camera/speaker assign/unassign work end-to-end (UPDATE `cameras.site_id` + a `device_assignments` history row). Three broken limbs, all api-coverage Table C 404s: (1) `useCameraAssignments` GETs `/api/v1/sites/{*}/camera-assignments` — no route, but no component calls it; (2) `useCreateCamera`/`useDeleteCamera` hit `POST`/`DELETE /api/v1/cameras` — no routes, hooks unused (camera CRUD really lives at `/api/cameras/`, area 03); (3) user-to-site assignment is broken end-to-end: `CustomerAccessModal` calls `GET`/`POST`/`DELETE /api/v1/sites/{*}/users` which don't exist, so the modal hangs at "Loading users…" forever. The working path for user scoping is `users.assigned_site_ids` via `PATCH /api/users/{id}` (area 05) — fix the modal to use that or add the routes. Speaker tab surfaces ride the parked speakers feature (area 03, flag `speakers`). |
+| **Notes** | Camera/speaker assign/unassign work end-to-end (UPDATE `cameras.site_id` + a `device_assignments` history row). User-to-site assignment was repointed in F-04: `CustomerAccessModal` used to call `GET`/`POST`/`DELETE /api/v1/sites/{*}/users` — routes that never existed (the modal hung at "Loading users…" forever); it now lists platform users via `GET /api/users` and toggles the site in/out of `users.assigned_site_ids` via `PATCH /api/users/{id}` — the field RBAC (`AuthorizedCameraIDs`/`canAccessSiteByID`) actually reads. Two dead limbs remain, both api-coverage Table C 404s: (1) `useCameraAssignments` GETs `/api/v1/sites/{*}/camera-assignments` — no route, but no component calls it; (2) `useCreateCamera`/`useDeleteCamera` hit `POST`/`DELETE /api/v1/cameras` — no routes, hooks unused (camera CRUD really lives at `/api/cameras/`, area 03). Speaker tab surfaces ride the parked speakers feature (area 03, flag `speakers`). |
 
 ## Portal dashboard {#portal-dashboard}
 
@@ -116,7 +116,7 @@ core; the SOC-supervisor share/ticket consoles are parked behind flags.
 | **Flag** | — |
 | **Docs** | [id-conventions.md](../id-conventions.md) |
 | **Smoke test** | /portal → Recent Incidents → click one. Detail page renders the real incident ID, severity, site, and timestamps from the API. |
-| **Notes** | List + detail are real and RBAC-scoped (customers only see own-org sites; 404 not 403 on probes). Cannot be `working`: status updates and comments are dead — `PUT /api/v1/incidents/{*}/status` and `POST /api/v1/incidents/{*}/comments` have no backend routes (Table C 404s), and the `useUpdateIncidentStatus`/`useAddComment` hooks have no component callers anyway. Detail-page buttons (Escalate, Mark Resolved, Export PDF, Escalate to HSE) have no onClick handlers, and the "Video Evidence" viewport is a staged CSS scene, not real footage. SOC-side acknowledge/dispositions live in area 07. |
+| **Notes** | List + detail are real and RBAC-scoped (customers only see own-org sites; 404 not 403 on probes). F-09 honesty pass: the "Video Evidence" viewport now plays the incident's real `clip_url` through the signed media-mint pipeline (with an honest "no clip available" state), and the staged CSS scene, fake "EVIDENCE LOCKED" badge, dead tab bar, dead buttons (Escalate, Mark Resolved, Export PDF, Escalate to HSE), and the unwired comment textarea were removed. The `updateIncidentStatus`/`addIncidentComment` client fns and their hooks were deleted with them — `PUT /api/v1/incidents/{*}/status` and `POST /api/v1/incidents/{*}/comments` never had backend routes; re-add both sides together if customer incident write-back becomes a feature. Export MP4 in the topbar is the [[evidence-shares]] button. Status stays `partial` until clip playback is smoke-tested on bob with a customer-role login (media mint is tenant-scoped). SOC-side acknowledge/dispositions live in area 07. |
 
 ## Portal history {#portal-history}
 
@@ -158,13 +158,13 @@ core; the SOC-supervisor share/ticket consoles are parked behind flags.
 | **Tier** | back-burner |
 | **Status** | partial |
 | **Definition** | Supervisors mint expiring public links to incident evidence for police/insurers; every open is logged for chain of custody; links can be revoked. |
-| **Frontend** | `frontend/src/components/reports/EvidenceSharesCard.tsx` · `frontend/src/app/evidence/[token]/page.tsx` |
+| **Frontend** | `frontend/src/components/reports/EvidenceSharesCard.tsx` · `frontend/src/app/evidence/[token]/page.tsx` · `frontend/src/components/shared/EvidenceExportButton.tsx` |
 | **Routes** | `POST /api/v1/incidents/{id}/share` · `GET /api/v1/incidents/{id}/shares` · `DELETE /api/v1/shares/{token}` · `GET /share/{token}` |
 | **Tables** | evidence_shares, evidence_share_opens, evidence_manifests |
 | **Flag** | `evidence_sharing` |
 | **Docs** | [chain-of-custody.md](../chain-of-custody.md) |
 | **Smoke test** | /reports (operator_console on) → Evidence shares tab → enter an incident ID → create link → `curl /share/<token>` returns share JSON; revoke → same curl 404s. |
-| **Notes** | Create/list/revoke are real (supervisor/admin only; TTL clamped to 90d, default 7d; a chain-of-custody manifest is written per share). `GET /share/{token}` serves share *metadata JSON* and logs opens — it is not a viewer. The customer-facing viewer `app/evidence/[token]/page.tsx` renders `mockFetchEvidence` hardcoded data (the "Southgate Power Station" scenario) and never calls the backend, and the page is not yet gated behind `evidence_sharing`. Revival cost: point the page at `GET /share/{token}`, render the clip via media mint, add the gate — backend needs nothing. Cross-ref [[incidents]]; manifests detail in area 09. |
+| **Notes** | Create/list/revoke are real (supervisor/admin only; TTL clamped to 90d, default 7d; a chain-of-custody manifest is written per share). `GET /share/{token}` serves share *metadata JSON* and logs opens — it is not a viewer. F-07: the portal incident `EvidenceExportButton` no longer fabricates `ev-…` tokens client-side ("clip synced to cloud" was never true) — its share half is now wired to the real `createEvidenceShareLink` and hidden behind the `evidence_sharing` flag; its Export MP4 half downloads the incident clip via media mint (no fake `/incidents/{id}/evidence` route anymore). Remaining gap: the customer-facing viewer `app/evidence/[token]/page.tsx` renders `mockFetchEvidence` hardcoded data (the "Southgate Power Station" scenario) and never calls the backend, and the page is not yet gated behind `evidence_sharing`; copied share URLs also have no Next route (F-08, parked). Revival cost: point the page at `GET /share/{token}`, render the clip via media mint, add the gate — backend needs nothing. Cross-ref [[incidents]]; manifests detail in area 09. |
 
 ## Public status page {#status-page}
 
