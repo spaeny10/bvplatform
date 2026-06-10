@@ -4,6 +4,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment } from '@/lib/api';
 
+// Segment URLs from /api/playback/{id} carry signed media tokens with a
+// 5-minute TTL (DefaultMediaTTL server-side). The cached segment list is
+// therefore only usable for that long — after that every cached URL 401s.
+// Refresh 30 s early so a load started near the deadline can't straddle
+// expiry mid-fetch.
+const SEGMENT_TOKEN_TTL_MS = 5 * 60_000;
+const SEGMENT_CACHE_MAX_AGE_MS = SEGMENT_TOKEN_TTL_MS - 30_000;
+
 interface VideoPlayerProps {
     cameraId: string;
     cameraName: string;
@@ -194,6 +202,9 @@ export default function VideoPlayer({
     // Track the overall time range covered by cached segments
     const segWindowStartRef = useRef<number>(0);
     const segWindowEndRef = useRef<number>(0);
+    // When the cached segment list was fetched — its signed URLs expire
+    // SEGMENT_TOKEN_TTL_MS after this instant (see constants above).
+    const segFetchedAtRef = useRef<number>(0);
 
     // ---- PRE-WARM PTZ CONNECTION ----
     useEffect(() => {
@@ -309,144 +320,169 @@ export default function VideoPlayer({
 
     // ---- PLAYBACK MODE: Direct MP4 segment loading (optimized) ----
     const loadSegmentForTime = useCallback(async (targetMs: number, video: HTMLVideoElement, autoPlay: boolean, suppressLoading = false) => {
-        // Cancel any previous in-flight segment fetch
-        if (abortRef.current) {
-            abortRef.current.abort();
-        }
-        const controller = new AbortController();
-        abortRef.current = controller;
+        // run() is the whole load; it calls itself exactly once more (with
+        // isRetry=true) after invalidating the segment cache when a load
+        // fails. Expired media tokens surface as plain <video> load errors
+        // (the element can't expose the 401), so any failure on cached URLs
+        // gets one refetch-with-fresh-tokens pass before we declare the
+        // footage corrupt.
+        const run = async (isRetry: boolean): Promise<void> => {
+            // Cancel any previous in-flight segment fetch
+            if (abortRef.current) {
+                abortRef.current.abort();
+            }
+            const controller = new AbortController();
+            abortRef.current = controller;
 
-        if (!suppressLoading) {
-            setLoading(true);
-        }
-        setError('');
+            if (!suppressLoading) {
+                setLoading(true);
+            }
+            setError('');
 
-        try {
-            // Check if the target is within our cached segments before fetching
-            let segments = segmentsRef.current;
-            const inCache = segments.length > 0 &&
-                targetMs >= segWindowStartRef.current &&
-                targetMs <= segWindowEndRef.current;
+            try {
+                // Check if the target is within our cached segments before
+                // fetching. The cached URLs carry 5-min signed tokens, so the
+                // cache is only usable while those are fresh — after that,
+                // refetch the same window to get newly-signed URLs instead of
+                // replaying ones that are guaranteed to 401.
+                let segments = segmentsRef.current;
+                const cacheFresh = Date.now() - segFetchedAtRef.current < SEGMENT_CACHE_MAX_AGE_MS;
+                const inCache = cacheFresh && segments.length > 0 &&
+                    targetMs >= segWindowStartRef.current &&
+                    targetMs <= segWindowEndRef.current;
 
-            if (!inCache) {
-                const t = new Date(targetMs).toISOString();
-                segments = await fetchPlaybackSegments(cameraId, t, controller.signal);
+                if (!inCache) {
+                    const t = new Date(targetMs).toISOString();
+                    segments = await fetchPlaybackSegments(cameraId, t, controller.signal);
+
+                    if (controller.signal.aborted) return;
+
+                    if (!segments || segments.length === 0) {
+                        setError('No recordings available at this time');
+                        setLoading(false);
+                        return;
+                    }
+
+                    // Cache the fetched segments and their time window
+                    segmentsRef.current = segments;
+                    segFetchedAtRef.current = Date.now();
+                    segWindowStartRef.current = new Date(segments[0].start_time).getTime();
+                    segWindowEndRef.current = new Date(segments[segments.length - 1].end_time).getTime();
+                }
+
+                // Find the index of the segment closest to targetMs (containing it,
+                // or the latest one that started before it, or the earliest one
+                // overall if target is before everything we have).
+                let bestIdx = -1;
+                for (let i = 0; i < segments.length; i++) {
+                    const segStart = new Date(segments[i].start_time).getTime();
+                    const segEnd = new Date(segments[i].end_time).getTime();
+                    if (targetMs >= segStart && targetMs <= segEnd) {
+                        bestIdx = i;
+                        break;
+                    }
+                    if (segStart <= targetMs) bestIdx = i;
+                }
+                if (bestIdx < 0) bestIdx = 0; // target predates all segments — snap to earliest
+
+                // Recording engine can occasionally leave behind moov-less mp4
+                // files when ffmpeg gets killed mid-segment (e.g. during a
+                // cellular-camera stall). Those files load with HTMLMediaElement
+                // 'error' instead of 'loadedmetadata'. Walk forward from
+                // bestIdx and try the next segment if the current one fails,
+                // so a single bad file doesn't black-screen the whole timeline.
+                let chosenIdx = -1;
+                let lastErr: Error | null = null;
+                for (let attempt = bestIdx; attempt < segments.length && attempt < bestIdx + 5; attempt++) {
+                    const cand = segments[attempt];
+                    const needsReload = (cand.url !== currentSegUrlRef.current);
+                    if (!needsReload) { chosenIdx = attempt; break; }
+
+                    video.src = cand.url;
+                    video.load();
+                    try {
+                        await new Promise<void>((resolve, reject) => {
+                            const onLoaded = () => {
+                                video.removeEventListener('error', onError);
+                                resolve();
+                            };
+                            const onError = () => {
+                                video.removeEventListener('loadedmetadata', onLoaded);
+                                reject(new Error('segment load failed'));
+                            };
+                            const onAbort = () => {
+                                video.removeEventListener('loadedmetadata', onLoaded);
+                                video.removeEventListener('error', onError);
+                                reject(new DOMException('Aborted', 'AbortError'));
+                            };
+                            controller.signal.addEventListener('abort', onAbort, { once: true });
+                            video.addEventListener('loadedmetadata', onLoaded, { once: true });
+                            video.addEventListener('error', onError, { once: true });
+                        });
+                        chosenIdx = attempt;
+                        break;
+                    } catch (e: any) {
+                        if (e?.name === 'AbortError') throw e;
+                        lastErr = e;
+                        // Try the next segment in the list (skip the corrupt one).
+                        continue;
+                    }
+                }
 
                 if (controller.signal.aborted) return;
-
-                if (!segments || segments.length === 0) {
-                    setError('No recordings available at this time');
-                    setLoading(false);
-                    return;
+                if (chosenIdx < 0) {
+                    throw lastErr ?? new Error('all candidate segments failed to load');
                 }
 
-                // Cache the fetched segments and their time window
-                segmentsRef.current = segments;
-                segWindowStartRef.current = new Date(segments[0].start_time).getTime();
-                segWindowEndRef.current = new Date(segments[segments.length - 1].end_time).getTime();
-            }
+                const seg = segments[chosenIdx];
+                const segStartMs = new Date(seg.start_time).getTime();
+                const segEndMs = new Date(seg.end_time).getTime();
+                currentSegUrlRef.current = seg.url;
+                playlistStartRef.current = segStartMs;
+                playlistEndRef.current = segEndMs;
+                lastSeekTimeRef.current = targetMs;
 
-            // Find the index of the segment closest to targetMs (containing it,
-            // or the latest one that started before it, or the earliest one
-            // overall if target is before everything we have).
-            let bestIdx = -1;
-            for (let i = 0; i < segments.length; i++) {
-                const segStart = new Date(segments[i].start_time).getTime();
-                const segEnd = new Date(segments[i].end_time).getTime();
-                if (targetMs >= segStart && targetMs <= segEnd) {
-                    bestIdx = i;
-                    break;
+                // Seek within the segment to the correct position (only if the
+                // target falls within this segment; otherwise we just play from
+                // the start of the segment we landed on).
+                if (targetMs >= segStartMs && targetMs <= segEndMs) {
+                    const offsetSec = Math.max(0, (targetMs - segStartMs) / 1000);
+                    if (isFinite(video.duration) && offsetSec < video.duration) {
+                        video.currentTime = offsetSec;
+                    }
                 }
-                if (segStart <= targetMs) bestIdx = i;
-            }
-            if (bestIdx < 0) bestIdx = 0; // target predates all segments — snap to earliest
 
-            // Recording engine can occasionally leave behind moov-less mp4
-            // files when ffmpeg gets killed mid-segment (e.g. during a
-            // cellular-camera stall). Those files load with HTMLMediaElement
-            // 'error' instead of 'loadedmetadata'. Walk forward from
-            // bestIdx and try the next segment if the current one fails,
-            // so a single bad file doesn't black-screen the whole timeline.
-            let chosenIdx = -1;
-            let lastErr: Error | null = null;
-            for (let attempt = bestIdx; attempt < segments.length && attempt < bestIdx + 5; attempt++) {
-                const cand = segments[attempt];
-                const needsReload = (cand.url !== currentSegUrlRef.current);
-                if (!needsReload) { chosenIdx = attempt; break; }
+                setLoading(false);
 
-                video.src = cand.url;
-                video.load();
-                try {
-                    await new Promise<void>((resolve, reject) => {
-                        const onLoaded = () => {
-                            video.removeEventListener('error', onError);
-                            resolve();
-                        };
-                        const onError = () => {
-                            video.removeEventListener('loadedmetadata', onLoaded);
-                            reject(new Error('segment load failed'));
-                        };
-                        const onAbort = () => {
-                            video.removeEventListener('loadedmetadata', onLoaded);
-                            video.removeEventListener('error', onError);
-                            reject(new DOMException('Aborted', 'AbortError'));
-                        };
-                        controller.signal.addEventListener('abort', onAbort, { once: true });
-                        video.addEventListener('loadedmetadata', onLoaded, { once: true });
-                        video.addEventListener('error', onError, { once: true });
-                    });
-                    chosenIdx = attempt;
-                    break;
-                } catch (e: any) {
-                    if (e?.name === 'AbortError') throw e;
-                    lastErr = e;
-                    // Try the next segment in the list (skip the corrupt one).
-                    continue;
+                if (autoPlay) {
+                    video.play().catch(() => { });
+                    setPaused(false);
+                } else {
+                    video.pause();
+                    setPaused(true);
                 }
-            }
-
-            if (controller.signal.aborted) return;
-            if (chosenIdx < 0) {
-                throw lastErr ?? new Error('all candidate segments failed to load');
-            }
-
-            const seg = segments[chosenIdx];
-            const segStartMs = new Date(seg.start_time).getTime();
-            const segEndMs = new Date(seg.end_time).getTime();
-            currentSegUrlRef.current = seg.url;
-            playlistStartRef.current = segStartMs;
-            playlistEndRef.current = segEndMs;
-            lastSeekTimeRef.current = targetMs;
-
-            // Seek within the segment to the correct position (only if the
-            // target falls within this segment; otherwise we just play from
-            // the start of the segment we landed on).
-            if (targetMs >= segStartMs && targetMs <= segEndMs) {
-                const offsetSec = Math.max(0, (targetMs - segStartMs) / 1000);
-                if (isFinite(video.duration) && offsetSec < video.duration) {
-                    video.currentTime = offsetSec;
+            } catch (err: any) {
+                if (err?.name === 'AbortError') return;
+                if (!isRetry) {
+                    // First failure: drop the cache (its tokens may simply have
+                    // expired) and retry once with a fresh segment list.
+                    segmentsRef.current = [];
+                    segFetchedAtRef.current = 0;
+                    segWindowStartRef.current = 0;
+                    segWindowEndRef.current = 0;
+                    currentSegUrlRef.current = '';
+                    return run(true);
                 }
+                // Show a more useful message — distinguish "nothing in this
+                // window" from "everything in this window is corrupt".
+                const segsExist = (segmentsRef.current?.length ?? 0) > 0;
+                setError(segsExist
+                    ? 'Could not play recording — file may be corrupt or still being written'
+                    : 'No recordings available at this time');
+                setLoading(false);
             }
-
-            setLoading(false);
-
-            if (autoPlay) {
-                video.play().catch(() => { });
-                setPaused(false);
-            } else {
-                video.pause();
-                setPaused(true);
-            }
-        } catch (err: any) {
-            if (err?.name === 'AbortError') return;
-            // Show a more useful message — distinguish "nothing in this
-            // window" from "everything in this window is corrupt".
-            const segsExist = (segmentsRef.current?.length ?? 0) > 0;
-            setError(segsExist
-                ? 'Could not play recording — file may be corrupt or still being written'
-                : 'No recordings available at this time');
-            setLoading(false);
-        }
+        };
+        return run(false);
     }, [cameraId]);
 
     // ---- PLAYBACK: Initial load when switching from live to playback ----
@@ -469,6 +505,7 @@ export default function VideoPlayer({
         playlistEndRef.current = 0;
         segWindowStartRef.current = 0;
         segWindowEndRef.current = 0;
+        segFetchedAtRef.current = 0;
 
         const targetMs = playbackTime?.getTime() || Date.now();
         loadSegmentForTime(targetMs, video, false);
@@ -493,19 +530,21 @@ export default function VideoPlayer({
         };
         video.addEventListener('timeupdate', onTime);
 
-        // Auto-advance to next segment when current one ends
+        // Auto-advance to next segment when current one ends. Routed
+        // through loadSegmentForTime so the advance inherits the cache
+        // freshness check and the refetch-on-failure retry — a direct
+        // src swap with a >5-min-old token URL 401s and silently froze
+        // continuous playback at the segment boundary.
         const onEnded = () => {
-            const curIdx = segmentsRef.current.findIndex((s: any) => s.url === currentSegUrlRef.current);
+            const curIdx = segmentsRef.current.findIndex((s) => s.url === currentSegUrlRef.current);
             if (curIdx >= 0 && curIdx < segmentsRef.current.length - 1) {
                 const nextSeg = segmentsRef.current[curIdx + 1];
-                const nextStartMs = new Date(nextSeg.start_time).getTime();
-                const nextEndMs = new Date(nextSeg.end_time).getTime();
-                currentSegUrlRef.current = nextSeg.url;
-                playlistStartRef.current = nextStartMs;
-                playlistEndRef.current = nextEndMs;
-                video.src = nextSeg.url;
-                video.load();
-                video.play().catch(() => { });
+                // +1 ms: the next segment's start_time can equal the ended
+                // segment's end_time, and the loader picks the *first*
+                // segment containing the target — without the nudge it
+                // would re-select the segment that just ended.
+                const nextStartMs = new Date(nextSeg.start_time).getTime() + 1;
+                loadSegmentForTime(nextStartMs, video, true, true);
             }
         };
         video.addEventListener('ended', onEnded);

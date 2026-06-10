@@ -29,7 +29,15 @@ type ClipWriter struct {
 	postBufferSec int
 	triggers      map[string]bool // event types that trigger recording
 
-	recording    bool
+	recording bool
+	// finalizing is true while writeClip is copying ring segments into
+	// permanent storage. CleanRingBuffer must skip while it's set —
+	// the pre-buffer segments are already past the cleaner's age cutoff
+	// the moment `recording` clears, so without this flag a 5 s cleaner
+	// tick landing mid-copy deletes the clip's lead-up footage. Kept
+	// separate from `recording` so TriggerEvent can start the next clip
+	// while the previous one is still being copied.
+	finalizing   bool
 	recordingEnd time.Time
 	mu           sync.Mutex
 	db           *database.DB
@@ -116,7 +124,13 @@ func (cw *ClipWriter) writeClip(ctx context.Context, clipStart, eventTime time.T
 	cw.mu.Lock()
 	actualEnd := cw.recordingEnd
 	cw.recording = false
+	cw.finalizing = true
 	cw.mu.Unlock()
+	defer func() {
+		cw.mu.Lock()
+		cw.finalizing = false
+		cw.mu.Unlock()
+	}()
 
 	// Collect ring buffer segments that overlap with [clipStart, actualEnd]
 	segments, err := cw.collectRingSegments(clipStart, actualEnd)
@@ -208,11 +222,11 @@ func (cw *ClipWriter) collectRingSegments(start, end time.Time) ([]string, error
 // CleanRingBuffer removes ring buffer segments older than the pre-buffer window
 func (cw *ClipWriter) CleanRingBuffer() {
 	cw.mu.Lock()
-	isRecording := cw.recording
+	busy := cw.recording || cw.finalizing
 	cw.mu.Unlock()
 
-	if isRecording {
-		return // don't delete segments while recording a clip
+	if busy {
+		return // don't delete segments while recording or copying a clip
 	}
 
 	cutoff := time.Now().Add(-time.Duration(cw.preBufferSec+5) * time.Second)

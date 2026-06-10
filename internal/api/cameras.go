@@ -824,9 +824,9 @@ func HandlePlayback(cfg *config.Config, db *database.DB) http.HandlerFunc {
 
 		// Build a list of segment URLs. Each segment gets its own 5-min
 		// signed token. The frontend caches these (the player's segment-
-		// list cache window is up to ~1 h) — if a token has expired by
-		// the time the user scrubs back to it, the player will get 401
-		// and the cache layer re-fetches the segment list.
+		// list cache window is up to ~1 h) — VideoPlayer tracks the fetch
+		// time against the token TTL and re-fetches this list when the
+		// cached URLs go stale (or once on any segment-load failure).
 		type segInfo struct {
 			URL       string `json:"url"`
 			StartTime string `json:"start_time"`
@@ -838,19 +838,18 @@ func HandlePlayback(cfg *config.Config, db *database.DB) http.HandlerFunc {
 			// Filter broken segments before handing them to the player.
 			// When ffmpeg gets killed mid-segment (cellular stall +
 			// watchdog kill) the file has no moov atom and the player
-			// can't load it. The recording engine probes the codec on
-			// every new file; probe failure (which is exactly the
-			// moov-atom-missing case) writes back an empty video_codec
-			// + a fallback duration. Drop those here:
-			//   - video_codec == ''   recorder couldn't probe = corrupt
+			// can't load it. Drop the size/duration signatures of those
+			// truncated files here:
 			//   - DurationMs <= 500   leftover from very-truncated files
 			//   - FileSize < 4096     smaller than even an fMP4 init box
-			// Segments from before the codec-probe was added in the
-			// recorder may legitimately have an empty video_codec, so
-			// this filter strictly speaking has a small false-positive
-			// risk on very old recordings. Acceptable — those age out
-			// under retention anyway.
-			if seg.VideoCodec == "" || seg.DurationMs <= 500 || seg.FileSize < 4096 {
+			// An empty video_codec is NOT a corruption signal and must
+			// stay visible: the Go recorder, ClipWriter, and pre-probe
+			// legacy rows all insert without a codec, and the /media/v1
+			// serve handler probes the file per-request to decide
+			// pass-through vs H.264 transcode (maybeTranscodeForBrowser).
+			// Truncated ffmpeg segments never reach the DB at all — the
+			// engine's watchSegments skips rows whose codec probe fails.
+			if seg.DurationMs <= 500 || seg.FileSize < 4096 {
 				continue
 			}
 			leaf := strings.ReplaceAll(filepath.Base(seg.FilePath), "\\", "/")

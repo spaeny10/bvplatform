@@ -520,6 +520,10 @@ func (sw *segmentWriter) finalizeCurrent() {
 			FilePath:   sw.curAbsPath,
 			FileSize:   info.Size(),
 			DurationMs: int(endTime.Sub(sw.curStartWall).Milliseconds()),
+			// This recorder only handles H.264 (runOnce rejects any
+			// stream without an H.264 format), so the codec is known
+			// without an ffprobe round-trip.
+			VideoCodec: "h264",
 		}
 		// Best-effort registration — missing DB rows don't break clip finding
 		// because FindEventClip scans the filesystem directly.

@@ -76,7 +76,13 @@ services:
     networks: [backplane]
 
   mediamtx:
-    image: docker.io/bluenviron/mediamtx:latest
+    # Pinned: mediamtx rejects unknown config keys, so an unpinned :latest
+    # pull that drops a key (or a deprecated alias) from the generated
+    # mediamtx_runtime.yml crash-loops the relay — taking recording ingest
+    # and live HLS down with it. 1.19.0 matches the currently-deployed
+    # version; bump deliberately, together with the vendored config struct
+    # in internal/streaming/mediamtx.go.
+    image: docker.io/bluenviron/mediamtx:1.19.0
     container_name: ironsight-mediamtx
     restart: unless-stopped
     # The Go API writes mediamtx_runtime.yml into the shared config volume
