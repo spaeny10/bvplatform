@@ -148,9 +148,12 @@ export function startMsePlayer(
       // MediaSource.isTypeSupported and send {type:"mse", value:"<codecs>"}.
       // go2rtc replies with the negotiated {type:"mse", value:"<mime codecs>"}
       // (handled in onControl) then streams binary fMP4.
+      // HEVC first: the fleet records H.265, so offer hvc1 ahead of avc1 to
+      // match the source without transcode. (When the substream is H.264 —
+      // Phase 1b — avc1 matches instead.)
       const candidates = [
+        'hvc1.1.6.L153.B0', 'hvc1.1.6.L120.90',      // HEVC main (fleet codec)
         'avc1.640029', 'avc1.64002A', 'avc1.640033', // H.264 high
-        'hvc1.1.6.L153.B0', 'hvc1.1.6.L120.90',      // HEVC main (the fleet codec)
         'mp4a.40.2', 'mp4a.40.5',                     // AAC
       ];
       const supported = candidates.filter(c =>
@@ -160,7 +163,12 @@ export function startMsePlayer(
         fail('Browser cannot decode this stream (HEVC support missing)', 'no MSE codecs supported');
         return;
       }
-      ws!.send(JSON.stringify({ type: 'mse', value: supported.join(', ') }));
+      // Join with bare commas, NOT ", ": go2rtc splits the value on "," and
+      // does NOT trim, so a leading space makes every codec after the first
+      // unparseable — go2rtc then sees only the first codec and fails to
+      // match an H.265 source (bench 2026-06-10: ", " → "codecs not matched
+      // video:H265 => video:H264").
+      ws!.send(JSON.stringify({ type: 'mse', value: supported.join(',') }));
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
