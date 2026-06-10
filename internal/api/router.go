@@ -214,8 +214,8 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// across vendors. ALL HTTP methods need to pass through
 			// because the camera's UI does POST for login + config
 			// writes, plus the standard GET for assets.
-			r.HandleFunc("/{id}/web-ui/*", HandleCameraWebUIProxy(db))
-			r.HandleFunc("/{id}/web-ui", HandleCameraWebUIProxy(db))
+			r.HandleFunc("/{id}/web-ui/*", HandleCameraWebUIProxy(cfg, db))
+			r.HandleFunc("/{id}/web-ui", HandleCameraWebUIProxy(cfg, db))
 
 			// Milesight vendor-config pass-through. Each {panel} is an
 			// allowlisted CGI action pair (see internal/api/milesight_config.go).

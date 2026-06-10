@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -93,6 +94,17 @@ func clearSessionCookies(w http.ResponseWriter, cfg *config.Config) {
 
 // ── CSRF middleware ────────────────────────────────────────────────────────────
 
+// webUIProxyPathRe anchors the camera web-UI proxy CSRF exemption to the
+// exact route shape registered in router.go: /api/cameras/{uuid}/web-ui
+// plus anything beneath it. F-28: the previous strings.Contains match on
+// "/web-ui/" applied to EVERY /api path, so any future route that happened
+// to contain the substring (e.g. a {param} value in a wildcard route)
+// would have silently lost CSRF protection. chi can't expose the matched
+// RoutePattern to middleware that runs before routing, so a strict regexp
+// on the concrete path is the anchor.
+var webUIProxyPathRe = regexp.MustCompile(
+	`^/api/cameras/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/web-ui(/.*)?$`)
+
 // CSRFMiddleware implements the double-submit cookie CSRF check for all
 // non-idempotent requests (POST / PUT / PATCH / DELETE). It reads the
 // ironsight_csrf cookie and the X-CSRF-Token request header, and returns
@@ -121,8 +133,10 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 		// wouldn't add protection here — the proxy passes the request
 		// straight through to the camera with the camera's own session
 		// cookies (which are path-scoped to /api/cameras/<id>/web-ui/
-		// by rewriteSetCookie). RequireAuth still gates the route.
-		if strings.Contains(r.URL.Path, "/web-ui/") || strings.HasSuffix(r.URL.Path, "/web-ui") {
+		// by rewriteSetCookie). RequireAuth still gates the route. The
+		// exemption is anchored to the exact proxy route shape so no
+		// other /api route can smuggle the substring (F-28).
+		if webUIProxyPathRe.MatchString(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

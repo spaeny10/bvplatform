@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,18 +62,35 @@ func auditPlayback(
 	}()
 }
 
-// clientIP extracts the best-effort source address of a request, preferring
-// proxy-populated headers when present (ironsight runs behind nginx in prod).
+// clientIP extracts the source address of a request for security-sensitive
+// uses (the login rate-limit key, failed-login audit rows, playback audits).
+//
+// F-15: NEVER trust the left-most X-Forwarded-For hop — that segment is
+// client-supplied and arrives verbatim even behind our reverse proxy
+// (NPM *appends* the transport peer, leaving any spoofed value left-most;
+// chi's middleware.RealIP also copies the left-most hop into RemoteAddr
+// without stripping the header). Keying the login rate limiter on it let
+// an attacker reset the 10/min bucket by rotating XFF per request, and
+// poisoned failed-login audit rows with forged source IPs.
+//
+// Trusted-proxy assumption (documented, deliberately simple): Ironsight's
+// only production ingress is NPM, which appends the real transport peer
+// as the RIGHT-most XFF hop. So:
+//   - take the right-most XFF hop when the header is present;
+//   - else X-Real-IP (set only by NPM; absent on direct connections);
+//   - else the raw RemoteAddr (direct connection, dev/local).
+// A client connecting directly to the API port can still forge these
+// headers about itself, but it can no longer impersonate *other* clients
+// going through the proxy, and rotating the spoofable left-most hop no
+// longer changes the value we key on.
 func clientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		// Left-most is the original client.
-		for i := 0; i < len(v); i++ {
-			if v[i] == ',' {
-				return trimSpace(v[:i])
-			}
+		// Right-most hop = the one appended by our own trusted proxy.
+		if idx := strings.LastIndexByte(v, ','); idx >= 0 {
+			v = v[idx+1:]
 		}
 		return trimSpace(v)
 	}

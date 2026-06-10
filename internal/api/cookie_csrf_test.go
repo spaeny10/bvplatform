@@ -275,6 +275,60 @@ func TestCSRF_MatchAllows(t *testing.T) {
 	}
 }
 
+// ── Web-UI proxy CSRF exemption (F-28) ───────────────────────────────────────
+
+// TestCSRF_WebUIProxyExempt verifies that a POST to the camera web-UI
+// proxy route passes CSRFMiddleware without any CSRF cookie/header —
+// the iframe POSTs target the camera's own forms, which can't know
+// Ironsight's token.
+func TestCSRF_WebUIProxyExempt(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFMiddleware(sentinel)
+
+	for _, path := range []string{
+		"/api/cameras/11111111-2222-3333-4444-555555555555/web-ui",
+		"/api/cameras/11111111-2222-3333-4444-555555555555/web-ui/",
+		"/api/cameras/11111111-2222-3333-4444-555555555555/web-ui/cgi-bin/login.cgi",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		// Deliberately no CSRF cookie or header.
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("POST %s: got %d, want 200 (web-ui proxy is CSRF-exempt)", path, w.Code)
+		}
+	}
+}
+
+// TestCSRF_WebUIExemptionAnchored verifies the exemption is anchored to
+// the exact /api/cameras/{uuid}/web-ui route shape — other paths that
+// merely contain the "/web-ui/" substring must still require CSRF.
+// Regression guard for the strings.Contains match this replaced.
+func TestCSRF_WebUIExemptionAnchored(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFMiddleware(sentinel)
+
+	for _, path := range []string{
+		"/api/sites/web-ui/thing",                    // substring smuggle, wrong subtree
+		"/api/cameras/not-a-uuid/web-ui",             // non-UUID id segment
+		"/api/cameras/web-ui/extra",                  // missing id segment entirely
+		"/api/users/x/web-ui/",                       // substring under another resource
+		"/web-ui/outside-api",                        // outside /api
+		"/api/cameras/11111111-2222-3333-4444-555555555555/web-uixtra", // suffix mutation
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("POST %s: got %d, want 403 (not the anchored web-ui proxy route)", path, w.Code)
+		}
+	}
+}
+
 // ── SSO trust path ────────────────────────────────────────────────────────────
 
 // TestSSO_NoCookieRequired verifies that a request bearing X-Forwarded-Email
