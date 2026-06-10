@@ -141,8 +141,26 @@ export function startMsePlayer(
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {
-      // go2rtc starts streaming once the WS is open with ?src= (set
-      // server-side by the proxy). No client handshake message required.
+      // go2rtc's /api/ws MSE protocol REQUIRES the client to announce the
+      // codecs it can decode before go2rtc starts streaming — without this
+      // handshake go2rtc stays silent (bench 2026-06-10: WS opened, 0 frames).
+      // Mirror go2rtc's own video-rtc.js: filter a candidate list by
+      // MediaSource.isTypeSupported and send {type:"mse", value:"<codecs>"}.
+      // go2rtc replies with the negotiated {type:"mse", value:"<mime codecs>"}
+      // (handled in onControl) then streams binary fMP4.
+      const candidates = [
+        'avc1.640029', 'avc1.64002A', 'avc1.640033', // H.264 high
+        'hvc1.1.6.L153.B0', 'hvc1.1.6.L120.90',      // HEVC main (the fleet codec)
+        'mp4a.40.2', 'mp4a.40.5',                     // AAC
+      ];
+      const supported = candidates.filter(c =>
+        MediaSource.isTypeSupported(`video/mp4; codecs="${c}"`),
+      );
+      if (supported.length === 0) {
+        fail('Browser cannot decode this stream (HEVC support missing)', 'no MSE codecs supported');
+        return;
+      }
+      ws!.send(JSON.stringify({ type: 'mse', value: supported.join(', ') }));
     };
     ws.onmessage = (ev) => {
       if (typeof ev.data === 'string') {
