@@ -28,16 +28,64 @@ function getCSRFToken(): string {
  *
  * P1-A-02 part 2 — replaces the localStorage-based token injection.
  */
-export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(init.headers ?? {});
-    const method = (init.method ?? 'GET').toUpperCase();
-    // Inject CSRF header on state-changing requests. GET / HEAD / OPTIONS
-    // are exempt (mirrors the backend CSRFMiddleware exemption list).
-    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
-        const csrf = getCSRFToken();
-        if (csrf) headers.set('X-CSRF-Token', csrf);
+/**
+ * Bootstrap the ironsight_csrf cookie via the dedicated GET /api/auth/csrf
+ * endpoint and return the freshly-minted token. Used by authFetch when a
+ * mutation is about to be sent but no CSRF cookie is present, and as the
+ * recovery path on a 403 (stale/missing token). Returns '' on failure so
+ * the caller can degrade gracefully.
+ *
+ * GET /api/auth/csrf is CSRF-exempt and sets the cookie as a side-effect;
+ * we also read the token straight from its JSON body so we don't depend on
+ * the Set-Cookie having landed in document.cookie before the retry.
+ */
+async function bootstrapCSRFToken(): Promise<string> {
+    try {
+        const res = await fetch(`${API_BASE}/auth/csrf`, { credentials: 'include' });
+        if (!res.ok) return '';
+        const data = await res.json().catch(() => null);
+        return (data && typeof data.csrf_token === 'string') ? data.csrf_token : getCSRFToken();
+    } catch {
+        return '';
     }
-    const res = await fetch(input, { ...init, headers, credentials: 'include' });
+}
+
+export async function authFetch(input: RequestInfo, init: RequestInit = {}): Promise<Response> {
+    const method = (init.method ?? 'GET').toUpperCase();
+    const isMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
+
+    const buildHeaders = (csrf: string): Headers => {
+        const h = new Headers(init.headers ?? {});
+        // Inject CSRF header on state-changing requests. GET / HEAD / OPTIONS
+        // are exempt (mirrors the backend CSRFMiddleware exemption list).
+        if (isMutation && csrf) h.set('X-CSRF-Token', csrf);
+        return h;
+    };
+
+    // For a mutation with no CSRF cookie yet, mint one first so the very
+    // first state-changing request of a fresh session doesn't 403. The
+    // backend's RequireAuth tries to set this cookie on every request, but
+    // ResponseWriter wrapper chains can drop the Set-Cookie header, leaving
+    // the SPA without a token until the dedicated endpoint is hit.
+    let csrf = getCSRFToken();
+    if (isMutation && !csrf) {
+        csrf = await bootstrapCSRFToken();
+    }
+
+    let res = await fetch(input, { ...init, headers: buildHeaders(csrf), credentials: 'include' });
+
+    // Recover from a CSRF rejection (cookie expired, or it was minted in
+    // another tab/after a redeploy and our in-memory header is stale):
+    // re-bootstrap the token once and retry. Without this, the assign-camera
+    // and similar admin mutations failed silently — the modal swallowed the
+    // 403 and the UI showed no change.
+    if (isMutation && res.status === 403) {
+        const fresh = await bootstrapCSRFToken();
+        if (fresh && fresh !== csrf) {
+            res = await fetch(input, { ...init, headers: buildHeaders(fresh), credentials: 'include' });
+        }
+    }
+
     if (res.status === 401 && typeof window !== 'undefined') {
         window.location.href = '/login';
     }
