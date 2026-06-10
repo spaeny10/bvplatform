@@ -92,7 +92,11 @@ export function startMsePlayer(
 
   const setupSourceBuffer = (codecs: string) => {
     if (closed || !mediaSource) return;
-    const mime = `video/mp4; codecs="${codecs}"`;
+    // go2rtc's {type:"mse"} reply value is the FULL mime
+    // (`video/mp4; codecs="hvc1.1.6.L153.B0"`), not a bare codec string —
+    // use it directly. Only wrap if we were handed a bare codec list
+    // (defensive, in case a future go2rtc changes the shape).
+    const mime = /codecs\s*=/.test(codecs) ? codecs : `video/mp4; codecs="${codecs}"`;
     if (!MediaSource.isTypeSupported(mime)) {
       fail('Browser cannot decode this stream (codec unsupported)', mime);
       return;
