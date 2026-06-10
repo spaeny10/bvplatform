@@ -9,26 +9,6 @@ export function formatTime(ts: number): string {
 }
 
 /**
- * Format a Unix ms timestamp to a short time (HH:MM)
- */
-export function formatTimeShort(ts: number): string {
-  const d = new Date(ts);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-/**
- * Format a Unix ms timestamp to date + time
- */
-export function formatDateTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  }) + ' ' + formatTime(ts);
-}
-
-/**
  * Format a Unix ms timestamp to a relative string ("2m ago", "3h ago", "1d ago")
  */
 export function formatRelativeTime(ts: number): string {
@@ -68,12 +48,4 @@ export function getComplianceLevel(score: number): 'green' | 'amber' | 'red' {
   if (score >= 90) return 'green';
   if (score >= 75) return 'amber';
   return 'red';
-}
-
-/**
- * Format an ISO date to "Mon DD" (e.g. "Apr 15")
- */
-export function formatShortDate(isoDate: string): string {
-  const d = new Date(isoDate);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }

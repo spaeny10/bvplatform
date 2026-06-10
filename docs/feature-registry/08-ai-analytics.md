@@ -22,7 +22,7 @@ its state recorded here.
 | **Flag** | ai_insights |
 | **Docs** | — |
 | **Smoke test** | With the yolo container up, trigger a camera event → server log prints an `[AI] alarm …` line; `GET /api/v1/detections?limit=5` returns recent rows with bounding boxes and a `model_version_id`. |
-| **Notes** | Event-triggered, not continuous: the alarm pipeline in `cmd/server/main.go` grabs a snapshot (Milesight CGI → segment-extract fallback) and calls `aiClient.Analyze`; a per-camera in-flight gate drops redundant inference during bursts. Kill switch is `AI_ENABLED=false` (stubs every call); endpoints via `AI_YOLO_URL`/`AI_QWEN_URL`. `detections` is the Phase-4 unified hypertable (migration 0030). Gotcha: `GET /api/cameras/{id}/detect` + `fetchDetections` are the ONVIF analytics box cache, NOT this pipeline — and no component calls them today. `submitAICorrection` → `POST /api/v1/ai-telemetry/corrections` is frontend-only (Table C, 404s) and uncalled. Flag note: `ai_insights` covers the alarm-panel surface; PPE surfaces ride `vlm_safety` ([[ppe-pending-review]]). |
+| **Notes** | Event-triggered, not continuous: the alarm pipeline in `cmd/server/main.go` grabs a snapshot (Milesight CGI → segment-extract fallback) and calls `aiClient.Analyze`; a per-camera in-flight gate drops redundant inference during bursts. Kill switch is `AI_ENABLED=false` (stubs every call); endpoints via `AI_YOLO_URL`/`AI_QWEN_URL`. `detections` is the Phase-4 unified hypertable (migration 0030). Gotcha: `GET /api/cameras/{id}/detect` is the ONVIF analytics box cache, NOT this pipeline — its zero-caller `fetchDetections` client (and the unbacked `submitAICorrection` → `POST /api/v1/ai-telemetry/corrections`) were deleted in the 2026-06 dead-code cleanup. Flag note: `ai_insights` covers the alarm-panel surface; PPE surfaces ride `vlm_safety` ([[ppe-pending-review]]). |
 
 ## Qwen VLM threat assessment {#qwen-vlm-reasoning}
 
@@ -72,22 +72,6 @@ its state recorded here.
 | **Smoke test** | On test.ironsight set `FEATURES_OVERRIDE=semantic_search=true` → `/search` → query "person" → result cards render with VLM captions; portal → History → semantic query returns matching segments. |
 | **Notes** | Partial because the page's saved-searches and suggestions call `/api/v1/search/saved` and `/api/v1/search/suggest`, which match no backend route (api-coverage Table C, 404 at runtime) — `getSavedSearches` fires on every page load. Gating gotcha: the nav link is behind `FeatureGate`, but the page itself has only a role `RouteGuard` (no `FeaturePageGate`), so admins/supervisors can still reach `/search` by URL with the flag off. `GET /api/search/events` is the alert-feed text search (area 04), not this. Depends on [[vlm-segment-indexer]] having populated rows. |
 
-## AI insights panel {#ai-insights-panel}
-
-| Field | Value |
-|---|---|
-| **ID** | `ai-insights-panel` |
-| **Tier** | back-burner |
-| **Status** | placeholder |
-| **Definition** | Slide-out "AI Intelligence Brief" panel for operators: pattern/anomaly/recommendation cards summarizing fleet activity. |
-| **Frontend** | `frontend/src/components/operator/AIInsightsPanel.tsx` |
-| **Routes** | — |
-| **Tables** | — |
-| **Flag** | ai_insights |
-| **Docs** | — |
-| **Smoke test** | None possible — the component is not mounted on any page; verify by grepping for `AIInsightsPanel` imports (only its own file). |
-| **Notes** | Doubly inert: it hardcodes six insights computed from `MOCK_ALERTS`/`MOCK_SITES`/`MOCK_INCIDENTS` (`ironsight-mock.ts`) — no API call anywhere — AND it is an orphan (no page imports it), so it has zero customer exposure even without a flag. Revival cost is essentially a rewrite: a real insights backend does not exist; only the visual shell is reusable. |
-
 ## PPE zones & compliance rules {#ppe-zones-compliance-rules}
 
 | Field | Value |
@@ -96,13 +80,13 @@ its state recorded here.
 | **Tier** | back-burner |
 | **Status** | stub |
 | **Definition** | Per-camera safety-zone polygon editor (work area / no-go / PPE-required) and compliance-rule CRUD that should configure where the PPE worker enforces what. |
-| **Frontend** | `frontend/src/components/PPEZoneEditor.tsx`, `frontend/src/components/ComplianceRulesPanel.tsx`, `frontend/src/components/EditCameraModal.tsx` |
+| **Frontend** | `frontend/src/components/PPEZoneEditor.tsx`, `frontend/src/components/ComplianceRulesPanel.tsx` |
 | **Routes** | — |
 | **Tables** | ppe_zones, compliance_rules |
 | **Flag** | vlm_safety |
 | **Docs** | — |
 | **Smoke test** | Edit a camera → open the PPE zone editor → the zone-list request to `/api/cameras/{id}/ppe/zones` returns 404 (expected — see Notes). |
-| **Notes** | Routes is — because the backend half was never wired: complete, role-gated CRUD handlers exist in `internal/api/ppe_zones_handler.go` (zone/rule type validation, site_manager+ writes) but **no route in `router.go` registers them**, so all 8 frontend calls (`/api/cameras/{*}/ppe/zones*`, `/api/cameras/{*}/compliance-rules*`) are api-coverage Table C 404s. The tables exist (migration 0024) but nothing reads or writes them — the PPE worker triggers on `sites.ppe_enabled` + camera assignment and ignores zones entirely. Revival cost: ~20 lines of route registration to make the editor work, plus real work to make [[ppe-pending-review]]'s worker actually evaluate zones/rules during detection. |
+| **Notes** | Routes is — because the backend half was never wired: complete, role-gated CRUD handlers exist in `internal/api/ppe_zones_handler.go` (zone/rule type validation, site_manager+ writes) but **no route in `router.go` registers them**, so all 8 frontend calls (`/api/cameras/{*}/ppe/zones*`, `/api/cameras/{*}/compliance-rules*`) are api-coverage Table C 404s. The tables exist (migration 0024) but nothing reads or writes them — the PPE worker triggers on `sites.ppe_enabled` + camera assignment and ignores zones entirely. The editors' only mount point (`EditCameraModal.tsx`, itself never imported) was deleted in the 2026-06 dead-code cleanup, so the two panels are unmounted orphans pending revival. Revival cost: ~20 lines of route registration plus a mount point (e.g. CameraManager's edit modal) to make the editor work, plus real work to make [[ppe-pending-review]]'s worker actually evaluate zones/rules during detection. |
 
 ## PPE pending-review queue {#ppe-pending-review}
 
@@ -118,7 +102,7 @@ its state recorded here.
 | **Flag** | vlm_safety |
 | **Docs** | — |
 | **Smoke test** | On a site with `ppe_enabled` and an assigned camera, have someone stand in view without a vest → within ~30 s the portal dashboard's review queue shows the entry with its frame → Confirm → entry leaves the pending list. |
-| **Notes** | P2-C-01 (worker + queue) and P2-C-03 (async Qwen second opinion via `internal/safety`; `VLM_WORKER_ENABLED=false` by default, so `vlm_verdict` stays `pending` until Qwen is confirmed healthy). Worker runs leader-elected in the worker container; frames land in `PPE_FRAMES_DIR` with a 7-day retention sweep; the `ppe_detected` WS broadcast only fires from the API binary (hub is nil in the worker). Gating gotcha: `PendingReviewQueue` on `/portal` is not behind a `FeatureGate` yet — it shows for any site whose `feature_mode` includes safety, so flag wiring is pending work. Dead code: `getPendingSafetyFindings`/`validateSafetyFinding` call `/api/v1/safety/findings/*` (Table C 404) and no component uses them. Zone-aware enforcement is [[ppe-zones-compliance-rules]] (stub). |
+| **Notes** | P2-C-01 (worker + queue) and P2-C-03 (async Qwen second opinion via `internal/safety`; `VLM_WORKER_ENABLED=false` by default, so `vlm_verdict` stays `pending` until Qwen is confirmed healthy). Worker runs leader-elected in the worker container; frames land in `PPE_FRAMES_DIR` with a 7-day retention sweep; the `ppe_detected` WS broadcast only fires from the API binary (hub is nil in the worker). Gating gotcha: `PendingReviewQueue` on `/portal` is not behind a `FeatureGate` yet — it shows for any site whose `feature_mode` includes safety, so flag wiring is pending work. The dead `getPendingSafetyFindings`/`validateSafetyFinding` clients (`/api/v1/safety/findings/*`, never backed by a route) were deleted in the 2026-06 dead-code cleanup. Zone-aware enforcement is [[ppe-zones-compliance-rules]] (stub). |
 
 ## Person tracking {#person-tracking}
 

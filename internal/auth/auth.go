@@ -128,12 +128,6 @@ const (
 	// written by the PPE worker (P2-C-01). Distinct from "snapshot" so a
 	// token minted for a recording cannot be replayed against the PPE path.
 	MediaKindPPEFrame MediaKind = "ppe-frame" // PPE evidence JPEG in PPEFramesDir
-	// MediaKindLiveHLS is the audience for gohlslib-backed LL-HLS live-view
-	// tokens (P3-INFRA-06). Distinct from "hls" (which refers to legacy
-	// FFmpeg-written playlists on disk) so a token for a recorded playlist
-	// cannot be replayed to trigger an RTSP pull from mediamtx.
-	// Live-HLS tokens use a 60-second TTL; the frontend refreshes every 30s.
-	MediaKindLiveHLS MediaKind = "live-hls"
 )
 
 // IsValid reports whether k is one of the recognized media kinds. Anything
@@ -141,7 +135,7 @@ const (
 // silently fall through to a "default" code path.
 func (k MediaKind) IsValid() bool {
 	switch k {
-	case MediaKindSegment, MediaKindHLS, MediaKindSnapshot, MediaKindPPEFrame, MediaKindLiveHLS:
+	case MediaKindSegment, MediaKindHLS, MediaKindSnapshot, MediaKindPPEFrame:
 		return true
 	}
 	return false

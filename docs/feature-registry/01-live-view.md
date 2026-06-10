@@ -37,7 +37,7 @@ on the live path anymore.
 | **Flag** | — |
 | **Docs** | [streaming.md](../streaming.md), [decisions.md](../decisions.md) |
 | **Smoke test** | While logged in to test.ironsight, fetch `/api/live/<cameraId>/index.m3u8` — playlist returns 200 with segment URIs rewritten to `/api/live/<cameraId>/...`; the same camera's tile plays in Chrome. |
-| **Notes** | Auth is the SSO session cookie — no media tokens, no refresh loop. Only the `_sub` (sub-stream) path is proxied; there is no main-stream live option yet. DEAD CODE: the previous gohlslib LL-HLS path (`internal/streaming/livehls.go` `LiveHLSManager`, the `live-hls` token kind in `internal/api/media_v1.go` and `frontend/src/lib/media.ts`, plus the vendored patched mediacommon) is no longer called by the frontend; it is a deletion candidate, revival cost zero. The "Live View" section of docs/streaming.md still documents the old gohlslib path and is stale. Firefox HEVC gap is surfaced as a per-tile codec error; server-side transcode is the eventual fix. |
+| **Notes** | Auth is the SSO session cookie — no media tokens, no refresh loop. Only the `_sub` (sub-stream) path is proxied; there is no main-stream live option yet. The previous gohlslib LL-HLS path (`internal/streaming/livehls.go` `LiveHLSManager`, its warm-pool goroutine in `cmd/server/main.go`, and the `live-hls` token kind in `internal/api/media_v1.go` / `frontend/src/lib/media.ts`) was deleted in the 2026-06 dead-code cleanup; the vendored patched mediacommon stays (still used by the Go recorder, and the hvcC byte-patch test in `internal/streaming/livehls_h265_init_test.go` covers it). The "Live View" section of docs/streaming.md still documents the old gohlslib path and is stale. Firefox HEVC gap is surfaced as a per-tile codec error; server-side transcode is the eventual fix. |
 
 ## Popout single-camera view {#live-popout}
 
@@ -69,7 +69,7 @@ on the live path anymore.
 | **Flag** | — |
 | **Docs** | — |
 | **Smoke test** | Select a PTZ camera's live tile → hold an arrow button → camera pans; release → motion stops within ~1 s. In Edit Camera → Milesight → PTZ, goto preset 1. |
-| **Notes** | Stop is debounced 50 ms so direction changes don't emit stop/start churn. Overlay only renders when `has_ptz` and live. Separate, UNWIRED path: `getPTZCapability`/`sendPTZCommand` in `frontend/src/lib/ironsight-api.ts` call `/api/v1/cameras/{*}/ptz*`, which match no backend route (api-coverage Table C, 404s) — that is the operator-console PTZ path (07-soc-operator.md), not this one. |
+| **Notes** | Stop is debounced 50 ms so direction changes don't emit stop/start churn. Overlay only renders when `has_ptz` and live. The separate, unwired operator-console PTZ path (`getPTZCapability`/`sendPTZCommand` → `/api/v1/cameras/{*}/ptz*`, which never had a backend route) was deleted in the 2026-06 dead-code cleanup along with its only consumer, `operator/PTZControls.tsx` (F-23). |
 
 ## Map view {#map-view}
 
@@ -95,7 +95,7 @@ on the live path anymore.
 | **Tier** | core |
 | **Status** | partial |
 | **Definition** | "Camera VCA (on-device)" tab in the camera editor embeds the camera's own web UI in an iframe so on-device VCA (intrusion, line-cross) is configured at the source of truth instead of via the fragile pull/push sync. |
-| **Frontend** | `frontend/src/components/VCAZoneEditor.tsx`, `frontend/src/components/EditCameraModal.tsx` |
+| **Frontend** | `frontend/src/components/VCAZoneEditor.tsx`, `frontend/src/components/CameraManager.tsx` |
 | **Routes** | — |
 | **Tables** | cameras |
 | **Flag** | — |

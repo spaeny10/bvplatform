@@ -13,22 +13,20 @@
 // Both throw on non-2xx via `fetchJSON`; the wrapping component or React
 // Query hook handles the error. Earlier revisions silently fell back to
 // inline mock data on any error, which made backend outages invisible to
-// the operator — that fallback was removed in P1-B-10. Six dashboard
-// pages (analytics, AIInsightsPanel, IncidentTimeline, MultiSiteSplitView,
-// OperatorCameraGrid, PendingReviewQueue) still import the mock module
-// directly; wiring them to the real API is a separate follow-up so the
-// mock module isn't deleted yet.
+// the operator — that fallback was removed in P1-B-10. Two surfaces
+// (the /analytics page and operator/IncidentTimeline) still import the
+// mock module directly; wiring them to the real API is a separate
+// follow-up so the mock module isn't deleted yet.
 
 import type {
   SiteSummary, SiteDetail, IncidentSummary, IncidentDetail,
   AlertEvent, SOCIncident, SearchResult, SearchFilters, ComplianceHistory,
-  ReportRequest, ReportStatus,
-  Company, CompanyUser, SiteCreate, CameraAssignment, SiteUserAssignment, IRONSightCamera,
+  Company, CompanyUser, SiteCreate, CameraAssignment, SiteUserAssignment,
   SOCOperator, SiteLock,
   SiteSOP, SiteMapData,
-  ShiftHandoff, AuditEntry, OperatorPresence,
-  SLAConfig, OperatorMetrics, ScheduledReport, EvidencePackage, NotificationRule,
-  PTZCapability, ExclusionZone, SavedSearch, Integration,
+  ShiftHandoff, OperatorPresence,
+  OperatorMetrics, ScheduledReport, EvidencePackage, NotificationRule,
+  ExclusionZone, SavedSearch, Integration,
   PortalSummary,
 } from '@/types/ironsight';
 export type { PortalSummary } from '@/types/ironsight';
@@ -166,15 +164,6 @@ export async function getSearchSuggestions(q: string): Promise<string[]> {
   }
 }
 
-// ── Reports ──
-
-export async function generateReport(req: ReportRequest): Promise<ReportStatus> {
-  return fetchJSON<ReportStatus>(`${BASE}/reports/generate`, {
-    method: 'POST',
-    body: JSON.stringify(req),
-  });
-}
-
 // ── Companies ──
 
 export async function getCompanies(): Promise<Company[]> {
@@ -196,13 +185,6 @@ export async function createCompany(data: Omit<Company, 'id' | 'created_at'>): P
 
 export async function getCompanyUsers(companyId: string): Promise<CompanyUser[]> {
   return fetchJSON<CompanyUser[]>(`${BASE}/companies/${companyId}/users`);
-}
-
-export async function createCompanyUser(data: Omit<CompanyUser, 'id' | 'created_at'>): Promise<CompanyUser> {
-  return fetchJSON<CompanyUser>(`${BASE}/companies/${data.company_id}/users`, {
-    method: 'POST',
-    body: JSON.stringify(data),
-  });
 }
 
 // ── Site Management ──
@@ -276,37 +258,7 @@ export async function unassignUserFromSite(siteId: string, userId: string): Prom
   await fetchJSON(`${BASE}/sites/${siteId}/users/${userId}`, { method: 'DELETE' });
 }
 
-// ── IRONSight Cameras (from existing NVR system) ──
-//
-// Reads from /api/cameras (the camera-domain API in lib/api.ts), not
-// /api/v1/*, because this is the same camera record both clients
-// surface. The mapping below adapts the camera-domain shape into the
-// IRONSightCamera type the platform UI expects.
-
-export async function getIRONSightCameras(): Promise<IRONSightCamera[]> {
-  const res = await authFetch('/api/cameras');
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(body || `IRONSight cameras: HTTP ${res.status}`);
-  }
-  const cameras = await res.json();
-  return cameras.map((c: Record<string, unknown>) => ({
-    id: c.id,
-    name: c.name,
-    onvif_address: c.onvif_address,
-    status: c.status,
-    manufacturer: c.manufacturer || '',
-    model: c.model || '',
-    rtsp_uri: c.rtsp_uri || '',
-    recording: c.recording ?? false,
-  }));
-}
-
 // ── SOC Operators ──
-
-export async function getSOCOperators(): Promise<SOCOperator[]> {
-  return fetchJSON<SOCOperator[]>(`${BASE}/operators`);
-}
 
 export async function getCurrentOperator(): Promise<SOCOperator> {
   // The logged-in user's identity is authoritative — always merge it
@@ -425,12 +377,6 @@ export async function updatePresence(data: Partial<OperatorPresence>): Promise<v
   await fetchJSON(`${BASE}/operators/presence`, { method: 'PUT', body: JSON.stringify(data) });
 }
 
-// ── SLA Configuration ──
-
-export async function getSLAConfigs(): Promise<SLAConfig[]> {
-  return fetchJSON<SLAConfig[]>(`${BASE}/sla`);
-}
-
 // ── Operator Metrics ──
 
 export async function getOperatorMetrics(): Promise<OperatorMetrics[]> {
@@ -441,10 +387,6 @@ export async function getOperatorMetrics(): Promise<OperatorMetrics[]> {
 
 export async function getScheduledReports(): Promise<ScheduledReport[]> {
   return fetchJSON<ScheduledReport[]>(`${BASE}/reports/scheduled`);
-}
-
-export async function createScheduledReport(data: Omit<ScheduledReport, 'id'>): Promise<ScheduledReport> {
-  return fetchJSON<ScheduledReport>(`${BASE}/reports/scheduled`, { method: 'POST', body: JSON.stringify(data) });
 }
 
 export async function toggleScheduledReport(reportId: string, enabled: boolean): Promise<void> {
@@ -474,28 +416,10 @@ export async function deleteNotificationRule(ruleId: string): Promise<void> {
   await fetchJSON(`${BASE}/notifications/${ruleId}`, { method: 'DELETE' });
 }
 
-// ── PTZ Camera Controls ──
-
-export async function getPTZCapability(cameraId: string): Promise<PTZCapability | null> {
-  return fetchJSON<PTZCapability>(`${BASE}/cameras/${cameraId}/ptz`);
-}
-
-export async function sendPTZCommand(cameraId: string, command: { pan?: number; tilt?: number; zoom?: number; preset_id?: string }): Promise<void> {
-  await fetchJSON(`${BASE}/cameras/${cameraId}/ptz/command`, { method: 'POST', body: JSON.stringify(command) });
-}
-
 // ── Exclusion Zones ──
 
 export async function getExclusionZones(siteId: string): Promise<ExclusionZone[]> {
   return fetchJSON<ExclusionZone[]>(`${BASE}/sites/${siteId}/zones`);
-}
-
-export async function createExclusionZone(data: Omit<ExclusionZone, 'id' | 'created_at'>): Promise<ExclusionZone> {
-  return fetchJSON<ExclusionZone>(`${BASE}/sites/${data.site_id}/zones`, { method: 'POST', body: JSON.stringify(data) });
-}
-
-export async function deleteExclusionZone(zoneId: string): Promise<void> {
-  await fetchJSON(`${BASE}/zones/${zoneId}`, { method: 'DELETE' });
 }
 
 // ── Saved Searches ──
@@ -545,31 +469,12 @@ export async function getIntegrations(): Promise<Integration[]> {
   return fetchJSON<Integration[]>(`${BASE}/integrations`);
 }
 
-export async function createIntegration(data: Omit<Integration, 'id' | 'created_at'>): Promise<Integration> {
-  return fetchJSON<Integration>(`${BASE}/integrations`, { method: 'POST', body: JSON.stringify(data) });
-}
-
 export async function toggleIntegration(integrationId: string, active: boolean): Promise<void> {
   await fetchJSON(`${BASE}/integrations/${integrationId}`, { method: 'PATCH', body: JSON.stringify({ active }) });
 }
 
 export async function deleteIntegration(integrationId: string): Promise<void> {
   await fetchJSON(`${BASE}/integrations/${integrationId}`, { method: 'DELETE' });
-}
-
-// ── Operator Dispatch & Presence ──
-
-export type OperatorPresenceStatus = 'available' | 'engaged' | 'wrap_up' | 'away';
-
-export async function updateOperatorPresence(operatorId: string, status: OperatorPresenceStatus): Promise<void> {
-  await fetchJSON(`${BASE}/operators/${operatorId}/presence`, {
-    method: 'PUT',
-    body: JSON.stringify({ status }),
-  });
-}
-
-export async function getAlarmQueue(): Promise<{ depth: number; oldest_ts: number | null }> {
-  return fetchJSON(`${BASE}/dispatch/queue`);
 }
 
 // ── Security Events ──
@@ -859,34 +764,6 @@ export async function createEvidenceShareLink(req: EvidenceShareRequest): Promis
 
 export async function revokeEvidenceShareLink(token: string): Promise<void> {
   await fetchJSON(`${BASE}/shares/${encodeURIComponent(token)}`, { method: 'DELETE' });
-}
-
-// ── vLM Safety Findings ──
-
-export async function getPendingSafetyFindings(siteId?: string): Promise<any[]> {
-  const params = siteId ? `?site_id=${siteId}` : '';
-  return fetchJSON(`${BASE}/safety/findings/pending${params}`);
-}
-
-export async function validateSafetyFinding(findingId: string, valid: boolean, correction?: string): Promise<void> {
-  await fetchJSON(`${BASE}/safety/findings/${findingId}/validate`, {
-    method: 'POST',
-    body: JSON.stringify({ valid, correction }),
-  });
-}
-
-// ── AI Telemetry (Active Learning) ──
-
-export async function submitAICorrection(payload: {
-  finding_id: string;
-  original_caption: string;
-  correction_type: string;
-  // Note: customer_id and site_id are stripped by the backend before forwarding to the training lake
-}): Promise<void> {
-  await fetchJSON(`${BASE}/ai-telemetry/corrections`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
 }
 
 // ── Feature Flags ──

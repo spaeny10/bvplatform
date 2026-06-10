@@ -209,39 +209,6 @@ func main() {
 	recEngine := recording.NewEngine(cfg, db)
 	hlsServer := streaming.NewHLSServer(cfg, db)
 	mtxServer := streaming.NewMediaMTXServer(cfg)
-	// P3-INFRA-06: LL-HLS live-view manager. Lazy-starts one gohlslib
-	// muxer per camera on first viewer request; idle-stops after 30s with
-	// no viewers. Pulls RTSP from mediamtx relay at MediaMTXRTSPAddr.
-	liveHLSMgr := streaming.NewLiveHLSManager(cfg.MediaMTXRTSPAddr)
-
-	// Pre-warm pool: hold an always-on muxer for every active camera so
-	// the first viewer's click-to-first-frame is near-zero instead of
-	// ~6-10s (RTSP DESCRIBE + first-keyframe wait + 6s segment fill).
-	// One goroutine, 20s tick, re-reads camera list each round so newly
-	// added cameras get warmed without an api restart. 20s sits well
-	// under liveHLSIdleTimeout (30s) so muxers never time out between
-	// ticks. Errors on individual cameras are logged inside WarmCameras
-	// and never propagate — one offline camera doesn't cool the others.
-	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		defer ticker.Stop()
-		warmOnce := func() {
-			cams, err := db.ListCameras(context.Background())
-			if err != nil {
-				log.Printf("[LIVEHLS] warm: ListCameras failed: %v", err)
-				return
-			}
-			ids := make([]uuid.UUID, 0, len(cams))
-			for _, c := range cams {
-				ids = append(ids, c.ID)
-			}
-			liveHLSMgr.WarmCameras(ids)
-		}
-		warmOnce() // immediate first warm at boot
-		for range ticker.C {
-			warmOnce()
-		}
-	}()
 
 	// Batch-job workers. In single-binary mode (RUN_WORKERS=true, the
 	// default) we instantiate and start them in-process below. In the
@@ -438,7 +405,7 @@ func main() {
 
 	// Create HTTP router (Chi-based, already has all routes including HLS and exports)
 	player := onvif.NewBackchannelPlayer()
-	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, liveHLSMgr, det, player, subReg, notifier, aiClient)
+	router := api.NewRouter(cfg, db, hub, recEngine, hlsServer, mtxServer, det, player, subReg, notifier, aiClient)
 
 	// Start HTTP server
 	addr := fmt.Sprintf(":%s", cfg.ServerPort)
@@ -458,7 +425,6 @@ func main() {
 
 		recEngine.StopAll()
 		hlsServer.StopAll()
-		liveHLSMgr.StopAll() // P3-INFRA-06: tear down any active gohlslib muxers
 		mtxServer.Stop()
 		if retentionMgr != nil {
 			retentionMgr.Stop()

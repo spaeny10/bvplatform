@@ -78,14 +78,6 @@ export const BRAND = {
 } as const;
 
 /**
- * Document title helper — standardises how we format per-page titles.
- * Usage in layout.tsx: title: pageTitle('Admin')  →  "Admin — Ironsight"
- */
-export function pageTitle(page: string): string {
-    return `${page} — ${BRAND.name}`;
-}
-
-/**
  * CSS custom-property string injected into <html> at render time. Keeps
  * the three brand colors reachable from any CSS / inline style without
  * reimporting the TS module. See layout.tsx where this is applied.

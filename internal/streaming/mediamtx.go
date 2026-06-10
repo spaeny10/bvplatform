@@ -18,9 +18,10 @@ import (
 )
 
 // MediaMTXServer manages a MediaMTX process used as an RTSP relay.
-// P3-INFRA-06: WebRTC has been removed; live view is now LL-HLS via
-// gohlslib in ironsight-api. mediamtx's sole role is RTSP relay for
-// the recording engine and the gohlslib live-HLS muxer.
+// P3-INFRA-06: WebRTC has been removed; live view is mediamtx's native
+// HLS server, proxied through /api/live/{camera}/* (HandleLiveProxy).
+// mediamtx's roles are RTSP relay for the recording engine and native
+// HLS for live view.
 type MediaMTXServer struct {
 	cfg        *config.Config
 	cmd        *exec.Cmd
@@ -430,8 +431,8 @@ func (m *MediaMTXServer) writeConfig() error {
 	// side of MediaMTXRTSPAddr is how the *Go* process reaches mediamtx,
 	// not how mediamtx listens.
 	//
-	// P3-INFRA-06: WebRTC is disabled — live view is now LL-HLS via
-	// gohlslib inside ironsight-api. mediamtx's role is RTSP relay only.
+	// P3-INFRA-06: WebRTC is disabled — live view is mediamtx native
+	// HLS, proxied through /api/live/{camera}/* in ironsight-api.
 	// Allow any user from any source IP for all actions.  mediamtx defaults
 	// to restricting the "api" action to 127.0.0.1/::1 only, which blocks
 	// the ironsight-api container (different docker bridge IP) from calling
@@ -457,7 +458,7 @@ func (m *MediaMTXServer) writeConfig() error {
 		// reload. See internal/streaming/mediamtx_api.go.
 		API:         true,
 		APIAddress:  listenPortSuffix(m.cfg.MediaMTXAPIAddr, "9997"),
-		RTSP:        true, // Local RTSP relay — recording engine and gohlslib both pull from here
+		RTSP:        true, // Local RTSP relay — the recording engine pulls from here
 		RTSPAddress: listenPortSuffix(m.cfg.MediaMTXRTSPAddr, "18554"),
 		// Enlarged outgoing write queue to tolerate damaged HEVC NAL
 		// fragmentation from cellular Milesight DVRs (see field comment).
