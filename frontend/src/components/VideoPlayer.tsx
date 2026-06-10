@@ -837,7 +837,10 @@ export default function VideoPlayer({
                 <div
                     style={{
                         position: 'absolute',
-                        top: 8,
+                        // Below the header row (.video-cell-header is top:0, ~30px
+                        // tall) so the playback wall-clock doesn't render on top
+                        // of the camera name.
+                        top: 34,
                         left: 8,
                         background: 'rgba(0, 0, 0, 0.65)',
                         color: '#fff',
