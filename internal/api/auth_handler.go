@@ -115,6 +115,18 @@ func CSRFMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Camera web-UI proxy: the iframe POSTs target the camera's own
+		// forms (login, on-device VCA config writes). The camera doesn't
+		// know about Ironsight's CSRF token, and Ironsight's CSRF cookie
+		// wouldn't add protection here — the proxy passes the request
+		// straight through to the camera with the camera's own session
+		// cookies (which are path-scoped to /api/cameras/<id>/web-ui/
+		// by rewriteSetCookie). RequireAuth still gates the route.
+		if strings.Contains(r.URL.Path, "/web-ui/") || strings.HasSuffix(r.URL.Path, "/web-ui") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		cookie, err := r.Cookie(csrfCookieName)
 		if err != nil || cookie.Value == "" {
 			http.Error(w, "csrf cookie missing", http.StatusForbidden)

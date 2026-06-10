@@ -215,7 +215,15 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   // round-trip; the iframe approach is the camera's UI is the source of
   // truth for camera-side rules.
   const [vcaTab, setVcaTab] = useState<'platform' | 'camera'>('platform');
-  const cameraWebURL = cameraIp ? `http://${cameraIp}/` : null;
+  // Route iframe through Ironsight same-origin proxy so the camera's UI
+  // can be embedded over https (the camera itself only speaks http, and
+  // its X-Frame-Options would otherwise block embedding). See
+  // internal/api/camera_web_proxy.go for the framing-header strip +
+  // <base href> injection that makes this work across vendors. The
+  // "Open in new tab" fallback link still points at the camera directly
+  // for cases where the proxy chokes on a particular vendor's HTML.
+  const cameraWebURL = `/api/cameras/${cameraId}/web-ui/`;
+  const cameraDirectURL = cameraIp ? `http://${cameraIp}/` : null;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} onClick={stopBubble} onMouseDown={stopBubble}>
@@ -245,15 +253,13 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
             borderBottom: vcaTab === 'camera' ? '2px solid #a855f7' : '2px solid transparent',
             marginBottom: -1,
           }}
-          disabled={!cameraWebURL}
-          title={!cameraWebURL ? 'Camera IP unknown' : ''}
         >
           Camera VCA (on-device)
         </button>
       </div>
 
       {/* ───────────────────────── Camera tab ───────────────────────── */}
-      {vcaTab === 'camera' && cameraWebURL && (
+      {vcaTab === 'camera' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <div style={{
             padding: '8px 12px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
@@ -262,11 +268,15 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
           }}>
             Configure camera-side VCA (intrusion, line-cross, etc.) directly in the camera's own UI below.
             The camera runs detection in its DSP and emits ONVIF events that Ironsight ingests automatically — no separate sync step.
-            {' '}
-            <a href={cameraWebURL} target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', fontWeight: 600 }}>
-              Open in new tab ↗
-            </a>
-            {' '}if the embedded view doesn't load (some cameras block iframe embedding).
+            {cameraDirectURL && (
+              <>
+                {' '}
+                <a href={cameraDirectURL} target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', fontWeight: 600 }}>
+                  Open directly ↗
+                </a>
+                {' '}(bypasses the Ironsight proxy — works only on the camera LAN).
+              </>
+            )}
           </div>
           <iframe
             src={cameraWebURL}

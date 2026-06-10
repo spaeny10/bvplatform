@@ -206,6 +206,17 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/{id}/vca/pull", HandleVCAPull(db))
 			r.Post("/{id}/vca/pull", HandleVCAPull(db))
 
+			// Same-origin proxy for the camera's own web UI. The
+			// VCAZoneEditor iframes this so operators can configure
+			// on-device VCA without leaving Ironsight. See
+			// internal/api/camera_web_proxy.go for the framing-header
+			// strip + <base href> injection that makes the iframe work
+			// across vendors. ALL HTTP methods need to pass through
+			// because the camera's UI does POST for login + config
+			// writes, plus the standard GET for assets.
+			r.HandleFunc("/{id}/web-ui/*", HandleCameraWebUIProxy(db))
+			r.HandleFunc("/{id}/web-ui", HandleCameraWebUIProxy(db))
+
 			// Milesight vendor-config pass-through. Each {panel} is an
 			// allowlisted CGI action pair (see internal/api/milesight_config.go).
 			// GET is gated by camera access, PUT by admin role.
