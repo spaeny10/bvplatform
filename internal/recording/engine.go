@@ -829,8 +829,45 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				continue
 			}
 
+			// Determine the newest segment file this pass. ffmpeg keeps the
+			// most-recent segment OPEN (and unfinalized — no moov atom) until
+			// it rotates to the next file, so the open segment can never be
+			// probed and must never be registered yet. os.ReadDir returns
+			// names sorted ascending and our segment names (seg_YYYYMMDD_
+			// HHMMSS.mp4 continuous / ring_*.mp4 event) sort chronologically,
+			// so the LAST entry matching our pattern is the currently-open
+			// one. We skip it WITHOUT marking it seen, so a later scan picks
+			// it up once a newer sibling exists (i.e. it has finalized).
+			//
+			// Background: the H.264 sub stream is gapless but low-bitrate, so
+			// no new fragment lands in the open file during the 2s stability
+			// check below — the size looks stable and the file would be
+			// treated as finalized, probed before the moov is written, fail
+			// ("moov atom not found") and previously get marked seen forever.
+			// Excluding the open file removes that whole failure class.
+			newestSegment := ""
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				n := e.Name()
+				if !strings.HasSuffix(n, ".mp4") || (!strings.HasPrefix(n, "seg_") && !strings.HasPrefix(n, "ring_")) {
+					continue
+				}
+				if n > newestSegment {
+					newestSegment = n
+				}
+			}
+
 			for _, entry := range entries {
 				if entry.IsDir() || seen[entry.Name()] {
+					continue
+				}
+
+				// Never probe/register the currently-open (newest) segment —
+				// ffmpeg is still writing it and has not flushed the moov.
+				// Do NOT mark it seen; a later scan handles it after rotation.
+				if entry.Name() == newestSegment {
 					continue
 				}
 
@@ -920,8 +957,18 @@ func (r *Recorder) watchSegments(ctx context.Context) {
 				if info.ModTime().After(startedAt) {
 					vc, codecErr := ProbeVideoCodec(r.ffmpegPath, filePath)
 					if codecErr != nil {
-						log.Printf("[REC] skipping segment %s — codec probe failed (likely truncated, no moov): %v", entry.Name(), codecErr)
-						seen[entry.Name()] = true
+						// A probe failure ("moov atom not found") is usually
+						// transient: ffmpeg writes the moov atom only when it
+						// rotates the segment, so a just-rotated file can be
+						// scanned in the brief window before the moov lands.
+						// Retry on the next scan (do NOT mark seen). Only give
+						// up when the file is genuinely stale — well past the
+						// finalize window (segmentDur*2) and STILL unprobeable,
+						// meaning it was truncated/killed mid-write.
+						if time.Since(info.ModTime()) > time.Duration(r.segmentDur*2)*time.Second {
+							log.Printf("[REC] giving up on segment %s — codec probe still failing %s after last write (truncated, no moov): %v", entry.Name(), time.Since(info.ModTime()).Round(time.Second), codecErr)
+							seen[entry.Name()] = true
+						}
 						continue
 					}
 					videoCodec = vc
