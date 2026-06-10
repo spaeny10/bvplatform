@@ -103,6 +103,37 @@ services:
       # The Go API reaches it over the backplane network at mediamtx:9997.
     networks: [backplane]
 
+  # go2rtc — Phase 1a low-latency live view (low-latency-live-view-go2rtc.md).
+  # Serves the live grid over MSE-over-WebSocket (~sub-second) as a faster
+  # alternative to the ~20 s mediamtx HLS path. The Go API proxies
+  # /api/live2/{cam}/ws → go2rtc:1984/api/ws with the same session-cookie +
+  # CanAccessCamera gate (internal/api/live2_proxy.go). Behind the
+  # `lowlatency_live` feature flag (default OFF) — ships dark, enabled per
+  # env via FEATURES_OVERRIDE once bench-validated.
+  #
+  # Source: go2rtc pulls from mediamtx's RTSP relay (rtsp://mediamtx:18554/
+  # {cam}_sub), NOT a second cellular pull from the camera. Streams are
+  # registered at runtime by the Go API via go2rtc's PUT /api/streams — no
+  # restart, no static camera list (see deploy/go2rtc/go2rtc.yaml).
+  go2rtc:
+    # Pinned: 1.9.14 is the latest stable (2026-01-19). Never :latest —
+    # an unpinned bump could change MSE framing or the control-API contract
+    # and break the live2 proxy silently. Bump deliberately + re-bench.
+    image: docker.io/alexxit/go2rtc:1.9.14
+    container_name: ironsight-go2rtc
+    restart: unless-stopped
+    depends_on:
+      mediamtx:
+        condition: service_started
+    volumes:
+      # Read-only bootstrap config. Cameras are added at runtime via the
+      # control API, so this file carries no per-camera state.
+      - ./deploy/go2rtc/go2rtc.yaml:/config/go2rtc.yaml:ro
+    # Port 1984 (HTTP/WS API) is intentionally NOT published to the host.
+    # The Go API reaches it over the backplane at go2rtc:1984; browsers only
+    # ever reach it through the authenticated /api/live2/* proxy.
+    networks: [backplane]
+
   # On-camera-frame YOLO detection service. Called on-demand by the API
   # when an event fires; not in the hot path for recording.
   # `localhost/` prefix tells Podman this is a locally-built image, don't
@@ -204,6 +235,9 @@ services:
       MEDIAMTX_WEBRTC_ADDR: mediamtx:8889
       MEDIAMTX_RTSP_ADDR: mediamtx:18554
       MEDIAMTX_API_ADDR: mediamtx:9997
+      # go2rtc sidecar (Phase 1a low-latency live). host:port, no scheme —
+      # the live2 proxy prepends ws:// / http://. Reached over the backplane.
+      GO2RTC_ADDR: go2rtc:1984
       # Hosts/IPs to advertise in WebRTC ICE candidates beyond the docker
       # bridge IP. Set this to the host's LAN IP and/or public hostname so
       # browsers can actually reach the media port. Empty = bridge-only,

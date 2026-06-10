@@ -1,0 +1,43 @@
+# go2rtc sidecar config — Phase 1a low-latency live view.
+# Spec: ironsight/feature-requests/low-latency-live-view-go2rtc.md
+#
+# go2rtc serves the live grid over MSE-over-WebSocket with sub-second
+# glass-to-glass. The Go API proxies /api/live2/{cam}/ws to this sidecar's
+# /api/ws?src=<cam>_sub (see internal/api/live2_proxy.go), gated by the same
+# session cookie + CanAccessCamera as the HLS path. Browsers NEVER reach
+# go2rtc directly — only via the authenticated proxy on the backplane.
+#
+# DYNAMIC CAMERAS — why `streams:` is intentionally empty:
+#   Cameras are added/removed at RUNTIME. Rather than templating a fixed
+#   list (which would silently cap live2 to whatever was known at deploy
+#   time), the Go API registers each camera's stream on first viewer connect
+#   via go2rtc's HTTP control API:
+#       PUT /api/streams?name=<cam>_sub&src=rtsp://<mediamtx>:18554/<cam>_sub
+#   This is in-memory, needs no restart, and is idempotent. The SOURCE is
+#   mediamtx's existing RTSP relay (the {cam}_sub path the recorder already
+#   maintains), so go2rtc adds NO second cellular pull from the camera.
+#   It just fans out the substream mediamtx already has in H.265.
+#
+# So there is nothing to enumerate here. The block below stays empty by
+# design; do not "fix" it by listing cameras.
+streams: {}
+
+# HTTP API + WebUI. /api/ws (MSE) and /api/streams (runtime registration)
+# live here. Bind on all interfaces INSIDE the container; the backplane
+# network is not published to the host (compose maps no go2rtc host port),
+# so only sibling containers (the Go api) can reach :1984.
+api:
+  listen: ":1984"
+  # No origin allowlist needed: the only client is the Go api proxy, which
+  # dials server-to-server on the backplane. Browser auth happens at the
+  # /api/live2 proxy, not here.
+
+# We do NOT need go2rtc's own RTSP server, WebRTC, or RTMP listeners — the
+# Go api consumes only the MSE WebSocket. Leave them unconfigured (default
+# off / no published port). HEVC over MSE is handled natively by go2rtc;
+# the existing H.265 substream works without transcode (Phase 1a).
+webrtc:
+  listen: ""  # disabled — MSE-over-WS is the only transport we use
+
+log:
+  level: info
