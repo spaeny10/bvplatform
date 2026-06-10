@@ -198,6 +198,15 @@ type Config struct {
 	// Env var: MEDIAMTX_HLS_ADDR
 	MediaMTXHLSAddr string
 
+	// Go2RTCAddr is the host:port of the go2rtc sidecar's HTTP/WS API
+	// (default port 1984). The Go API proxies /api/live2/{cam}/ws to
+	// ws://<Go2RTCAddr>/api/ws?src=<cam>_sub for the Phase 1a low-latency
+	// MSE-over-WebSocket live path (low-latency-live-view-go2rtc.md).
+	// Must NOT include a scheme — "ws://" is prepended in live2_proxy.go.
+	// Default: go2rtc:1984 for compose; 127.0.0.1:1984 for a local sidecar.
+	// Env var: GO2RTC_ADDR
+	Go2RTCAddr string
+
 	// WebRTCAdditionalHosts is a list of hostnames or IPs MediaMTX advertises
 	// in WebRTC ICE candidates in addition to its own bound interface(s). In
 	// docker-compose deployments MediaMTX otherwise only sees its bridge IP
@@ -408,6 +417,11 @@ func Load() *Config {
 		// embedded/dev uses loopback. Must NOT include a scheme — http:// is prepended
 		// in the live_proxy handler.
 		MediaMTXHLSAddr: getEnv("MEDIAMTX_HLS_ADDR", "127.0.0.1:8888"),
+
+		// GO2RTC_ADDR: compose deployments use the go2rtc container name;
+		// embedded/dev uses loopback. No scheme — "ws://" is prepended in
+		// live2_proxy.go. Phase 1a low-latency live view.
+		Go2RTCAddr: getEnv("GO2RTC_ADDR", "127.0.0.1:1984"),
 
 		// Empty = only advertise interfaces MediaMTX picks up itself
 		// (the docker bridge IP, in compose). For LAN browsers, set

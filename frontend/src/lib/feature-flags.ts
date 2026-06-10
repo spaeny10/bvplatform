@@ -34,7 +34,11 @@ export type FeatureFlagName =
   | 'integrations'
   | 'ai_insights'
   | 'weekly_digest'
-  | 'global_ai_training';
+  | 'global_ai_training'
+  // Phase 1a low-latency live view (low-latency-live-view-go2rtc.md):
+  // when on AND the browser supports MSE, VideoPlayer uses the go2rtc
+  // MSE-over-WebSocket path (/api/live2/{cam}/ws); off → hls.js fallback.
+  | 'lowlatency_live';
 
 export type FeatureFlags = Record<FeatureFlagName, boolean>;
 
@@ -54,6 +58,7 @@ const DEFAULT_FLAGS: FeatureFlags = {
   ai_insights: false,
   weekly_digest: false,
   global_ai_training: false,
+  lowlatency_live: false,
 };
 
 let cached: FeatureFlags | null = null;

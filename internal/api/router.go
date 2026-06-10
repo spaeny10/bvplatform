@@ -618,6 +618,16 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// exempts safe methods — no X-CSRF-Token header required.
 		r.Get("/live/{cameraID}/*", HandleLiveProxy(cfg, db))
 
+		// Phase 1a low-latency live view (low-latency-live-view-go2rtc.md).
+		// /api/live2/{cameraID}/ws upgrades the caller's WebSocket and
+		// bridges it to the go2rtc sidecar's MSE-over-WebSocket endpoint
+		// for sub-second glass-to-glass (vs ~20 s on the HLS path above).
+		// Same session-cookie + CanAccessCamera gate as HandleLiveProxy.
+		// GET upgrade → CSRFMiddleware (mounted on /api) exempts it.
+		// Frontend uses this behind the `lowlatency_live` flag (default OFF)
+		// with the /api/live/* hls.js path as fallback.
+		r.Get("/live2/{cameraID}/ws", HandleLive2Proxy(cfg, db))
+
 		// P1-A-03 mint endpoint. JWT-authenticated; caller asks for a
 		// short-lived signed URL bound to (camera_id, kind, path) and
 		// gets back /media/v1/<token>. Tenant scope is enforced here
