@@ -410,13 +410,10 @@ export async function acceptHandoff(handoffId: string): Promise<void> {
 
 // ── Audit Trail ──
 
-export async function getAuditLog(_filters?: { operator_id?: string; action?: string; limit?: number }): Promise<AuditEntry[]> {
-  return fetchJSON<AuditEntry[]>(`${BASE}/audit`);
-}
-
-export async function logAuditAction(entry: Omit<AuditEntry, 'id' | 'ts'>): Promise<void> {
-  await fetchJSON(`${BASE}/audit`, { method: 'POST', body: JSON.stringify(entry) });
-}
+// F-03: getAuditLog/logAuditAction removed — they targeted /api/v1/audit,
+// a route that never existed (the real audit API is GET /api/audit via
+// lib/api.ts queryAuditLog, which AuditLogPanel/AuditLogExport now use;
+// writes happen server-side in AuditMiddleware, never from the client).
 
 // ── Operator Presence ──
 
@@ -502,17 +499,44 @@ export async function deleteExclusionZone(zoneId: string): Promise<void> {
 }
 
 // ── Saved Searches ──
+//
+// F-24: /api/v1/search/saved was never implemented server-side (every
+// call 404'd and "save" silently no-opped). Saved searches are now
+// persisted per-browser in localStorage and labeled as local in the
+// UI. If cross-device saved searches ever become a real need, add the
+// backend table + routes and swap these implementations back to
+// fetchJSON — the call sites won't change.
+
+const SAVED_SEARCHES_KEY = 'ironsight_saved_searches';
+
+function readSavedSearches(): SavedSearch[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    return JSON.parse(localStorage.getItem(SAVED_SEARCHES_KEY) ?? '[]') as SavedSearch[];
+  } catch {
+    return [];
+  }
+}
 
 export async function getSavedSearches(): Promise<SavedSearch[]> {
-  return fetchJSON<SavedSearch[]>(`${BASE}/search/saved`);
+  return readSavedSearches();
 }
 
 export async function createSavedSearch(data: Omit<SavedSearch, 'id' | 'created_at' | 'run_count'>): Promise<SavedSearch> {
-  return fetchJSON<SavedSearch>(`${BASE}/search/saved`, { method: 'POST', body: JSON.stringify(data) });
+  const entry: SavedSearch = {
+    ...data,
+    id: `local-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    created_at: new Date().toISOString(),
+    run_count: 0,
+  } as SavedSearch;
+  const all = [entry, ...readSavedSearches()];
+  localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(all));
+  return entry;
 }
 
 export async function deleteSavedSearch(searchId: string): Promise<void> {
-  await fetchJSON(`${BASE}/search/saved/${searchId}`, { method: 'DELETE' });
+  const all = readSavedSearches().filter(s => s.id !== searchId);
+  localStorage.setItem(SAVED_SEARCHES_KEY, JSON.stringify(all));
 }
 
 // ── Integrations ──
@@ -685,7 +709,8 @@ export async function getSLAReport(params: {
   if (params.from)  qs.set('from', params.from);
   if (params.to)    qs.set('to', params.to);
   if (params.group) qs.set('group', params.group);
-  return fetchJSON(`${BASE}/reports/sla?${qs.toString()}`);
+  // F-01: HandleSLAReport is registered under /api (router.go), not /api/v1.
+  return fetchJSON(`/api/reports/sla?${qs.toString()}`);
 }
 
 export function slaReportCsvUrl(params: {
@@ -697,7 +722,8 @@ export function slaReportCsvUrl(params: {
   if (params.from)  qs.set('from', params.from);
   if (params.to)    qs.set('to', params.to);
   if (params.group) qs.set('group', params.group);
-  return `${BASE}/reports/sla?${qs.toString()}`;
+  // F-01: same /api (not /api/v1) registration as getSLAReport above.
+  return `/api/reports/sla?${qs.toString()}`;
 }
 
 /**

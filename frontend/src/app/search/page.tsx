@@ -58,7 +58,7 @@ function SearchPage() {
   // (and visible to customers under /portal/incidents). Manual incident
   // filing lives in the customer portal, not here.
 
-  useEffect(() => { getSavedSearches().then(setSavedSearches); }, []);
+  useEffect(() => { getSavedSearches().then(setSavedSearches).catch(() => setSavedSearches([])); }, []);
 
   const handleSaveSearch = async () => {
     if (!query.trim()) return;
@@ -174,8 +174,14 @@ function SearchPage() {
           </Link>
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 12, alignItems: 'center' }}>
-          <span style={{ fontSize: 10, color: T.text2, padding: '3px 8px', background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 10 }}>📷 762 cameras</span>
-          <span style={{ fontSize: 10, color: T.red, padding: '3px 8px', background: 'rgba(255,92,72,0.1)', border: '1px solid rgba(255,92,72,0.25)', borderRadius: 10 }}>⚠ 9 incidents</span>
+          {/* F-25: real counts from sitesData — previously hardcoded
+              "762 cameras" / "9 incidents" rendered as live fleet stats. */}
+          <span style={{ fontSize: 10, color: T.text2, padding: '3px 8px', background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+            📷 {sitesData.reduce((n, st) => n + (st.cameras_total ?? 0), 0)} cameras
+          </span>
+          <span style={{ fontSize: 10, color: T.text2, padding: '3px 8px', background: T.bg3, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+            🌐 {sitesData.length} sites
+          </span>
         </div>
       </div>
 
@@ -231,13 +237,13 @@ function SearchPage() {
                 scrollbarWidth: 'thin' as const,
               }}>
                 <div style={{ padding: '8px 12px', fontSize: 9, fontWeight: 600, letterSpacing: 1.5, textTransform: 'uppercase' as const, color: T.text2, borderBottom: `1px solid ${T.border}` }}>
-                  Saved Searches
+                  Saved Searches <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(this browser only)</span>
                 </div>
                 {savedSearches.map(s => (
                   <div key={s.id} style={{ display: 'flex', alignItems: 'center', padding: '6px 12px', borderBottom: `1px solid ${T.border}`, cursor: 'pointer' }} onClick={() => handleLoadSaved(s)}>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 11, fontWeight: 500, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{s.name}</div>
-                      <div style={{ fontSize: 9, color: T.text2 }}>{s.shared ? '🌐 Shared' : '🔒 Private'} · {s.run_count} runs</div>
+                      <div style={{ fontSize: 9, color: T.text2 }}>🔒 Local · saved {new Date(s.created_at).toLocaleDateString()}</div>
                     </div>
                     <button onClick={e => { e.stopPropagation(); handleDeleteSaved(s.id); }} style={{ background: 'none', border: 'none', color: T.text2, cursor: 'pointer', fontSize: 10, padding: '2px 4px' }}>✕</button>
                   </div>
