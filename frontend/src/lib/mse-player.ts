@@ -80,8 +80,33 @@ export function startMsePlayer(
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${proto}//${window.location.host}/api/live2/${cameraId}/ws`;
 
+  // Live fMP4 fragments carry non-zero (wall-clock-derived) timestamps, so
+  // the buffered range sits ahead of the element's currentTime (0) and
+  // playback never starts — the video stalls at HAVE_METADATA with a gap.
+  // After the first media lands, jump currentTime to the live edge so the
+  // element has data at the playhead; thereafter let it run.
+  let seekedToLive = false;
+  const seekToLiveEdge = () => {
+    if (seekedToLive || !sourceBuffer) return;
+    const b = video.buffered;
+    if (b.length === 0) return;
+    // Jump just inside the trailing edge (live), not the start, to minimise
+    // latency — the whole point of this path.
+    const edge = b.end(b.length - 1);
+    if (edge > 0 && (video.currentTime < b.start(0) || video.currentTime === 0)) {
+      video.currentTime = Math.max(b.start(0), edge - 0.3);
+      seekedToLive = true;
+      video.play().catch(() => { /* gesture; 'playing' listener covers it */ });
+    }
+  };
+
   const drainQueue = () => {
-    if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) return;
+    if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) {
+      // Even with nothing to append, the first buffered range may have just
+      // become available — try to start playback at the live edge.
+      seekToLiveEdge();
+      return;
+    }
     const chunk = queue.shift()!;
     try {
       sourceBuffer.appendBuffer(chunk);
