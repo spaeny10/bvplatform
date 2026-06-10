@@ -1118,7 +1118,16 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                             </button>
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button className="btn" onClick={() => setEditingCamera(null)} disabled={savingEdit}>Close</button>
-                                <button className="btn btn-primary" onClick={handleSaveAndClose} disabled={savingEdit}>
+                                <button
+                                    className="btn btn-primary"
+                                    // Prevent the focused General-tab input from blurring (and
+                                    // firing its onBlur autosave PATCH) before this click runs —
+                                    // otherwise mousedown→blur→click double-saves. handleSaveAndClose
+                                    // reads live ref values, so suppressing the blur loses nothing.
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={handleSaveAndClose}
+                                    disabled={savingEdit}
+                                >
                                     {savingEdit ? 'Saving…' : 'Save & Close'}
                                 </button>
                             </div>
