@@ -56,7 +56,7 @@ jobs:
         # TODO: migrate to golangci-lint v2 + rewrite .golangci.yml, then drop
         # continue-on-error.
         continue-on-error: true
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           # v1.64.8 is the last v1 release that builds cleanly under
           # Go 1.25 (older versions fail at x/tools/internal/tokeninternal
