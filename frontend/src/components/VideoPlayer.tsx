@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
 import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment } from '@/lib/api';
+import { useFeatureFlag } from '@/lib/feature-flags';
+import { startMsePlayer, isMseSupported, type MsePlayerHandle } from '@/lib/mse-player';
 
 // Segment URLs from /api/playback/{id} carry signed media tokens with a
 // 5-minute TTL (DefaultMediaTTL server-side). The cached segment list is
@@ -61,6 +63,13 @@ export default function VideoPlayer({
 }: VideoPlayerProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<any>(null);
+    // Phase 1a low-latency live view (low-latency-live-view-go2rtc.md): when
+    // the `lowlatency_live` flag is on AND the browser supports MSE, the live
+    // branch uses the go2rtc MSE-over-WS player instead of hls.js. Default
+    // OFF, so the live grid stays on the existing HLS path until enabled per
+    // env via FEATURES_OVERRIDE.
+    const { enabled: lowLatencyEnabled } = useFeatureFlag('lowlatency_live');
+    const mseRef = useRef<MsePlayerHandle | null>(null);
     const [error, setError] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const [bitrateBps, setBitrateBps] = useState<number>(0);
@@ -242,6 +251,47 @@ export default function VideoPlayer({
 
         const liveURL = `/api/live/${cameraId}/index.m3u8`;
 
+        // Phase 1a: low-latency MSE-over-WebSocket path via the go2rtc
+        // sidecar (/api/live2/{id}/ws). Sub-second glass-to-glass vs ~20 s
+        // on HLS — used only when the flag is on AND the browser supports
+        // MSE. Any failure surfaces through the same error UI as hls.js;
+        // the operator can refresh, or an admin can flip the flag off to
+        // fall the whole grid back to HLS. (We do NOT silently auto-fallback
+        // to hls.js on a per-tile MSE error — that would hide a broken
+        // sidecar behind a working-looking-but-20s grid.)
+        if (lowLatencyEnabled && isMseSupported()) {
+            const handle = startMsePlayer(video, cameraId, {
+                onPlaying: () => {
+                    if (!cancelled) setLoading(false);
+                },
+                onError: (headline, detail) => {
+                    if (cancelled) return;
+                    console.error('[LIVE2-MSE] error:', headline, detail);
+                    setError(detail ? `${headline}␟${detail}` : headline);
+                    setLoading(false);
+                },
+            });
+            mseRef.current = handle;
+
+            const updateResMse = () => {
+                if (video.videoWidth && video.videoHeight) {
+                    setResolution({ w: video.videoWidth, h: video.videoHeight });
+                }
+            };
+            video.addEventListener('resize', updateResMse);
+            video.addEventListener('loadedmetadata', updateResMse);
+
+            return () => {
+                cancelled = true;
+                video.removeEventListener('resize', updateResMse);
+                video.removeEventListener('loadedmetadata', updateResMse);
+                if (mseRef.current) {
+                    mseRef.current.close();
+                    mseRef.current = null;
+                }
+            };
+        }
+
         if (Hls.isSupported()) {
             hls = new Hls({
                 lowLatencyMode: false,
@@ -316,7 +366,7 @@ export default function VideoPlayer({
             }
             video.src = '';
         };
-    }, [cameraId, isLive, qualityKey]);
+    }, [cameraId, isLive, qualityKey, lowLatencyEnabled]);
 
     // ---- PLAYBACK MODE: Direct MP4 segment loading (optimized) ----
     const loadSegmentForTime = useCallback(async (targetMs: number, video: HTMLVideoElement, autoPlay: boolean, suppressLoading = false) => {
@@ -495,6 +545,11 @@ export default function VideoPlayer({
         if (hlsRef.current) {
             hlsRef.current.destroy();
             hlsRef.current = null;
+        }
+        // Clean up any live MSE-over-WS session (Phase 1a low-latency path).
+        if (mseRef.current) {
+            mseRef.current.close();
+            mseRef.current = null;
         }
         video.src = '';
 
