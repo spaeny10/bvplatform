@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // MediaMTX's HTTP control API lets us add/remove/modify paths at runtime
@@ -127,6 +129,138 @@ func (m *MediaMTXServer) apiReady(ctx context.Context) error {
 		}
 	}
 	return errors.New("mediamtx API did not become ready within 15s")
+}
+
+// pathListResponse is the subset of mediamtx's /v3/paths/list payload we
+// read. mediamtx returns more per item; we only need the names.
+type pathListResponse struct {
+	Items []struct {
+		Name string `json:"name"`
+	} `json:"items"`
+}
+
+// apiPathPresent reports whether a named path appears in the RUNNING
+// mediamtx's ACTIVE path list (GET /v3/paths/list). We deliberately use the
+// active list rather than /v3/config/paths/{get,list}: on the deployed
+// mediamtx the /v3/config/* endpoints can hang (observed: 10s+ timeouts
+// while AddStream's PATCH calls returned "context deadline exceeded"),
+// whereas /v3/paths/list answers reliably — and a path appearing there is
+// the signal that actually matters for BUG-4, because that's exactly what
+// /api/live and /api/live2 read from when serving the stream.
+//
+// Returns (true, nil) when the path is active, (false, nil) when it isn't,
+// and (false, err) on any transport/decoding error.
+func (m *MediaMTXServer) apiPathPresent(ctx context.Context, name string) (bool, error) {
+	base := m.apiBaseURL()
+	if base == "" {
+		return false, errors.New("mediamtx API address not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", base+"/v3/paths/list", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return false, &apiError{status: resp.StatusCode, body: string(respBody)}
+	}
+	var list pathListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return false, err
+	}
+	for _, it := range list.Items {
+		if it.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// EnsureStreamRegistered synchronously guarantees the RUNNING mediamtx has
+// the camera's main path active, re-issuing apiAddPath and polling
+// /v3/paths/list until it appears or `timeout` elapses.
+//
+// BUG-4: in external mode, AddStream pushes the paths to mediamtx's control
+// API in a fire-and-forget goroutine and only logs failures. If that POST
+// loses the race against mediamtx being ready (or fails transiently — the
+// /v3/config/* control endpoints are observed to time out under load on the
+// deployed instance), the create still succeeds but the running process
+// never serves the path, so /api/live and /api/live2 sit on "Connecting"
+// until someone bounces the mediamtx container. Re-issuing the add and
+// confirming the path is live closes that gap.
+//
+// Scope note: we only block on the MAIN path. The "_sub" path is
+// sourceOnDemand, so mediamtx doesn't instantiate it (and it won't show in
+// /v3/paths/list) until a viewer first reads it — waiting on it here would
+// always time out. apiAddPath is still re-issued for _sub so its config is
+// installed; it comes up on first read. The main path is what proves the
+// running mediamtx accepted the camera without a restart.
+//
+// Embedded mode (dev / single-container) is a no-op: there mediamtx is a
+// child process whose config is regenerated from the in-memory map on every
+// (re)start, so AddStream + the resume loop already cover it.
+//
+// Non-fatal by design: the caller (HandleCreateCamera / HandleUpdateCamera)
+// should let the create succeed even if this times out — it returns the
+// error for logging, but the camera row is already persisted and the next
+// mediamtx (re)start recovers the path from the bootstrap YAML.
+func (m *MediaMTXServer) EnsureStreamRegistered(ctx context.Context, cameraID uuid.UUID, timeout time.Duration) error {
+	if m.cfg.MediaMTXEmbedded {
+		return nil
+	}
+
+	m.mu.Lock()
+	info, ok := m.streams[cameraID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("camera %s not registered in mediamtx stream map", cameraID)
+	}
+
+	mainName := cameraID.String()
+	mainPath := mtxAPIPath{Source: info.rtspURI, SourceOnDemand: false, RTSPTransport: "tcp"}
+	subName := cameraID.String() + "_sub"
+	subPath := mtxAPIPath{Source: info.subStreamURI, SourceOnDemand: true, RTSPTransport: "tcp"}
+
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		present, err := m.apiPathPresent(ctx, mainName)
+		if err != nil {
+			lastErr = err
+		} else if present {
+			return nil
+		} else {
+			// The running mediamtx isn't serving the path — (re)install it.
+			// Also re-issue the sub path so its config lands; it instantiates
+			// lazily on first read so we don't wait on it.
+			if aerr := m.apiAddPath(ctx, mainName, mainPath); aerr != nil {
+				lastErr = aerr
+			}
+			if info.subStreamURI != "" {
+				if aerr := m.apiAddPath(ctx, subName, subPath); aerr != nil {
+					lastErr = aerr
+				}
+			}
+		}
+		if !time.Now().Before(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("mediamtx path %s not confirmed within %s: %w", mainName, timeout, lastErr)
+			}
+			return fmt.Errorf("mediamtx path %s not confirmed within %s", mainName, timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
 }
 
 // ── low-level helpers ──────────────────────────────────────────

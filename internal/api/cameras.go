@@ -412,6 +412,18 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			if err := mtxServer.PersistConfig(); err != nil {
 				log.Printf("[API] Failed to persist MediaMTX config for %s: %v", cam.Name, err)
 			}
+			// BUG-4: AddStream's API push is fire-and-forget; in external mode
+			// the running mediamtx can miss the new path (lost race / transient
+			// error), leaving live view stuck on "Connecting" until the
+			// container is restarted. Synchronously confirm the main + _sub
+			// paths actually registered. Non-fatal — let the create succeed and
+			// just warn on timeout (next mediamtx restart recovers from the
+			// persisted bootstrap YAML).
+			ensureCtx, ensureCancel := context.WithTimeout(r.Context(), 6*time.Second)
+			if err := mtxServer.EnsureStreamRegistered(ensureCtx, cam.ID, 5*time.Second); err != nil {
+				log.Printf("[API] MediaMTX path not confirmed for %s — live view may be delayed until next mediamtx restart: %v", cam.Name, err)
+			}
+			ensureCancel()
 		}
 
 		// Start event subscription and register for cleanup on camera delete
@@ -520,7 +532,7 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 // recording engine dial. The CanAccessCamera check is defense-in-depth
 // tenant scoping on top of the role gate (UpdateCamera's WHERE clause
 // has no org/site filter of its own).
-func HandleUpdateCamera(db *database.DB) http.HandlerFunc {
+func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -559,6 +571,23 @@ func HandleUpdateCamera(db *database.DB) http.HandlerFunc {
 		}
 
 		camera, _ := db.GetCamera(r.Context(), id)
+
+		// BUG-4: if the RTSP source URIs changed, the running mediamtx is
+		// still pointing at the old source — re-register so live view picks
+		// up the new URI without a container restart. Same fire-and-forget +
+		// synchronous-confirm pattern as HandleCreateCamera.
+		if mtxServer != nil && camera != nil && (update.RtspURI != nil || update.SubStreamURI != nil) {
+			mtxServer.AddStream(camera.ID, camera.Name, camera.RTSPUri, camera.SubStreamUri)
+			if err := mtxServer.PersistConfig(); err != nil {
+				log.Printf("[API] Failed to persist MediaMTX config for %s: %v", camera.Name, err)
+			}
+			ensureCtx, ensureCancel := context.WithTimeout(r.Context(), 6*time.Second)
+			if err := mtxServer.EnsureStreamRegistered(ensureCtx, camera.ID, 5*time.Second); err != nil {
+				log.Printf("[API] MediaMTX path not confirmed after update for %s — live view may be delayed until next mediamtx restart: %v", camera.Name, err)
+			}
+			ensureCancel()
+		}
+
 		writeJSON(w, camera)
 	}
 }
