@@ -85,7 +85,7 @@ against the Go source, ops scripts, and CI workflows, not screenshots.
 | **Flag** | — |
 | **Docs** | [media-auth.md](../media-auth.md) |
 | **Smoke test** | On test.ironsight, play any recorded event clip; paste its `/media/v1/...` URL into an incognito tab — it plays until TTL expiry (default 5 min); flip one token character → request is rejected. |
-| **Notes** | Underpins playback, exports, and every snapshot thumbnail. Cross-tenant access returns 404, never 403 (don't leak camera existence). Every serve is audit-logged through a batched ring buffer — a crash loses at most ~5 s of `media_serve` rows. The live path no longer uses media tokens ([[live-hls-pipeline]] rides the session cookie via `/api/live/*`); the `live-hls` token kind in `media_v1.go`/`media.ts` is dead code. Known gap: `/exports/*` evidence-ZIP downloads still bypass this scheme (bare FileServer, gated at create time) — open follow-up in docs/media-auth.md. |
+| **Notes** | Underpins playback, exports, and every snapshot thumbnail. Cross-tenant access returns 404, never 403 (don't leak camera existence). Every serve is audit-logged through a batched ring buffer — a crash loses at most ~5 s of `media_serve` rows. The live path no longer uses media tokens ([[live-hls-pipeline]] rides the session cookie via `/api/live/*`); the dead `live-hls` token kind was removed from `media_v1.go`/`auth.go`/`media.ts` in the 2026-06 dead-code cleanup. Known gap: `/exports/*` evidence-ZIP downloads still bypass this scheme (bare FileServer, gated at create time) — open follow-up in docs/media-auth.md. |
 
 ## HEVC recorded-playback transcode {#hevc-transcode}
 
@@ -158,7 +158,7 @@ against the Go source, ops scripts, and CI workflows, not screenshots.
 | **ID** | `health-endpoint` |
 | **Tier** | core |
 | **Status** | working |
-| **Definition** | Unauthenticated `GET /api/health` liveness probe returning `{"status":"ok","git_sha":"<sha>"}`. Consumed by Docker HEALTHCHECK, external uptime monitors, the frontend's `healthCheck` helper, and the promote gate's SHA comparison. |
+| **Definition** | Unauthenticated `GET /api/health` liveness probe returning `{"status":"ok","git_sha":"<sha>"}`. Consumed by Docker HEALTHCHECK, external uptime monitors, and the promote gate's SHA comparison. |
 | **Frontend** | — |
 | **Routes** | `GET /api/health` |
 | **Tables** | — |

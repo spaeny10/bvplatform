@@ -20,7 +20,7 @@ core; the SOC-supervisor share/ticket consoles are parked behind flags.
 | **Flag** | — |
 | **Docs** | [data-model.md](../data-model.md) |
 | **Smoke test** | Admin → Sites & Customers → + Add Company → create. Switch to companies view; new card appears with 0 sites. |
-| **Notes** | Cannot be `working`: `getCompany` (ironsight-api.ts:185) calls `GET /api/v1/companies/{id}` which has no backend route (api-coverage Table C, 404) — harmless today only because the `useCompany` hook has no component callers. Inverse gap too: `PUT`/`DELETE` company and `DELETE` company user exist in the backend with no UI (Table B) — there is no edit/delete-company button anywhere. Company-user *creation* is wired (`createCompanyUser`); per-site user assignment is broken, see [[site-assignments]]. |
+| **Notes** | Cannot be `working`: `getCompany` (ironsight-api.ts:185) calls `GET /api/v1/companies/{id}` which has no backend route (api-coverage Table C, 404) — harmless today only because the `useCompany` hook has no component callers. Inverse gap too: `PUT`/`DELETE` company and `DELETE` company user exist in the backend with no UI (Table B) — there is no edit/delete-company button anywhere. The `POST /api/v1/companies/{companyId}/users` create route exists server-side, but its zero-caller `createCompanyUser` client was deleted in the 2026-06 dead-code cleanup (Table B now); per-site user assignment is broken, see [[site-assignments]]. |
 
 ## Sites CRUD + site detail {#sites-crud}
 

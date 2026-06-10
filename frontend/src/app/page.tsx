@@ -225,7 +225,6 @@ function HomeInner() {
             ws.onopen = () => {
                 setConnected(true);
                 reconnectDelay = 3000; // Reset backoff on successful connect
-                console.log('[WS] Connected');
             };
 
             ws.onmessage = (msg) => {
@@ -256,7 +255,6 @@ function HomeInner() {
                 setConnected(false);
                 wsRef.current = null;
                 if (!unmounted) {
-                    console.log(`[WS] Disconnected — reconnecting in ${reconnectDelay / 1000}s`);
                     reconnectTimer = setTimeout(() => {
                         reconnectDelay = Math.min(reconnectDelay * 2, 30000); // Exponential backoff, max 30s
                         connect();

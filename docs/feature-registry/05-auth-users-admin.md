@@ -63,13 +63,13 @@ with the rest of the server-side AI stack.
 | **Tier** | core |
 | **Status** | partial |
 | **Definition** | TOTP second factor: enroll (secret + 10 one-time recovery codes), confirm, disable, login-time challenge, and admin reset for locked-out users. |
-| **Frontend** | `frontend/src/components/admin/UsersTab.tsx`, `frontend/src/app/admin/page.tsx` |
+| **Frontend** | `frontend/src/app/admin/page.tsx` |
 | **Routes** | `POST /api/auth/mfa/enroll` · `POST /api/auth/mfa/confirm` · `POST /api/auth/mfa/disable` · `POST /api/users/{id}/mfa/reset` |
 | **Tables** | users |
 | **Flag** | — |
 | **Docs** | — |
 | **Smoke test** | (Backend-only today.) With a session cookie + CSRF token, `curl -X POST /api/auth/mfa/enroll` → otpauth URL + 10 recovery codes; confirm with a TOTP code → next `POST /auth/login` without `mfa_code` returns 401 `{"mfa_required":true}`. |
-| **Notes** | Backend is complete and solid (`internal/api/mfa_handler.go`): bcrypt-hashed one-time recovery codes, MFA failures count toward lockout, no preauth half-token (password+code replayed on pass 2). Frontend is NOT: (1) no enroll/confirm/disable UI exists anywhere (api-coverage Table B — zero callers); (2) the login page never prompts for a code, so an MFA-enabled user sees raw `{"mfa_required":true}` as an error and is locked out of the UI; (3) the admin "Reset MFA" button (UsersTab.tsx:253, admin/page.tsx:1089) calls `POST /api/v1/users/{id}/mfa/reset` but the backend route has no `/v1` → 404 (missed by the api-coverage scan — template-literal `apiFetch`, so it's absent from Table C; it is still a 404). Admin reset allows admin or soc_supervisor. `mfa_secret` is plaintext at rest (threat model in migration 0015 comments). Finish cost: TOTP step on the login form + an enroll modal + the one-line path fix. Open question: is customer-facing MFA an MVP blocker, given staff get Google MFA via [[sso-header-trust]]? |
+| **Notes** | Backend is complete and solid (`internal/api/mfa_handler.go`): bcrypt-hashed one-time recovery codes, MFA failures count toward lockout, no preauth half-token (password+code replayed on pass 2). Frontend is NOT: (1) no enroll/confirm/disable UI exists anywhere (api-coverage Table B — zero callers); (2) the login page never prompts for a code, so an MFA-enabled user sees raw `{"mfa_required":true}` as an error and is locked out of the UI; (3) the admin "Reset MFA" button (admin/page.tsx) calls `POST /api/users/{id}/mfa/reset` — the wrong-`/v1` path was fixed in the F-02 batch, and the orphaned `UsersTab.tsx` copy of the button was deleted in the 2026-06 dead-code cleanup. Admin reset allows admin or soc_supervisor. `mfa_secret` is plaintext at rest (threat model in migration 0015 comments). Finish cost: TOTP step on the login form + an enroll modal + the one-line path fix. Open question: is customer-facing MFA an MVP blocker, given staff get Google MFA via [[sso-header-trust]]? |
 
 ## Users + roles {#users-roles}
 
@@ -79,13 +79,13 @@ with the rest of the server-side AI stack.
 | **Tier** | core |
 | **Status** | working |
 | **Definition** | Platform user CRUD with six roles (admin, soc_operator, soc_supervisor, site_manager, customer, viewer): create with role + optional company, edit profile, change role, reset password, soft-delete — all from the admin Users tab. |
-| **Frontend** | `frontend/src/components/admin/UsersTab.tsx`, `frontend/src/app/admin/page.tsx`, `frontend/src/contexts/AuthContext.tsx` |
+| **Frontend** | `frontend/src/app/admin/page.tsx`, `frontend/src/contexts/AuthContext.tsx` |
 | **Routes** | `GET /api/users` · `POST /api/users` · `DELETE /api/users/{id}` · `PATCH /api/users/{id}` · `PATCH /api/users/{id}/password` · `PATCH /api/users/{id}/role` |
 | **Tables** | users |
 | **Flag** | — |
 | **Docs** | [soft-delete.md](../soft-delete.md) |
 | **Smoke test** | Admin → Users tab → create an internal user with role soc_operator → appears in list; change their role, reset their password; log in as them in incognito → lands on `/operator`. |
-| **Notes** | List is any-authenticated; create/delete/role are admin-only; password change is admin-or-self; users are soft-deleted (migration 0028; `?include_deleted=true` is admin-only). The `ROUTE_PERMISSIONS` matrix in AuthContext gates frontend routes per role but is client-side only — real RBAC is per-handler on the server. The MFA reset button in this tab is broken (see [[mfa-totp]]). Customer-company user management (`/api/v1/companies/{companyId}/users`) is a separate surface — 06-portal-platform.md. |
+| **Notes** | List is any-authenticated; create/delete/role are admin-only; password change is admin-or-self; users are soft-deleted (migration 0028; `?include_deleted=true` is admin-only). The `ROUTE_PERMISSIONS` matrix in AuthContext gates frontend routes per role but is client-side only — real RBAC is per-handler on the server. The MFA reset button in this tab works since the F-02 path fix (see [[mfa-totp]]); the never-imported `admin/UsersTab.tsx` extraction of this tab was deleted in the 2026-06 dead-code cleanup. Customer-company user management (`/api/v1/companies/{companyId}/users`) is a separate surface — 06-portal-platform.md. |
 
 ## Audit log {#audit-log}
 

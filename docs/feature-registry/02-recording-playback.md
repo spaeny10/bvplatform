@@ -126,13 +126,13 @@ All features in this area are MVP core (basic VMS/NVR scope).
 | **Tier** | core |
 | **Status** | partial |
 | **Definition** | Timeline bookmarks: label + notes + severity pinned to a camera and a moment, for marking footage of interest. |
-| **Frontend** | `frontend/src/lib/api.ts` |
+| **Frontend** | — |
 | **Routes** | `POST /api/bookmarks` · `GET /api/bookmarks` · `DELETE /api/bookmarks/{id}` |
 | **Tables** | bookmarks |
 | **Flag** | — |
 | **Docs** | — |
 | **Smoke test** | `curl -X POST /api/bookmarks` with `{camera_id, event_time, label}` (auth + CSRF), then `GET /api/bookmarks?start=&end=` returns the row. No UI step exists. |
-| **Notes** | Backend CRUD (`internal/api/audit.go`, db.go) and the api.ts client functions are complete, but NO component imports `createBookmark`/`listBookmarks`/`deleteBookmark` — there is no user-facing surface, hence partial. api-coverage Table A counts the lib functions as callers, which overstates the wiring. Completion cost: small — add a bookmark button + marker row to [[playback-timeline]]. |
+| **Notes** | Backend CRUD (`internal/api/audit.go`, db.go) is complete and stays; the zero-caller api.ts client functions (`createBookmark`/`listBookmarks`/`deleteBookmark`) were deleted in the 2026-06 dead-code cleanup, so there is no frontend at all now — hence partial. Completion cost: small — re-add a thin client plus a bookmark button + marker row on [[playback-timeline]]. |
 
 ## Storage Locations Admin {#storage-locations}
 

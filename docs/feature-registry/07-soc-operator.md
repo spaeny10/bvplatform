@@ -88,7 +88,7 @@ work.
 | **Flag** | operator_console |
 | **Docs** | — |
 | **Smoke test** | With ≥1 unacked alarm, `curl /api/v1/dispatch/queue` — expect `{"depth": N, "oldest_ts": ...}` with real values. |
-| **Notes** | Backend is real (`GetActiveAlarmsCount` over `active_alarms WHERE acknowledged=false`), but it's orphaned: `getAlarmQueue()` in `ironsight-api.ts` has zero callers and the store's `setQueueDepth` is never invoked, so `FleetStatusBar`'s "N IN QUEUE" badge never renders (queueDepth is always 0 and the badge hides at 0). Revival cost: trivial — a poll or WS push wiring queue depth into the store. |
+| **Notes** | Backend is real (`GetActiveAlarmsCount` over `active_alarms WHERE acknowledged=false`), but it's orphaned: the zero-caller `getAlarmQueue()` client was deleted from `ironsight-api.ts` in the 2026-06 dead-code cleanup and the store's `setQueueDepth` is never invoked, so `FleetStatusBar`'s "N IN QUEUE" badge never renders (queueDepth is always 0 and the badge hides at 0). Revival cost: trivial — re-add the client and poll or WS-push queue depth into the store. |
 
 ## Operator presence + metrics {#operator-presence-metrics}
 
@@ -152,4 +152,4 @@ work.
 | **Flag** | operator_console |
 | **Docs** | — |
 | **Smoke test** | Open an alarm with an AI assessment, click Yes under "Was this accurate?". Verify `active_alarms.ai_operator_agreed = true` (psql); buttons lock after one click. |
-| **Notes** | Inline handler in `router.go` → `SetAlarmAIFeedback` sets `ai_operator_agreed`; separately, resolving the alarm computes `ai_was_correct` from disposition vs `ai_threat_level` (`ComputeAICorrectness`). Only meaningful when the server-side AI pipeline (back-burner, see 08) has enriched the alarm — without `ai_*` fields the panel has nothing to rate. Distinct from `submitAICorrection` (`POST /api/v1/ai-telemetry/corrections`), which is Table C and belongs to the AI area. |
+| **Notes** | Inline handler in `router.go` → `SetAlarmAIFeedback` sets `ai_operator_agreed`; separately, resolving the alarm computes `ai_was_correct` from disposition vs `ai_threat_level` (`ComputeAICorrectness`). Only meaningful when the server-side AI pipeline (back-burner, see 08) has enriched the alarm — without `ai_*` fields the panel has nothing to rate. The unrelated `submitAICorrection` client (`POST /api/v1/ai-telemetry/corrections`, never backed by a route) was deleted in the 2026-06 dead-code cleanup. |

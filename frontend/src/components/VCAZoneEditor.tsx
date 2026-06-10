@@ -4,9 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   VCARule, VCARuleCreate, VCAPoint,
   listVCARules, createVCARule, updateVCARule, deleteVCARule,
-  syncVCARules,
 } from '@/lib/api';
-import { vcaPullPreview, vcaPullApply, VCAPullResult } from '@/lib/milesight';
 import { RULE_TYPES, ruleConfig, RuleTypeKey, DrawMode } from '@/lib/vca-zones';
 import { useVCASnapshot } from '@/hooks/useVCASnapshot';
 import { useVCACanvas, CanvasPoint } from '@/hooks/useVCACanvas';
@@ -25,10 +23,7 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   const [drawType, setDrawType] = useState<RuleTypeKey>('intrusion');
   const [drawPoints, setDrawPoints] = useState<CanvasPoint[]>([]);
   const [drawName, setDrawName] = useState('');
-  const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<string | null>(null);
-  const [pullPreview, setPullPreview] = useState<VCAPullResult | null>(null);
-  const [pulling, setPulling] = useState(false);
 
   // ── Snapshot ──
   const { imgRef, snapshotLoaded, snapshotError, reload: loadSnapshot } = useVCASnapshot(cameraId);
@@ -136,75 +131,6 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
     autoSync();
   };
 
-  const handleSync = async () => {
-    setSyncing(true);
-    setSyncResult(null);
-    try {
-      const res = await syncVCARules(cameraId);
-      // Don't show a ✓ when the camera rejected any rules — the operator
-      // had no way to tell apart "pushed nothing because there was
-      // nothing to push" from "pushed nothing because the camera said no
-      // to everything". Use ⚠ on any error count, and only ✓ when
-      // every rule landed.
-      const synced = res.synced ?? 0;
-      const errors = res.errors ?? 0;
-      if (errors > 0) {
-        setSyncResult(`⚠ Pushed ${synced} of ${synced + errors} rule${(synced + errors) !== 1 ? 's' : ''} — ${errors} failed`);
-      } else {
-        setSyncResult(`✓ Pushed ${synced} rule${synced !== 1 ? 's' : ''} to camera`);
-      }
-      loadRules();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSyncResult(`Sync failed: ${msg}`);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  // Pull shows a preview of what's on the camera vs. what we have in DB.
-  // Applying overwrites our DB copy — the camera wins. Guarded behind a
-  // confirm step so an operator doesn't wipe platform-side edits by accident.
-  const handlePullPreview = async () => {
-    setPulling(true);
-    setSyncResult(null);
-    try {
-      const preview = await vcaPullPreview(cameraId);
-      setPullPreview(preview);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSyncResult(`Pull failed: ${msg}`);
-    } finally {
-      setPulling(false);
-    }
-  };
-
-  const handlePullApply = async () => {
-    if (!pullPreview) return;
-    // Defensive `?? []` so a backend that ever returns null arrays
-    // again doesn't crash the editor (was happening before vca_pull.go
-    // initialised them — kept here as belt-and-suspenders).
-    const changes =
-      (pullPreview.camera_only ?? []).length
-      + (pullPreview.db_only ?? []).length
-      + (pullPreview.modified ?? []).length;
-    if (!window.confirm(`Replace the platform copy of this camera's VCA rules with the camera's current state? (${changes} change${changes === 1 ? '' : 's'})`)) {
-      return;
-    }
-    setPulling(true);
-    try {
-      await vcaPullApply(cameraId);
-      setSyncResult('✓ Pulled camera state into the platform.');
-      setPullPreview(null);
-      await loadRules();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setSyncResult(`Apply failed: ${msg}`);
-    } finally {
-      setPulling(false);
-    }
-  };
-
   // Prevent all clicks inside the editor from bubbling up to the modal overlay
   const stopBubble = (e: React.MouseEvent) => e.stopPropagation();
 
@@ -290,49 +216,6 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
             // restricts cross-origin escape.
             sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
           />
-        </div>
-      )}
-
-      {/* ── Legacy push/pull (collapsed by default — known fragile) ── */}
-      {vcaTab === 'platform' && pullPreview && (
-        <div style={{
-          padding: 12, borderRadius: 6,
-          background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.25)',
-          fontSize: 12,
-        }}>
-          <div style={{ fontWeight: 600, color: '#c084fc', marginBottom: 6 }}>
-            Camera reports {(pullPreview.rules ?? []).length} rule{(pullPreview.rules ?? []).length === 1 ? '' : 's'}
-          </div>
-          <div style={{ color: 'rgba(255,255,255,0.75)', lineHeight: 1.6 }}>
-            • New (on camera, not in platform): <strong>{(pullPreview.camera_only ?? []).length}</strong><br />
-            • Will be dropped (in platform, missing from camera): <strong>{(pullPreview.db_only ?? []).length}</strong><br />
-            • Modified (differ between platform and camera): <strong>{(pullPreview.modified ?? []).length}</strong>
-          </div>
-          <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
-            <button
-              type="button"
-              onClick={handlePullApply}
-              disabled={pulling}
-              style={{
-                padding: '6px 14px', fontSize: 11, fontWeight: 700, borderRadius: 4,
-                background: '#a855f7', border: 'none', color: 'white',
-                cursor: pulling ? 'wait' : 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              Apply — replace platform rules
-            </button>
-            <button
-              type="button"
-              onClick={() => setPullPreview(null)}
-              style={{
-                padding: '6px 12px', fontSize: 11, fontWeight: 600, borderRadius: 4,
-                background: 'none', border: '1px solid rgba(255,255,255,0.15)',
-                color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontFamily: 'inherit',
-              }}
-            >
-              Cancel
-            </button>
-          </div>
         </div>
       )}
 
@@ -589,15 +472,6 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
       )}
 
       </>}
-      {/* Legacy push/pull buttons are no longer surfaced in the UI —
-          the camera-side VCA configuration lives in the iframed camera
-          UI under the "Camera VCA" tab. Backend endpoints + handler
-          code are still present; can be re-enabled once the
-          coordinate-space + slot-mapping issues are fixed. The
-          unused-helper imports stay referenced via this no-op IIFE so
-          the bundler doesn't strip them and so a future reviver doesn't
-          have to re-wire the imports. */}
-      {false && (() => { void handleSync; void handlePullPreview; void syncing; void pulling; void syncResult; return null; })()}
     </div>
   );
 }

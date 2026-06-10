@@ -460,11 +460,6 @@ export async function listCameras(): Promise<Camera[]> {
     } catch { return []; }
 }
 
-export async function getCamera(id: string): Promise<Camera> {
-    const res = await authFetch(`${API_BASE}/cameras/${id}`);
-    return res.json();
-}
-
 export async function createCamera(data: { name: string; onvif_address: string; username: string; password: string; device_class?: 'continuous' | 'sense_pushed' }): Promise<Camera> {
     const res = await authFetch(`${API_BASE}/cameras`, {
         method: 'POST',
@@ -560,12 +555,6 @@ export async function deleteVCARule(cameraId: string, ruleId: string): Promise<v
     await authFetch(`${API_BASE}/cameras/${cameraId}/vca/rules/${ruleId}`, { method: 'DELETE' });
 }
 
-export async function syncVCARules(cameraId: string): Promise<{ synced: number; errors: number }> {
-    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/vca/sync`, { method: 'POST' });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-}
-
 export function getVCASnapshotURL(cameraId: string): string {
     return `${API_BASE}/cameras/${cameraId}/vca/snapshot`;
 }
@@ -655,12 +644,6 @@ export async function listExports(): Promise<ExportJob[]> {
     return res.json();
 }
 
-// Health check
-export async function healthCheck(): Promise<{ status: string }> {
-    const res = await authFetch(`${API_BASE}/health`);
-    return res.json();
-}
-
 // -----------------------------------------------------------------------------
 // PTZ
 // -----------------------------------------------------------------------------
@@ -686,33 +669,6 @@ export function ptzPrewarm(id: string): void {
         method: 'POST',
         keepalive: true,
     }).catch(() => { }); // fire-and-forget
-}
-
-// -----------------------------------------------------------------------------
-// AI Detection (ONVIF Profile M analytics bounding boxes)
-// -----------------------------------------------------------------------------
-
-export interface BoundingBox {
-    label: string;
-    confidence: number;
-    x: number; // normalized 0-1 (left edge)
-    y: number; // normalized 0-1 (top edge)
-    w: number; // normalized 0-1 (width)
-    h: number; // normalized 0-1 (height)
-}
-
-export interface DetectionResult {
-    type: string;
-    camera_id: string;
-    time: string;
-    boxes: BoundingBox[];
-}
-
-/** Fetch the latest cached bounding boxes for a camera from the server. */
-export async function fetchDetections(cameraId: string): Promise<DetectionResult> {
-    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/detect`);
-    if (!res.ok) throw new Error('Detection fetch failed');
-    return res.json();
 }
 
 // -----------------------------------------------------------------------------
@@ -1059,12 +1015,6 @@ export async function stopSpeakerPlayback(): Promise<void> {
     await authFetch(`${API_BASE}/speakers/stop`, { method: 'POST' });
 }
 
-export async function getSpeakerStatus(): Promise<{ playing: boolean }> {
-    const res = await authFetch(`${API_BASE}/speakers/status`);
-    if (!res.ok) throw new Error('Failed to get speaker status');
-    return res.json();
-}
-
 export async function listAudioMessages(): Promise<AudioMessage[]> {
     const res = await authFetch(`${API_BASE}/audio-messages`);
     if (!res.ok) throw new Error('Failed to list audio messages');
@@ -1132,55 +1082,6 @@ export async function queryAuditLog(params: {
     const res = await authFetch(`${API_BASE}/audit?${qs.toString()}`);
     if (!res.ok) throw new Error('Failed to query audit log');
     return res.json();
-}
-
-// ──────────────────── Bookmarks ────────────────────
-
-export interface Bookmark {
-    id: string;
-    camera_id: string;
-    event_time: string;
-    label: string;
-    notes: string;
-    severity: string;
-    created_by: string;
-    username: string;
-    created_at: string;
-}
-
-export async function createBookmark(data: {
-    camera_id: string;
-    event_time: string;
-    label: string;
-    notes?: string;
-    severity?: string;
-}): Promise<Bookmark> {
-    const res = await authFetch(`${API_BASE}/bookmarks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
-}
-
-export async function listBookmarks(params: {
-    start?: string;
-    end?: string;
-    camera_id?: string;
-} = {}): Promise<Bookmark[]> {
-    const qs = new URLSearchParams();
-    if (params.start) qs.set('start', params.start);
-    if (params.end) qs.set('end', params.end);
-    if (params.camera_id) qs.set('camera_id', params.camera_id);
-    const res = await authFetch(`${API_BASE}/bookmarks?${qs.toString()}`);
-    if (!res.ok) throw new Error('Failed to list bookmarks');
-    return res.json();
-}
-
-export async function deleteBookmark(id: string): Promise<void> {
-    const res = await authFetch(`${API_BASE}/bookmarks/${id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error(await res.text());
 }
 
 export interface PlaybackSegment {

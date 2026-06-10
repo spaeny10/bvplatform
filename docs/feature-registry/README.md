@@ -74,7 +74,7 @@ must name a `Flag` (otherwise the page stays customer-reachable at MVP).
 ## Rollup
 
 <!-- BEGIN GENERATED: rollup -->
-_82 features. Regenerate with `go run ./cmd/docgen -write`._
+_81 features. Regenerate with `go run ./cmd/docgen -write`._
 
 | Feature | ID | Area | Tier | Status |
 |---|---|---|---|---|
@@ -137,7 +137,6 @@ _82 features. Regenerate with `go run ./cmd/docgen -write`._
 | [Shift handoffs](07-soc-operator.md#shift-handoffs) | `shift-handoffs` | 07-soc-operator | back-burner | partial |
 | [Site locks](07-soc-operator.md#site-locks) | `site-locks` | 07-soc-operator | back-burner | stub |
 | [Site SOPs](07-soc-operator.md#site-sops) | `site-sops` | 07-soc-operator | back-burner | working |
-| [AI insights panel](08-ai-analytics.md#ai-insights-panel) | `ai-insights-panel` | 08-ai-analytics | back-burner | placeholder |
 | [AI runtime metrics](08-ai-analytics.md#ai-runtime-metrics) | `ai-runtime-metrics` | 08-ai-analytics | back-burner | working |
 | [Analytics page](08-ai-analytics.md#analytics-page) | `analytics-page` | 08-ai-analytics | back-burner | placeholder |
 | [Compliance dashboard + PDF report](08-ai-analytics.md#compliance-dashboard) | `compliance-dashboard` | 08-ai-analytics | back-burner | working |
