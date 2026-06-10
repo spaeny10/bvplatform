@@ -73,11 +73,15 @@ export function CameraSection({ siteId }: { siteId: string }) {
     }
   };
 
-  // Move: unassign from current site, then assign here
+  // Move: a single assign-to-target call. AssignCameraToSite (platform_db.go)
+  // is a full upsert — it overwrites site_id/location and closes any open
+  // device_assignments row for the camera — so assigning to the new site moves
+  // it atomically. The old unassign-then-assign pair could orphan the camera
+  // (site_id=NULL, "Move failed" banner) if the assign failed after the
+  // unassign committed; dropping the unassign removes that torn state.
   const handleMove = async (cam: IRONSightCamera) => {
     setActionError(null);
     try {
-      await unassignCamera.mutateAsync({ siteId: cam.site_id!, cameraId: cam.id });
       await assignCamera.mutateAsync({ siteId, cameraId: cam.id, locationLabel: locationLabels[cam.id] || '' });
     } catch (err: any) {
       setActionError(`Move failed: ${err?.message || 'unknown error'}`);
