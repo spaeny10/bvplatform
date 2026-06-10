@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Camera, createCamera, updateCamera, deleteCamera, rebootCamera, discoverCameras, getDevicePreview, DiscoveredDevice } from '@/lib/api';
 import VCAZoneEditor from '@/components/VCAZoneEditor';
 import MilesightAdvanced from '@/components/MilesightAdvanced';
@@ -25,6 +25,18 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
     const [editingCamera, setEditingCamera] = useState<Camera | null>(null);
     const [settingsTab, setSettingsTab] = useState<'general' | 'recording' | 'vca' | 'milesight'>('general');
     const [rebooting, setRebooting] = useState(false);
+    const [savingEdit, setSavingEdit] = useState(false);
+
+    // Refs for the editable General-tab fields. The inputs are uncontrolled
+    // (defaultValue + onBlur autosave); these refs let "Save & Close" commit
+    // the current values in one updateCamera call even if a field never lost
+    // focus — the autosave-on-blur path missed exactly that case.
+    const nameRef = useRef<HTMLInputElement>(null);
+    const cameraGroupRef = useRef<HTMLInputElement>(null);
+    const onvifAddressRef = useRef<HTMLInputElement>(null);
+    const rtspUriRef = useRef<HTMLInputElement>(null);
+    const subStreamUriRef = useRef<HTMLInputElement>(null);
+    const usernameRef = useRef<HTMLInputElement>(null);
 
     // Add camera form state
     const [addForm, setAddForm] = useState({
@@ -134,8 +146,47 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
             await updateCamera(id, data);
             // Don't close the modal — just refresh the list in the background
             onRefresh();
-        } catch (err) {
+        } catch (err: any) {
             console.error('Failed to update camera:', err);
+            pushToast({ type: 'error', title: 'Update failed', body: err?.message ?? 'Could not save camera changes' });
+        }
+    };
+
+    // Gather the current General-tab field values and commit them in one
+    // updateCamera call, then close. This is the explicit-save path for the
+    // edit modal: the per-field onBlur autosave only fires when a field loses
+    // focus, so editing the name and clicking Close (or Enter) used to lose
+    // the change. Only sends fields that actually changed. Refs are null when
+    // the General tab isn't mounted, so this is a no-op save on other tabs.
+    const handleSaveAndClose = async () => {
+        const cam = editingCamera;
+        if (!cam) return;
+        const data: Record<string, string> = {};
+        const maybe = (ref: React.RefObject<HTMLInputElement>, key: string, current: string) => {
+            const v = ref.current?.value;
+            if (v !== undefined && v !== current) data[key] = v;
+        };
+        maybe(nameRef, 'name', cam.name);
+        maybe(cameraGroupRef, 'camera_group', cam.camera_group || '');
+        maybe(onvifAddressRef, 'onvif_address', cam.onvif_address || '');
+        maybe(rtspUriRef, 'rtsp_uri', cam.rtsp_uri || '');
+        maybe(subStreamUriRef, 'sub_stream_uri', cam.sub_stream_uri || '');
+        maybe(usernameRef, 'username', cam.username || '');
+
+        if (Object.keys(data).length === 0) {
+            setEditingCamera(null);
+            return;
+        }
+        setSavingEdit(true);
+        try {
+            await updateCamera(cam.id, data as any);
+            await onRefresh();
+            setEditingCamera(null);
+        } catch (err: any) {
+            console.error('Failed to save camera:', err);
+            pushToast({ type: 'error', title: 'Save failed', body: err?.message ?? 'Could not save camera changes' });
+        } finally {
+            setSavingEdit(false);
         }
     };
 
@@ -786,6 +837,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">Camera Name</label>
                                         <input
+                                            ref={nameRef}
                                             className="form-input"
                                             defaultValue={editingCamera.name}
                                             onBlur={(e) => {
@@ -799,6 +851,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">Camera Group / Zone</label>
                                         <input
+                                            ref={cameraGroupRef}
                                             className="form-input"
                                             placeholder="e.g., Perimeter, Interior, Parking"
                                             defaultValue={editingCamera.camera_group || ''}
@@ -818,6 +871,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">Device Address</label>
                                         <input
+                                            ref={onvifAddressRef}
                                             className="form-input"
                                             placeholder="e.g. 192.168.1.100"
                                             defaultValue={editingCamera.onvif_address || ''}
@@ -833,6 +887,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">RTSP URI (main stream)</label>
                                         <input
+                                            ref={rtspUriRef}
                                             className="form-input"
                                             placeholder="rtsp://user:pass@192.168.1.100:554/stream1"
                                             defaultValue={editingCamera.rtsp_uri || ''}
@@ -849,6 +904,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">RTSP URI (sub stream)</label>
                                         <input
+                                            ref={subStreamUriRef}
                                             className="form-input"
                                             placeholder="rtsp://user:pass@192.168.1.100:554/stream2"
                                             defaultValue={editingCamera.sub_stream_uri || ''}
@@ -865,6 +921,7 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                                     <div className="form-group">
                                         <label className="form-label">Username</label>
                                         <input
+                                            ref={usernameRef}
                                             className="form-input"
                                             placeholder="admin"
                                             defaultValue={editingCamera.username || ''}
@@ -1059,7 +1116,12 @@ export default function CameraManager({ cameras, onRefresh }: CameraManagerProps
                             >
                                 {rebooting ? 'Rebooting…' : 'Reboot device'}
                             </button>
-                            <button className="btn" onClick={() => setEditingCamera(null)}>Close</button>
+                            <div style={{ display: 'flex', gap: 8 }}>
+                                <button className="btn" onClick={() => setEditingCamera(null)} disabled={savingEdit}>Close</button>
+                                <button className="btn btn-primary" onClick={handleSaveAndClose} disabled={savingEdit}>
+                                    {savingEdit ? 'Saving…' : 'Save & Close'}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
