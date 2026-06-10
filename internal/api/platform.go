@@ -1266,6 +1266,12 @@ var DefaultFeatureFlags = map[string]bool{
 	"ai_insights":        false, // AI panels on alarms + AI services health card
 	"weekly_digest":      false, // weekly email digest
 	"global_ai_training": false, // legacy flag, kept for API compat
+	// Phase 1a low-latency live view (low-latency-live-view-go2rtc.md):
+	// MSE-over-WebSocket via the go2rtc sidecar (/api/live2/{cam}/ws).
+	// Ships dark — default OFF, flip per-env with FEATURES_OVERRIDE once
+	// the go2rtc sidecar is deployed and bench-validated. Off → the live
+	// grid stays on the existing mediamtx HLS path.
+	"lowlatency_live": false,
 }
 
 // HandleFeatureFlags returns the effective deploy-wide flag map:
