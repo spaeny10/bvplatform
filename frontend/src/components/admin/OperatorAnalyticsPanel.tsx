@@ -9,7 +9,12 @@ export default function OperatorAnalyticsPanel() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    getOperatorMetrics().then(data => { setMetrics(data); setLoading(false); });
+    // Endpoint is part of the parked SOC-console surface and may not be
+    // registered — degrade to an empty panel instead of an uncaught 404.
+    getOperatorMetrics()
+      .then(data => setMetrics(data ?? []))
+      .catch(() => setMetrics([]))
+      .finally(() => setLoading(false));
   }, []);
 
   const formatTime = (ms: number) => {

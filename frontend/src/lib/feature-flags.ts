@@ -19,7 +19,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { authFetch } from '@/lib/api';
 
 export type FeatureFlagName =
   | 'analytics'
@@ -62,7 +61,11 @@ let inflight: Promise<FeatureFlags> | null = null;
 
 async function fetchFlags(): Promise<FeatureFlags> {
   try {
-    const res = await authFetch('/api/v1/features');
+    // Plain fetch, NOT authFetch: authFetch redirects to /login on 401,
+    // which would bounce anonymous visitors off gated PUBLIC pages
+    // (e.g. /evidence/<token>) instead of letting the gate 404 them.
+    // Anonymous == parked-off defaults, which is the safe posture.
+    const res = await fetch('/api/v1/features', { credentials: 'include' });
     if (!res.ok) return DEFAULT_FLAGS;
     const data = (await res.json()) as Record<string, boolean>;
     // Merge over defaults so a missing key in the response (older
