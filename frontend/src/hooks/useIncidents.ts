@@ -15,7 +15,12 @@ export function useIncidents(filters?: {
 }) {
   return useQuery<IncidentSummary[]>({
     queryKey: ['incidents', filters],
-    queryFn: () => getIncidents(filters),
+    // `?? []` belt-and-suspenders: the API marshalled a nil slice as
+    // literal null for customer/site-manager scopes, which crashed
+    // every consumer doing `incidents.filter(...)` (portal error
+    // boundary). The backend now returns [], but a null from any
+    // older deploy must never take the portal down again.
+    queryFn: async () => (await getIncidents(filters)) ?? [],
     refetchInterval: 30_000,
     staleTime: 10_000,
   });
