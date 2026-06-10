@@ -7,8 +7,18 @@ import ActiveAlarmView from '@/components/operator/ActiveAlarmView';
 import { useAlerts } from '@/hooks/useAlerts';
 import { getIncidentDetail } from '@/lib/ironsight-api';
 import type { SOCIncident, AlertEvent } from '@/types/ironsight';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 
-export default function AlarmInvestigationPage({ params }: { params: { id: string } }) {
+// Parked at MVP (2026-06 descope): rides with the SOC console.
+export default function AlarmInvestigationPageGated({ params }: { params: { id: string } }) {
+  return (
+    <FeaturePageGate flag="operator_console">
+      <AlarmInvestigationPage params={params} />
+    </FeaturePageGate>
+  );
+}
+
+function AlarmInvestigationPage({ params }: { params: { id: string } }) {
   const router = useRouter();
   const activeAlarm = useOperatorStore(s => s.activeAlarm);
   const alertFeed = useOperatorStore(s => s.alertFeed);

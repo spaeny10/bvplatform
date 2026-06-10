@@ -14,6 +14,7 @@ import (
 
 	"ironsight/internal/auth"
 	"ironsight/internal/avs"
+	"ironsight/internal/config"
 	"ironsight/internal/database"
 	"ironsight/internal/notify"
 	"ironsight/internal/recording"
@@ -1234,13 +1235,46 @@ func HandleDispatchQueue(db *database.DB) http.HandlerFunc {
 	}
 }
 
-func HandleFeatureFlags(db *database.DB) http.HandlerFunc {
+// DefaultFeatureFlags is the deploy-wide flag map after the 2026-06 MVP
+// descope: the basic VMS/NVR surface (recording, playback, live view,
+// alerts, login, admin basics) is always on and has no flag; everything
+// parked is listed here and defaults OFF. The canonical flag list +
+// which pages each one gates is documented in
+// docs/feature-registry/README.md. Flip flags per environment with the
+// FEATURES_OVERRIDE env var ("semantic_search=true,analytics=false") —
+// no rebuild needed. Per-company flags (companies.features jsonb)
+// exist in the schema but are deliberately not wired until a customer
+// actually needs per-tenant divergence.
+var DefaultFeatureFlags = map[string]bool{
+	"analytics":          false, // /analytics page (mock data today)
+	"operator_console":   false, // full SOC console: /operator/*, /reports
+	"compliance":         false, // PPE compliance dashboards + PDF + portal tab
+	"person_tracking":    false, // occupancy buckets dashboard
+	"speakers":           false, // talk-down audio: speaker mgmt + playback UI
+	"semantic_search":    false, // /search page + VLM description search
+	"vlm_safety":         false, // PPE detection pipeline surfaces
+	"evidence_sharing":   false, // share links lifecycle + /evidence/[token]
+	"labeling":           false, // /admin/labeling + admin tab
+	"support_tickets":    false, // support ticket cards/inbox
+	"integrations":       false, // admin Integrations hub tab
+	"ai_insights":        false, // AI panels on alarms + AI services health card
+	"weekly_digest":      false, // weekly email digest
+	"global_ai_training": false, // legacy flag, kept for API compat
+}
+
+// HandleFeatureFlags returns the effective deploy-wide flag map:
+// DefaultFeatureFlags merged with cfg.FeaturesOverride. The frontend
+// hydrates lib/feature-flags.ts from this endpoint and hides parked
+// pages/nav behind the result.
+func HandleFeatureFlags(cfg *config.Config, db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]bool{
-			"vlm_safety":         true,
-			"semantic_search":    true,
-			"evidence_sharing":   true,
-			"global_ai_training": true,
-		})
+		flags := make(map[string]bool, len(DefaultFeatureFlags)+len(cfg.FeaturesOverride))
+		for k, v := range DefaultFeatureFlags {
+			flags[k] = v
+		}
+		for k, v := range cfg.FeaturesOverride {
+			flags[k] = v
+		}
+		writeJSON(w, flags)
 	}
 }

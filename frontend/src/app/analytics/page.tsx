@@ -6,6 +6,7 @@ import { useMemo } from 'react';
 import { MOCK_SITES, MOCK_ALERTS, MOCK_INCIDENTS } from '@/lib/ironsight-mock';
 import IncidentTimeline from '@/components/operator/IncidentTimeline';
 import Logo from '@/components/shared/Logo';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 import Link from 'next/link';
 import { BRAND } from '@/lib/branding';
 
@@ -225,7 +226,18 @@ function getHeatColor(value: number, max: number): string {
 
 // ── Main Page Component ──────────────────────────────────────
 
-export default function AnalyticsPage() {
+// Parked at MVP (2026-06 descope): this page renders mock data only and
+// must not be customer-visible until real aggregation endpoints exist.
+// See docs/feature-registry/08-ai-analytics.md {#analytics-page}.
+export default function AnalyticsPageGated() {
+  return (
+    <FeaturePageGate flag="analytics">
+      <AnalyticsPage />
+    </FeaturePageGate>
+  );
+}
+
+function AnalyticsPage() {
   const heatmap = useMemo(generateHeatmapData, []);
   const complianceTrend = useMemo(() => generateComplianceTrend(30), []);
   const responseTimes = useMemo(() => generateResponseTimes(6), []);

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Logo from '@/components/shared/Logo';
 import { BRAND } from '@/lib/branding';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 
 interface EvidenceData {
   incident_id: string;
@@ -34,7 +35,18 @@ function mockFetchEvidence(token: string): EvidenceData {
   };
 }
 
-export default function EvidenceViewerPage({ params }: { params: { token: string } }) {
+// Parked at MVP (2026-06 descope): this page renders MOCK evidence
+// regardless of token — never customer-visible until wired to the real
+// share backend (GET /share/{token} already exists server-side).
+export default function EvidenceViewerPageGated({ params }: { params: { token: string } }) {
+  return (
+    <FeaturePageGate flag="evidence_sharing">
+      <EvidenceViewerPage params={params} />
+    </FeaturePageGate>
+  );
+}
+
+function EvidenceViewerPage({ params }: { params: { token: string } }) {
   const [evidence, setEvidence] = useState<EvidenceData | null>(null);
   const [loading, setLoading] = useState(true);
 

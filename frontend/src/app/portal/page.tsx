@@ -16,6 +16,7 @@ import UserChip from '@/components/shared/UserChip';
 // shimmer keyframes into <head> so the inline placeholder cards below
 // can use the `sg-skeleton-shimmer` animation without their own CSS.
 import '@/components/shared/Skeleton';
+import { FeatureGate } from '@/components/shared/FeatureGate';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { SiteFeatureMode } from '@/types/ironsight';
@@ -153,7 +154,7 @@ function PortalInner() {
           </Link>
 
           {hasSafety && (
-            <>
+            <FeatureGate flag="compliance">
               <div className="portal-nav-label">Safety Analytics</div>
               <Link href="/portal/compliance" style={{ textDecoration: 'none', color: 'inherit' }}>
                 <button className="portal-nav-item">
@@ -163,12 +164,14 @@ function PortalInner() {
               <button className="portal-nav-item">
                 <span className="portal-nav-icon">📈</span> Trends
               </button>
-              <Link href="/search" style={{ textDecoration: 'none' }}>
-                <button className="portal-nav-item">
-                  <span className="portal-nav-icon">🔍</span> Search
-                </button>
-              </Link>
-            </>
+              <FeatureGate flag="semantic_search">
+                <Link href="/search" style={{ textDecoration: 'none' }}>
+                  <button className="portal-nav-item">
+                    <span className="portal-nav-icon">🔍</span> Search
+                  </button>
+                </Link>
+              </FeatureGate>
+            </FeatureGate>
           )}
 
           <div className="portal-nav-label">Security</div>
@@ -188,11 +191,13 @@ function PortalInner() {
           </button>
 
           <div className="portal-nav-label">Navigation</div>
-          <Link href="/operator" style={{ textDecoration: 'none' }}>
-            <button className="portal-nav-item">
-              <span className="portal-nav-icon">🖥️</span> SOC Monitor
-            </button>
-          </Link>
+          <FeatureGate flag="operator_console">
+            <Link href="/operator" style={{ textDecoration: 'none' }}>
+              <button className="portal-nav-item">
+                <span className="portal-nav-icon">🖥️</span> SOC Monitor
+              </button>
+            </Link>
+          </FeatureGate>
           <Link href="/" style={{ textDecoration: 'none' }}>
             <button className="portal-nav-item">
               <span className="portal-nav-icon">📹</span> NVR

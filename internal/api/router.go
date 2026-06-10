@@ -506,7 +506,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/dispatch/queue", HandleDispatchQueue(db))
 
 			// Features
-			r.Get("/features", HandleFeatureFlags(db))
+			r.Get("/features", HandleFeatureFlags(cfg, db))
 
 			// Alerts — list active (unacknowledged) alarms from the SOC dispatch queue
 			r.Get("/alerts", func(w http.ResponseWriter, req *http.Request) {

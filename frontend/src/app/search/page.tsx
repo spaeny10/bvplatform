@@ -10,6 +10,7 @@ import { getSavedSearches, createSavedSearch, deleteSavedSearch } from '@/lib/ir
 import { useSites } from '@/hooks/useSites';
 import Logo from '@/components/shared/Logo';
 import Link from 'next/link';
+import { FeaturePageGate } from '@/components/shared/FeatureGate';
 
 /* IRONSight Steel & Fire tokens */
 const T = {
@@ -20,7 +21,17 @@ const T = {
   red: '#EF4444', amber: '#E89B2A', green: '#22C55E', purple: '#A855F7',
 };
 
-export default function SearchPage() {
+// Parked at MVP (2026-06 descope): semantic search depends on the VLM
+// indexer pipeline, which is back-burner. See docs/feature-registry/.
+export default function SearchPageGated() {
+  return (
+    <FeaturePageGate flag="semantic_search">
+      <SearchPage />
+    </FeaturePageGate>
+  );
+}
+
+function SearchPage() {
   // ── Zustand store ──
   const query = useSearchStore((s) => s.query);
   const setQuery = useSearchStore((s) => s.setQuery);
