@@ -250,7 +250,7 @@ export default function UsersTab({
                                 onClick={async () => {
                                     if (!confirm(`Reset MFA for ${u.username}? Their authenticator app will be unlinked and they can re-enroll on next login.`)) return;
                                     try {
-                                        await apiFetch(`/api/v1/users/${u.id}/mfa/reset`, { method: 'POST' });
+                                        await apiFetch(`/api/users/${u.id}/mfa/reset`, { method: 'POST' });
                                         setUserMsg({ ok: true, text: `MFA reset for ${u.username}.` });
                                     } catch (e) {
                                         setUserMsg({ ok: false, text: e instanceof Error ? e.message : 'MFA reset failed.' });

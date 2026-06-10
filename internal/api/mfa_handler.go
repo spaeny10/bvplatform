@@ -207,7 +207,7 @@ func HandleMFADisable(db *database.DB) http.HandlerFunc {
 // an admin-level JWT. Used when a user loses their authenticator and
 // has no recovery codes.
 //
-// POST /api/v1/users/{id}/mfa/reset
+// POST /api/users/{id}/mfa/reset
 func HandleAdminMFAReset(db *database.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, _ := r.Context().Value(ContextKeyClaims).(*auth.Claims)
