@@ -2,11 +2,11 @@
 
 <!-- GENERATED FILE — DO NOT HAND-EDIT. Regenerate: go run ./cmd/docgen -write -->
 
-Extracted from `internal/api/router.go` and `frontend/src/**`. 177 backend routes, 177 resolvable frontend call sites.
+Extracted from `internal/api/router.go` and `frontend/src/**`. 177 backend routes, 171 resolvable frontend call sites.
 
 - **Matched** (route has ≥1 frontend caller): 125
 - **Backend-only** (no frontend caller found): 52
-- **Frontend-only** (no backend route — likely 404): 39
+- **Frontend-only** (no backend route — likely 404): 33
 
 ## A. Matched routes
 
@@ -48,9 +48,9 @@ Extracted from `internal/api/router.go` and `frontend/src/**`. 177 backend route
 | `POST /api/media/mint` | `HandleMediaMint` | `mintMediaToken` (frontend/src/lib/media.ts:49) | `media-token-auth` |
 | `GET /api/playback/{id}` | `HandlePlayback` | `fetchPlaybackSegments` (frontend/src/lib/api.ts:1095) | `playback-timeline` |
 | `GET /api/recording/health` | `HandleRecordingHealth` | `getRecordingHealth` (frontend/src/lib/api.ts:297) | `recording-health` |
-| `GET /api/reports/sla` | `HandleSLAReport` | `getSLAReport` (frontend/src/lib/ironsight-api.ts:618) | `operator-presence-metrics` |
+| `GET /api/reports/sla` | `HandleSLAReport` | `getSLAReport` (frontend/src/lib/ironsight-api.ts:603) | `operator-presence-metrics` |
 | `GET /api/search/events` | `HandleSearchEvents` | `searchEvents` (frontend/src/lib/api.ts:206) | `portal-history` |
-| `POST /api/search/frames` | `HandleSearchFrames` | `searchFrames` (frontend/src/lib/ironsight-api.ts:142) | `semantic-search` |
+| `POST /api/search/frames` | `HandleSearchFrames` | `searchFrames` (frontend/src/lib/ironsight-api.ts:135) | `semantic-search` |
 | `GET /api/search/semantic` | `HandleSemanticSearch` | `searchSemantic` (frontend/src/lib/api.ts:271) | `portal-history` `semantic-search` |
 | `GET /api/settings` | `HandleGetSettings` | `getSettings` (frontend/src/lib/api.ts:757) | `system-settings` |
 | `PUT /api/settings` | `HandleUpdateSettings` | `updateSettings` (frontend/src/lib/api.ts:763) | `system-settings` |
@@ -71,7 +71,7 @@ Extracted from `internal/api/router.go` and `frontend/src/**`. 177 backend route
 | `GET /api/storage/status` | `(inline)` | `(module)` (frontend/src/app/page.tsx:99) | `storage-locations` |
 | `GET /api/support/tickets` | `HandleListSupportTickets` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:85)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:67) | `support-tickets` |
 | `POST /api/support/tickets` | `HandleCreateSupportTicket` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:134) | `support-tickets` |
-| `GET /api/support/tickets/{id}` | `HandleGetSupportTicket` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:157)<br>`(module)` (frontend/src/components/portal/SupportWidget.tsx:180)<br>`(module)` (frontend/src/components/portal/SupportWidget.tsx:108)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:88)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:100)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:117) | `support-tickets` |
+| `GET /api/support/tickets/{id}` | `HandleGetSupportTicket` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:108)<br>`(module)` (frontend/src/components/portal/SupportWidget.tsx:157)<br>`(module)` (frontend/src/components/portal/SupportWidget.tsx:180)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:88)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:100)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:117) | `support-tickets` |
 | `PATCH /api/support/tickets/{id}` | `HandleUpdateSupportTicket` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:153)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:131) | `support-tickets` |
 | `POST /api/support/tickets/{id}/messages` | `HandleSupportTicketReply` | `(module)` (frontend/src/components/portal/SupportWidget.tsx:172)<br>`(module)` (frontend/src/components/reports/SupportTicketsCard.tsx:112) | `support-tickets` |
 | `GET /api/system/health` | `HandleSystemHealth` | `getSystemHealth` (frontend/src/lib/api.ts:751) | `system-health` |
@@ -79,61 +79,61 @@ Extracted from `internal/api/router.go` and `frontend/src/**`. 177 backend route
 | `GET /api/system/services/timeseries` | `HandleAIMetricsTimeseries` | `getAIMetricsTimeseries` (frontend/src/lib/api.ts:416) | `ai-services-health` `ai-runtime-metrics` |
 | `GET /api/timeline` | `HandleGetTimeline` | `getTimeline` (frontend/src/lib/api.ts:626) | `playback-timeline` |
 | `GET /api/timeline/coverage` | `HandleGetCoverage` | `fetchCoverage` (frontend/src/lib/api.ts:700) | `playback-timeline` |
-| `GET /api/users` | `HandleListUsers` | `listUsers` (frontend/src/lib/api.ts:809) | `users-roles` |
+| `GET /api/users` | `HandleListUsers` | `listUsers` (frontend/src/lib/api.ts:809) | `users-roles` `site-assignments` |
 | `POST /api/users` | `HandleCreateUser` | `createUser` (frontend/src/lib/api.ts:815) | `users-roles` |
 | `DELETE /api/users/{id}` | `HandleDeleteUser` | `deleteUser` (frontend/src/lib/api.ts:825) | `users-roles` |
-| `PATCH /api/users/{id}` | `HandleUpdateUserProfile` | `updateUserProfile` (frontend/src/lib/api.ts:848) | `users-roles` |
+| `PATCH /api/users/{id}` | `HandleUpdateUserProfile` | `updateUserProfile` (frontend/src/lib/api.ts:848) | `users-roles` `site-assignments` |
 | `PATCH /api/users/{id}/password` | `HandleUpdateUserPassword` | `updateUserPassword` (frontend/src/lib/api.ts:830) | `users-roles` |
 | `PATCH /api/users/{id}/role` | `HandleUpdateUserRole` | `updateUserRole` (frontend/src/lib/api.ts:839) | `users-roles` |
-| `POST /api/v1/alarms/{alarmId}/ai-feedback` | `(inline)` | `submitAIFeedback` (frontend/src/lib/ironsight-api.ts:576) | `alarm-ai-feedback` |
-| `POST /api/v1/alarms/{alarmId}/escalate` | `HandleEscalateAlarm` | `escalateAlarm` (frontend/src/lib/ironsight-api.ts:569) | `alarm-escalation` |
-| `GET /api/v1/alerts` | `(inline)` | `getAlerts` (frontend/src/lib/ironsight-api.ts:128)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `alert-feed-acknowledge` `operator-console-shell` |
-| `GET /api/v1/cameras` | `HandleListAllPlatformCameras` | `useMasterCameras` (frontend/src/hooks/useCameraAssignment.ts:38)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `site-assignments` |
-| `GET /api/v1/companies` | `HandleListOrganizations` | `getCompanies` (frontend/src/lib/ironsight-api.ts:170)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `companies-management` |
-| `POST /api/v1/companies` | `HandleCreateOrganization` | `createCompany` (frontend/src/lib/ironsight-api.ts:178) | `companies-management` |
-| `GET /api/v1/companies/{companyId}/users` | `HandleListCompanyUsers` | `getCompanyUsers` (frontend/src/lib/ironsight-api.ts:187) | `companies-management` |
-| `GET /api/v1/detections` | `HandleListDetections` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `yolo-detection` |
-| `GET /api/v1/device-history` | `HandleGetDeviceHistory` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | — |
-| `GET /api/v1/events` | `HandleListSecurityEvents` | `listSecurityEvents` (frontend/src/lib/ironsight-api.ts:565)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `alarm-investigation` |
-| `POST /api/v1/events` | `HandleCreateSecurityEvent` | `createSecurityEvent` (frontend/src/lib/ironsight-api.ts:539) | `notify-dispatch` `alarm-investigation` |
-| `POST /api/v1/events/{id}/verify` | `HandleVerifySecurityEvent` | `verifySecurityEvent` (frontend/src/lib/ironsight-api.ts:691) | — |
-| `GET /api/v1/features` | `HandleFeatureFlags` | `(module)` (frontend/src/lib/feature-flags.ts:68)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `feature-flags` |
-| `GET /api/v1/handoffs` | `HandleListHandoffs` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785)<br>`getPendingHandoffs` (frontend/src/lib/ironsight-api.ts:352) | `shift-handoffs` |
-| `POST /api/v1/handoffs` | `HandleCreateHandoff` | `createHandoff` (frontend/src/lib/ironsight-api.ts:356) | `shift-handoffs` |
-| `GET /api/v1/incidents` | `HandleListIncidents` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785)<br>`getIncidents` (frontend/src/lib/ironsight-api.ts:92) | `incidents` `portal-dashboard` |
-| `GET /api/v1/incidents/active` | `(inline)` | `getActiveIncidents` (frontend/src/lib/ironsight-api.ts:132)<br>`getIncident` (frontend/src/lib/ironsight-api.ts:96)<br>`getIncidentDetail` (frontend/src/lib/ironsight-api.ts:136) | `alert-feed-acknowledge` `incidents` |
-| `GET /api/v1/incidents/{id}` | `HandleGetIncident` | `getActiveIncidents` (frontend/src/lib/ironsight-api.ts:132)<br>`getIncident` (frontend/src/lib/ironsight-api.ts:96)<br>`getIncidentDetail` (frontend/src/lib/ironsight-api.ts:136) | `alert-feed-acknowledge` `incidents` |
-| `POST /api/v1/incidents/{id}/share` | `HandleCreateEvidenceShare` | `createEvidenceShareLink` (frontend/src/lib/ironsight-api.ts:747) | `evidence-shares` |
-| `GET /api/v1/incidents/{id}/shares` | `HandleListEvidenceShares` | `listIncidentShares` (frontend/src/lib/ironsight-api.ts:709) | `evidence-shares` |
+| `POST /api/v1/alarms/{alarmId}/ai-feedback` | `(inline)` | `submitAIFeedback` (frontend/src/lib/ironsight-api.ts:561) | `alarm-ai-feedback` |
+| `POST /api/v1/alarms/{alarmId}/escalate` | `HandleEscalateAlarm` | `escalateAlarm` (frontend/src/lib/ironsight-api.ts:554) | `alarm-escalation` |
+| `GET /api/v1/alerts` | `(inline)` | `getAlerts` (frontend/src/lib/ironsight-api.ts:121)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `alert-feed-acknowledge` `operator-console-shell` |
+| `GET /api/v1/cameras` | `HandleListAllPlatformCameras` | `useMasterCameras` (frontend/src/hooks/useCameraAssignment.ts:38)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `site-assignments` |
+| `GET /api/v1/companies` | `HandleListOrganizations` | `getCompanies` (frontend/src/lib/ironsight-api.ts:163)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `companies-management` |
+| `POST /api/v1/companies` | `HandleCreateOrganization` | `createCompany` (frontend/src/lib/ironsight-api.ts:171) | `companies-management` |
+| `GET /api/v1/companies/{companyId}/users` | `HandleListCompanyUsers` | `getCompanyUsers` (frontend/src/lib/ironsight-api.ts:180) | `companies-management` |
+| `GET /api/v1/detections` | `HandleListDetections` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `yolo-detection` |
+| `GET /api/v1/device-history` | `HandleGetDeviceHistory` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | — |
+| `GET /api/v1/events` | `HandleListSecurityEvents` | `listSecurityEvents` (frontend/src/lib/ironsight-api.ts:550)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `alarm-investigation` |
+| `POST /api/v1/events` | `HandleCreateSecurityEvent` | `createSecurityEvent` (frontend/src/lib/ironsight-api.ts:524) | `notify-dispatch` `alarm-investigation` |
+| `POST /api/v1/events/{id}/verify` | `HandleVerifySecurityEvent` | `verifySecurityEvent` (frontend/src/lib/ironsight-api.ts:676) | — |
+| `GET /api/v1/features` | `HandleFeatureFlags` | `(module)` (frontend/src/lib/feature-flags.ts:68)<br>`getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `feature-flags` |
+| `GET /api/v1/handoffs` | `HandleListHandoffs` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770)<br>`getPendingHandoffs` (frontend/src/lib/ironsight-api.ts:337) | `shift-handoffs` |
+| `POST /api/v1/handoffs` | `HandleCreateHandoff` | `createHandoff` (frontend/src/lib/ironsight-api.ts:341) | `shift-handoffs` |
+| `GET /api/v1/incidents` | `HandleListIncidents` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770)<br>`getIncidents` (frontend/src/lib/ironsight-api.ts:92) | `incidents` `portal-dashboard` |
+| `GET /api/v1/incidents/active` | `(inline)` | `getActiveIncidents` (frontend/src/lib/ironsight-api.ts:125)<br>`getIncidentDetail` (frontend/src/lib/ironsight-api.ts:129)<br>`getIncident` (frontend/src/lib/ironsight-api.ts:96) | `alert-feed-acknowledge` `incidents` |
+| `GET /api/v1/incidents/{id}` | `HandleGetIncident` | `getActiveIncidents` (frontend/src/lib/ironsight-api.ts:125)<br>`getIncidentDetail` (frontend/src/lib/ironsight-api.ts:129)<br>`getIncident` (frontend/src/lib/ironsight-api.ts:96) | `alert-feed-acknowledge` `incidents` |
+| `POST /api/v1/incidents/{id}/share` | `HandleCreateEvidenceShare` | `createEvidenceShareLink` (frontend/src/lib/ironsight-api.ts:732) | `evidence-shares` |
+| `GET /api/v1/incidents/{id}/shares` | `HandleListEvidenceShares` | `listIncidentShares` (frontend/src/lib/ironsight-api.ts:694) | `evidence-shares` |
 | `POST /api/v1/incidents/{incidentId}/acknowledge` | `(inline)` | `(module)` (frontend/src/components/operator/ActiveAlarmView.tsx:254) | `alert-feed-acknowledge` `alarm-investigation` |
-| `GET /api/v1/model-versions` | `HandleListModelVersions` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `yolo-detection` |
-| `GET /api/v1/operators` | `HandleListOperators` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785) | `operator-console-shell` |
-| `GET /api/v1/operators/current` | `HandleGetCurrentOperator` | `getCurrentOperator` (frontend/src/lib/ironsight-api.ts:274) | `operator-console-shell` |
+| `GET /api/v1/model-versions` | `HandleListModelVersions` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `yolo-detection` |
+| `GET /api/v1/operators` | `HandleListOperators` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770) | `operator-console-shell` |
+| `GET /api/v1/operators/current` | `HandleGetCurrentOperator` | `getCurrentOperator` (frontend/src/lib/ironsight-api.ts:259) | `operator-console-shell` |
 | `GET /api/v1/portal/compliance/report.pdf` | `HandleComplianceReportPDF` | `downloadComplianceReport` (frontend/src/lib/api.ts:1236) | `compliance-dashboard` |
 | `GET /api/v1/portal/compliance/summary` | `HandleComplianceSummary` | `getComplianceSummary` (frontend/src/lib/api.ts:1220) | `compliance-dashboard` |
 | `GET /api/v1/portal/pending-review` | `HandleListPendingReview` | `getPendingReview` (frontend/src/lib/api.ts:1118) | `ppe-pending-review` |
 | `POST /api/v1/portal/pending-review/{id}/review` | `HandleReviewPendingEntry` | `submitReview` (frontend/src/lib/api.ts:1127) | `ppe-pending-review` |
-| `GET /api/v1/portal/summary` | `HandlePortalSummary` | `getPortalSummary` (frontend/src/lib/ironsight-api.ts:116) | `portal-dashboard` |
-| `DELETE /api/v1/shares/{token}` | `HandleRevokeEvidenceShare` | `revokeEvidenceShareLink` (frontend/src/lib/ironsight-api.ts:766) | `evidence-shares` |
-| `GET /api/v1/sites` | `HandleListSites` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785)<br>`getSites` (frontend/src/lib/ironsight-api.ts:67) | `portal-dashboard` `sites-crud` `operator-console-shell` |
-| `POST /api/v1/sites` | `HandleCreateSiteP` | `createSite` (frontend/src/lib/ironsight-api.ts:193) | `sites-crud` |
-| `GET /api/v1/sites/locks` | `HandleSiteLocks` | `getSiteLocks` (frontend/src/lib/ironsight-api.ts:284)<br>`getSite` (frontend/src/lib/ironsight-api.ts:71) | `sites-crud` `alarm-investigation` `site-locks` |
-| `DELETE /api/v1/sites/{id}` | `HandleDeleteSiteP` | `deleteSite` (frontend/src/lib/ironsight-api.ts:207) | `sites-crud` |
-| `GET /api/v1/sites/{id}` | `HandleGetSite` | `getSiteLocks` (frontend/src/lib/ironsight-api.ts:284)<br>`getSite` (frontend/src/lib/ironsight-api.ts:71) | `sites-crud` `alarm-investigation` `site-locks` |
-| `PUT /api/v1/sites/{id}` | `HandleUpdateSite` | `updateSite` (frontend/src/lib/ironsight-api.ts:200) | `sites-crud` |
+| `GET /api/v1/portal/summary` | `HandlePortalSummary` | `getPortalSummary` (frontend/src/lib/ironsight-api.ts:109) | `portal-dashboard` |
+| `DELETE /api/v1/shares/{token}` | `HandleRevokeEvidenceShare` | `revokeEvidenceShareLink` (frontend/src/lib/ironsight-api.ts:751) | `evidence-shares` |
+| `GET /api/v1/sites` | `HandleListSites` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770)<br>`getSites` (frontend/src/lib/ironsight-api.ts:67) | `portal-dashboard` `sites-crud` `operator-console-shell` |
+| `POST /api/v1/sites` | `HandleCreateSiteP` | `createSite` (frontend/src/lib/ironsight-api.ts:186) | `sites-crud` |
+| `GET /api/v1/sites/locks` | `HandleSiteLocks` | `getSiteLocks` (frontend/src/lib/ironsight-api.ts:269)<br>`getSite` (frontend/src/lib/ironsight-api.ts:71) | `sites-crud` `alarm-investigation` `site-locks` |
+| `DELETE /api/v1/sites/{id}` | `HandleDeleteSiteP` | `deleteSite` (frontend/src/lib/ironsight-api.ts:200) | `sites-crud` |
+| `GET /api/v1/sites/{id}` | `HandleGetSite` | `getSiteLocks` (frontend/src/lib/ironsight-api.ts:269)<br>`getSite` (frontend/src/lib/ironsight-api.ts:71) | `sites-crud` `alarm-investigation` `site-locks` |
+| `PUT /api/v1/sites/{id}` | `HandleUpdateSite` | `updateSite` (frontend/src/lib/ironsight-api.ts:193) | `sites-crud` |
 | `GET /api/v1/sites/{id}/contacts` | `HandleListSiteContacts` | `(module)` (frontend/src/app/portal/sites/[id]/contacts/page.tsx:42) | `site-contacts` |
 | `PUT /api/v1/sites/{id}/contacts` | `HandleUpdateSiteContacts` | `(module)` (frontend/src/app/portal/sites/[id]/contacts/page.tsx:51) | `site-contacts` |
 | `PUT /api/v1/sites/{id}/monitoring-schedule` | `HandleUpdateSiteMonitoringSchedule` | `useUpdateSiteMonitoringSchedule` (frontend/src/hooks/useSites.ts:75) | `monitoring-schedule` |
-| `POST /api/v1/sites/{siteId}/camera-assignments` | `HandleAssignCamera` | `assignCameraToSite` (frontend/src/lib/ironsight-api.ts:217) | `site-assignments` |
-| `DELETE /api/v1/sites/{siteId}/camera-assignments/{cameraId}` | `HandleUnassignCamera` | `unassignCamera` (frontend/src/lib/ironsight-api.ts:224) | `site-assignments` |
+| `POST /api/v1/sites/{siteId}/camera-assignments` | `HandleAssignCamera` | `assignCameraToSite` (frontend/src/lib/ironsight-api.ts:210) | `site-assignments` |
+| `DELETE /api/v1/sites/{siteId}/camera-assignments/{cameraId}` | `HandleUnassignCamera` | `unassignCamera` (frontend/src/lib/ironsight-api.ts:217) | `site-assignments` |
 | `GET /api/v1/sites/{siteId}/cameras` | `HandleGetSiteCameras` | `getSiteCameras` (frontend/src/lib/ironsight-api.ts:75) | `sites-crud` `alarm-investigation` |
-| `GET /api/v1/sites/{siteId}/sops` | `HandleListSiteSOPs` | `getSiteSOPs` (frontend/src/lib/ironsight-api.ts:311) | `alarm-investigation` `site-sops` |
-| `POST /api/v1/sites/{siteId}/sops` | `HandleCreateSiteSOP` | `createSiteSOP` (frontend/src/lib/ironsight-api.ts:315) | `site-sops` |
-| `POST /api/v1/sites/{siteId}/speaker-assignments` | `HandleAssignSpeaker` | `assignSpeakerToSite` (frontend/src/lib/ironsight-api.ts:234) | `speakers-audio` `site-assignments` |
-| `DELETE /api/v1/sites/{siteId}/speaker-assignments/{speakerId}` | `HandleUnassignSpeaker` | `unassignSpeaker` (frontend/src/lib/ironsight-api.ts:241) | `speakers-audio` `site-assignments` |
-| `DELETE /api/v1/sops/{id}` | `HandleDeleteSiteSOP` | `deleteSiteSOP` (frontend/src/lib/ironsight-api.ts:329) | `site-sops` |
-| `PUT /api/v1/sops/{id}` | `HandleUpdateSiteSOP` | `updateSiteSOP` (frontend/src/lib/ironsight-api.ts:322) | `site-sops` |
-| `GET /api/v1/speakers` | `HandleListAllPlatformSpeakers` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:785)<br>`getAllSpeakers` (frontend/src/lib/ironsight-api.ts:230) | `speakers-audio` `site-assignments` |
+| `GET /api/v1/sites/{siteId}/sops` | `HandleListSiteSOPs` | `getSiteSOPs` (frontend/src/lib/ironsight-api.ts:296) | `alarm-investigation` `site-sops` |
+| `POST /api/v1/sites/{siteId}/sops` | `HandleCreateSiteSOP` | `createSiteSOP` (frontend/src/lib/ironsight-api.ts:300) | `site-sops` |
+| `POST /api/v1/sites/{siteId}/speaker-assignments` | `HandleAssignSpeaker` | `assignSpeakerToSite` (frontend/src/lib/ironsight-api.ts:227) | `speakers-audio` `site-assignments` |
+| `DELETE /api/v1/sites/{siteId}/speaker-assignments/{speakerId}` | `HandleUnassignSpeaker` | `unassignSpeaker` (frontend/src/lib/ironsight-api.ts:234) | `speakers-audio` `site-assignments` |
+| `DELETE /api/v1/sops/{id}` | `HandleDeleteSiteSOP` | `deleteSiteSOP` (frontend/src/lib/ironsight-api.ts:314) | `site-sops` |
+| `PUT /api/v1/sops/{id}` | `HandleUpdateSiteSOP` | `updateSiteSOP` (frontend/src/lib/ironsight-api.ts:307) | `site-sops` |
+| `GET /api/v1/speakers` | `HandleListAllPlatformSpeakers` | `getFeatureFlags` (frontend/src/lib/ironsight-api.ts:770)<br>`getAllSpeakers` (frontend/src/lib/ironsight-api.ts:223) | `speakers-audio` `site-assignments` |
 | `POST /auth/login` | `HandleLogin` | `AuthProvider` (frontend/src/contexts/AuthContext.tsx:172) | `password-login` |
 | `POST /auth/logout` | `HandleLogout` | `AuthProvider` (frontend/src/contexts/AuthContext.tsx:213) | `session-csrf` |
 | `GET /auth/me` | `HandleGetMe` | `AuthProvider` (frontend/src/contexts/AuthContext.tsx:133) | `session-csrf` |
@@ -207,38 +207,32 @@ These call sites match no registered route — each one 404s at runtime and need
 | `POST /api/cameras/{*}/compliance-rules` | `createComplianceRule` (frontend/src/lib/api.ts:1177) |
 | `PUT /api/cameras/{*}/compliance-rules/{*}` | `updateComplianceRule` (frontend/src/lib/api.ts:1187) |
 | `DELETE /api/cameras/{*}/compliance-rules/{*}` | `deleteComplianceRule` (frontend/src/lib/api.ts:1196) |
-| `GET /api/cameras/{*}/ppe/zones` | `listPPEZones` (frontend/src/lib/api.ts:1141) |
 | `POST /api/cameras/{*}/ppe/zones` | `createPPEZone` (frontend/src/lib/api.ts:1147) |
+| `GET /api/cameras/{*}/ppe/zones` | `listPPEZones` (frontend/src/lib/api.ts:1141) |
 | `DELETE /api/cameras/{*}/ppe/zones/{*}` | `deletePPEZone` (frontend/src/lib/api.ts:1166) |
 | `PUT /api/cameras/{*}/ppe/zones/{*}` | `updatePPEZone` (frontend/src/lib/api.ts:1157) |
-| `PUT /api/v1/alerts/{*}/claim` | `claimAlert` (frontend/src/lib/ironsight-api.ts:298) |
-| `DELETE /api/v1/alerts/{*}/claim` | `releaseAlert` (frontend/src/lib/ironsight-api.ts:305) |
+| `DELETE /api/v1/alerts/{*}/claim` | `releaseAlert` (frontend/src/lib/ironsight-api.ts:290) |
+| `PUT /api/v1/alerts/{*}/claim` | `claimAlert` (frontend/src/lib/ironsight-api.ts:283) |
 | `POST /api/v1/cameras` | `useCreateCamera` (frontend/src/hooks/useCameraAssignment.ts:104) |
 | `DELETE /api/v1/cameras/{*}` | `useDeleteCamera` (frontend/src/hooks/useCameraAssignment.ts:122) |
-| `GET /api/v1/companies/{*}` | `getCompany` (frontend/src/lib/ironsight-api.ts:174) |
-| `PUT /api/v1/handoffs/{*}/accept` | `acceptHandoff` (frontend/src/lib/ironsight-api.ts:360) |
-| `POST /api/v1/incidents/{*}/comments` | `addIncidentComment` (frontend/src/lib/ironsight-api.ts:107) |
-| `POST /api/v1/incidents/{*}/evidence` | `generateEvidencePackage` (frontend/src/lib/ironsight-api.ts:399) |
-| `PUT /api/v1/incidents/{*}/status` | `updateIncidentStatus` (frontend/src/lib/ironsight-api.ts:100) |
-| `GET /api/v1/integrations` | `getIntegrations` (frontend/src/lib/ironsight-api.ts:469) |
-| `PATCH /api/v1/integrations/{*}` | `toggleIntegration` (frontend/src/lib/ironsight-api.ts:473) |
-| `DELETE /api/v1/integrations/{*}` | `deleteIntegration` (frontend/src/lib/ironsight-api.ts:477) |
-| `DELETE /api/v1/notifications/{*}` | `deleteNotificationRule` (frontend/src/lib/ironsight-api.ts:416) |
-| `GET /api/v1/operators/metrics` | `getOperatorMetrics` (frontend/src/lib/ironsight-api.ts:383) |
-| `PUT /api/v1/operators/presence` | `updatePresence` (frontend/src/lib/ironsight-api.ts:377) |
-| `GET /api/v1/operators/presence` | `getOperatorPresence` (frontend/src/lib/ironsight-api.ts:373) |
-| `GET /api/v1/reports/scheduled` | `getScheduledReports` (frontend/src/lib/ironsight-api.ts:389) |
-| `PATCH /api/v1/reports/scheduled/{*}` | `toggleScheduledReport` (frontend/src/lib/ironsight-api.ts:393) |
-| `GET /api/v1/search/suggest` | `getSearchSuggestions` (frontend/src/lib/ironsight-api.ts:161) |
-| `GET /api/v1/sites/{*}/camera-assignments` | `getCameraAssignments` (frontend/src/lib/ironsight-api.ts:213) |
+| `GET /api/v1/companies/{*}` | `getCompany` (frontend/src/lib/ironsight-api.ts:167) |
+| `PUT /api/v1/handoffs/{*}/accept` | `acceptHandoff` (frontend/src/lib/ironsight-api.ts:345) |
+| `GET /api/v1/integrations` | `getIntegrations` (frontend/src/lib/ironsight-api.ts:454) |
+| `DELETE /api/v1/integrations/{*}` | `deleteIntegration` (frontend/src/lib/ironsight-api.ts:462) |
+| `PATCH /api/v1/integrations/{*}` | `toggleIntegration` (frontend/src/lib/ironsight-api.ts:458) |
+| `DELETE /api/v1/notifications/{*}` | `deleteNotificationRule` (frontend/src/lib/ironsight-api.ts:401) |
+| `GET /api/v1/operators/metrics` | `getOperatorMetrics` (frontend/src/lib/ironsight-api.ts:368) |
+| `PUT /api/v1/operators/presence` | `updatePresence` (frontend/src/lib/ironsight-api.ts:362) |
+| `GET /api/v1/operators/presence` | `getOperatorPresence` (frontend/src/lib/ironsight-api.ts:358) |
+| `GET /api/v1/reports/scheduled` | `getScheduledReports` (frontend/src/lib/ironsight-api.ts:374) |
+| `PATCH /api/v1/reports/scheduled/{*}` | `toggleScheduledReport` (frontend/src/lib/ironsight-api.ts:378) |
+| `GET /api/v1/search/suggest` | `getSearchSuggestions` (frontend/src/lib/ironsight-api.ts:154) |
+| `GET /api/v1/sites/{*}/camera-assignments` | `getCameraAssignments` (frontend/src/lib/ironsight-api.ts:206) |
 | `GET /api/v1/sites/{*}/compliance` | `getSiteCompliance` (frontend/src/lib/ironsight-api.ts:79) |
-| `POST /api/v1/sites/{*}/lock` | `lockSite` (frontend/src/lib/ironsight-api.ts:288) |
-| `DELETE /api/v1/sites/{*}/lock` | `unlockSite` (frontend/src/lib/ironsight-api.ts:292) |
-| `PUT /api/v1/sites/{*}/map` | `updateSiteMap` (frontend/src/lib/ironsight-api.ts:339) |
-| `GET /api/v1/sites/{*}/map` | `getSiteMap` (frontend/src/lib/ironsight-api.ts:335) |
-| `POST /api/v1/sites/{*}/notifications` | `createNotificationRule` (frontend/src/lib/ironsight-api.ts:412) |
-| `GET /api/v1/sites/{*}/notifications` | `getNotificationRules` (frontend/src/lib/ironsight-api.ts:408) |
-| `POST /api/v1/sites/{*}/users` | `assignUserToSite` (frontend/src/lib/ironsight-api.ts:251) |
-| `GET /api/v1/sites/{*}/users` | `getSiteUsers` (frontend/src/lib/ironsight-api.ts:247) |
-| `DELETE /api/v1/sites/{*}/users/{*}` | `unassignUserFromSite` (frontend/src/lib/ironsight-api.ts:258) |
-| `GET /api/v1/sites/{*}/zones` | `getExclusionZones` (frontend/src/lib/ironsight-api.ts:422) |
+| `DELETE /api/v1/sites/{*}/lock` | `unlockSite` (frontend/src/lib/ironsight-api.ts:277) |
+| `POST /api/v1/sites/{*}/lock` | `lockSite` (frontend/src/lib/ironsight-api.ts:273) |
+| `GET /api/v1/sites/{*}/map` | `getSiteMap` (frontend/src/lib/ironsight-api.ts:320) |
+| `PUT /api/v1/sites/{*}/map` | `updateSiteMap` (frontend/src/lib/ironsight-api.ts:324) |
+| `GET /api/v1/sites/{*}/notifications` | `getNotificationRules` (frontend/src/lib/ironsight-api.ts:393) |
+| `POST /api/v1/sites/{*}/notifications` | `createNotificationRule` (frontend/src/lib/ironsight-api.ts:397) |
+| `GET /api/v1/sites/{*}/zones` | `getExclusionZones` (frontend/src/lib/ironsight-api.ts:407) |

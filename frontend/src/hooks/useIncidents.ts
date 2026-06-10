@@ -1,9 +1,7 @@
 // ── Incidents React Query Hooks ──
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import {
-  getIncidents, getIncident, updateIncidentStatus, addIncidentComment,
-} from '@/lib/ironsight-api';
+import { useQuery } from '@tanstack/react-query';
+import { getIncidents, getIncident } from '@/lib/ironsight-api';
 import type { IncidentSummary, IncidentDetail } from '@/types/ironsight';
 
 /** Fetch incidents with optional filters */
@@ -36,27 +34,7 @@ export function useIncident(id: string | null) {
   });
 }
 
-/** Update incident status */
-export function useUpdateIncidentStatus() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, status, note }: { id: string; status: string; note?: string }) =>
-      updateIncidentStatus(id, status, note),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['incident', variables.id] });
-      queryClient.invalidateQueries({ queryKey: ['incidents'] });
-    },
-  });
-}
-
-/** Add a comment to an incident */
-export function useAddComment() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, text }: { id: string; text: string }) =>
-      addIncidentComment(id, text),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['incident', variables.id] });
-    },
-  });
-}
+// F-09: useUpdateIncidentStatus / useAddComment removed alongside their
+// client fns — the routes they called (PUT /api/v1/incidents/{id}/status,
+// POST /api/v1/incidents/{id}/comments) never existed server-side and the
+// hooks had no component callers.

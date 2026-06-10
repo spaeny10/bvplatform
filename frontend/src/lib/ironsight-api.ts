@@ -21,11 +21,11 @@
 import type {
   SiteSummary, SiteDetail, IncidentSummary, IncidentDetail,
   AlertEvent, SOCIncident, SearchResult, SearchFilters, ComplianceHistory,
-  Company, CompanyUser, SiteCreate, CameraAssignment, SiteUserAssignment,
+  Company, CompanyUser, SiteCreate, CameraAssignment,
   SOCOperator, SiteLock,
   SiteSOP, SiteMapData,
   ShiftHandoff, OperatorPresence,
-  OperatorMetrics, ScheduledReport, EvidencePackage, NotificationRule,
+  OperatorMetrics, ScheduledReport, NotificationRule,
   ExclusionZone, SavedSearch, Integration,
   PortalSummary,
 } from '@/types/ironsight';
@@ -96,19 +96,12 @@ export async function getIncident(id: string): Promise<IncidentDetail> {
   return fetchJSON<IncidentDetail>(`${BASE}/incidents/${id}`);
 }
 
-export async function updateIncidentStatus(id: string, status: string, note?: string) {
-  return fetchJSON(`${BASE}/incidents/${id}/status`, {
-    method: 'PUT',
-    body: JSON.stringify({ status, note }),
-  });
-}
-
-export async function addIncidentComment(id: string, text: string) {
-  return fetchJSON(`${BASE}/incidents/${id}/comments`, {
-    method: 'POST',
-    body: JSON.stringify({ text }),
-  });
-}
+// F-09: updateIncidentStatus / addIncidentComment removed — they targeted
+// PUT /api/v1/incidents/{id}/status and POST /api/v1/incidents/{id}/comments,
+// routes that never existed server-side. The portal incident page no longer
+// offers status/comment writes; SOC-side dispositions happen through the
+// operator console. Re-add together with real backend routes if customer
+// incident write-back ever becomes a feature.
 
 // ── Portal proof-of-work rollup ──
 
@@ -242,21 +235,13 @@ export async function unassignSpeaker(siteId: string, speakerId: string): Promis
 }
 
 // ── Site User Assignments ──
-
-export async function getSiteUsers(siteId: string): Promise<SiteUserAssignment[]> {
-  return fetchJSON<SiteUserAssignment[]>(`${BASE}/sites/${siteId}/users`);
-}
-
-export async function assignUserToSite(siteId: string, userId: string): Promise<SiteUserAssignment> {
-  return fetchJSON<SiteUserAssignment>(`${BASE}/sites/${siteId}/users`, {
-    method: 'POST',
-    body: JSON.stringify({ user_id: userId }),
-  });
-}
-
-export async function unassignUserFromSite(siteId: string, userId: string): Promise<void> {
-  await fetchJSON(`${BASE}/sites/${siteId}/users/${userId}`, { method: 'DELETE' });
-}
+//
+// F-04: getSiteUsers / assignUserToSite / unassignUserFromSite removed —
+// they targeted GET/POST/DELETE /api/v1/sites/{id}/users, routes that
+// never existed server-side (no handler, table, or migration). The real
+// access-scoping mechanism is users.assigned_site_ids, read via
+// GET /api/users and edited via PATCH /api/users/{id} (lib/api.ts
+// listUsers / updateUserProfile) — CustomerAccessModal now uses that.
 
 // ── SOC Operators ──
 
@@ -394,13 +379,13 @@ export async function toggleScheduledReport(reportId: string, enabled: boolean):
 }
 
 // ── Evidence Packages ──
-
-export async function generateEvidencePackage(incidentId: string, notes: string): Promise<EvidencePackage> {
-  return fetchJSON<EvidencePackage>(`${BASE}/incidents/${incidentId}/evidence`, {
-    method: 'POST',
-    body: JSON.stringify({ notes }),
-  });
-}
+//
+// F-07: generateEvidencePackage removed — it POSTed
+// /api/v1/incidents/{id}/evidence, a route that never existed, so the
+// portal's "Export MP4" button hung forever. EvidenceExportButton now
+// downloads the incident's real clip via the signed media-mint pipeline
+// (lib/media resolveMediaURL + downloadAuthenticated below); evidence
+// share links go through createEvidenceShareLink (real backend).
 
 // ── Notification Rules ──
 

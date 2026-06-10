@@ -1,10 +1,11 @@
 'use client';
 
-import type { IncidentDetail } from '@/types/ironsight';
+import { useEffect, useState } from 'react';
 import { formatTime, formatRelativeTime, formatConfidence, formatDuration } from '@/lib/format';
 import PPEStatusIcon from '@/components/shared/PPEStatusIcon';
 import EvidenceExportButton from '@/components/shared/EvidenceExportButton';
 import { useIncident } from '@/hooks/useIncidents';
+import { resolveMediaURL } from '@/lib/media';
 import Link from 'next/link';
 
 /* IRONSight Steel & Fire tokens */
@@ -15,6 +16,60 @@ const T = {
   text: '#E4E8F0', text2: '#8891A5', text3: '#4A5268', textInv: '#E4E8F0',
   red: '#EF4444', amber: '#E89B2A', green: '#22C55E', blue: '#3B82F6',
 };
+
+// F-09: render the incident's real clip_url instead of the painted
+// gradient scene this page used to show. clip_url is the legacy
+// /recordings/<cam>/<file>[#t=] shape stored on security_events;
+// resolveMediaURL exchanges it for a signed /media/v1/<token> URL
+// (same pipeline as SignedImage / the portal site drill-down). When
+// the incident has no clip, say so honestly.
+function IncidentClip({ clipUrl }: { clipUrl?: string }) {
+  const [src, setSrc] = useState('');
+  const [state, setState] = useState<'loading' | 'ready' | 'unavailable'>('loading');
+
+  useEffect(() => {
+    if (!clipUrl) {
+      setState('unavailable');
+      return;
+    }
+    let cancelled = false;
+    setState('loading');
+    resolveMediaURL(clipUrl)
+      .then(u => {
+        if (cancelled) return;
+        if (!u) { setState('unavailable'); return; }
+        setSrc(u);
+        setState('ready');
+      })
+      .catch(() => { if (!cancelled) setState('unavailable'); });
+    return () => { cancelled = true; };
+  }, [clipUrl]);
+
+  return (
+    <div style={{ position: 'relative', background: '#000', aspectRatio: '16/7', overflow: 'hidden' }}>
+      {state === 'ready' ? (
+        <video
+          key={src}
+          src={src}
+          controls
+          playsInline
+          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+        />
+      ) : (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+          <div style={{ fontSize: 12, color: T.text3 }}>
+            {state === 'loading' ? 'Loading clip…' : 'No video clip is available for this incident.'}
+          </div>
+          {state === 'unavailable' && (
+            <div style={{ fontSize: 10, color: T.text3, opacity: 0.7 }}>
+              Clips are captured when a recording segment covers the event window.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function IncidentDetailPage({ params }: { params: { id: string } }) {
   const { data: incident } = useIncident(params.id);
@@ -50,9 +105,9 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
           ))}
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-          <EvidenceExportButton incidentId={incident.id} />
-          <button style={{ padding: '5px 12px', borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: 'pointer', border: '1px solid rgba(20,72,160,0.4)', background: 'rgba(20,72,160,0.25)', color: '#80a8f0', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 6 }}>📄 Export PDF</button>
-          <button style={{ padding: '5px 12px', borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: 'pointer', border: '1px solid rgba(192,49,26,0.4)', background: 'rgba(192,49,26,0.2)', color: '#e87060', fontFamily: 'inherit', display: 'flex', alignItems: 'center', gap: 6 }}>⚠ Escalate to HSE</button>
+          {/* F-09: "Export PDF" / "Escalate to HSE" buttons removed — they
+              had no onClick and no backend; restore only with a real flow. */}
+          <EvidenceExportButton incidentId={incident.id} clipUrl={incident.clip_url} />
         </div>
       </div>
 
@@ -61,7 +116,11 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
         {/* Red left border accent */}
         <div style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: T.red, boxShadow: '0 0 20px rgba(192,49,26,0.5)' }} />
 
-        <div style={{ position: 'relative', zIndex: 1, display: 'grid', gridTemplateColumns: '1fr auto', gap: 24, alignItems: 'start' }}>
+        {/* F-09: the "Escalate Incident" / "Mark Resolved" action column was
+            removed — neither button had an onClick, and PUT
+            /api/v1/incidents/{id}/status has no backend route. Status
+            changes happen SOC-side; this page reports them. */}
+        <div style={{ position: 'relative', zIndex: 1 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: 'rgba(248,247,245,0.4)', letterSpacing: 1 }}>{incident.id}</span>
@@ -88,10 +147,6 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
               ))}
             </div>
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
-            <button style={{ padding: '7px 16px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: "'Inter', sans-serif", background: T.red, border: `1px solid ${T.red}`, color: '#fff', boxShadow: '0 2px 8px rgba(192,49,26,0.35)', display: 'flex', alignItems: 'center', gap: 7 }}>🚨 Escalate Incident</button>
-            <button style={{ padding: '7px 16px', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: "'Inter', sans-serif", background: 'rgba(26,110,64,0.2)', border: '1px solid rgba(26,110,64,0.35)', color: '#60c890' }}>✓ Mark Resolved</button>
-          </div>
         </div>
       </div>
 
@@ -99,57 +154,17 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
       <div style={{ flex: 1, overflow: 'hidden', display: 'grid', gridTemplateColumns: '1fr 360px' }}>
         {/* ── CENTER ── */}
         <div style={{ overflowY: 'auto', scrollbarWidth: 'thin' as const }}>
-          {/* Video evidence */}
+          {/* Video evidence — the real clip, or an honest empty state.
+              F-09: this used to be a painted CSS scene (gradient set
+              dressing, fake "EVIDENCE LOCKED" badge, scanline overlay,
+              staged detection boxes) while the API's clip_url was
+              discarded. The dead Keyframes / AI Analysis tab bar is gone
+              too — AI analysis renders below, keyframes have no backend. */}
           <div style={{ background: T.bgDark }}>
-            {/* Tab bar */}
             <div style={{ display: 'flex', background: 'rgba(0,0,0,0.4)', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '0 16px' }}>
-              {['Video Evidence', 'Keyframes', 'AI Analysis'].map((tab, i) => (
-                <button key={tab} style={{ padding: '9px 14px', fontSize: 11, fontWeight: 500, color: i === 0 ? T.textInv : 'rgba(248,247,245,0.35)', cursor: 'pointer', borderBottom: i === 0 ? `2px solid ${T.red}` : '2px solid transparent', background: 'none', border: 'none', fontFamily: "'Inter', sans-serif", letterSpacing: 0.5, marginBottom: -1 }}>{tab}</button>
-              ))}
+              <span style={{ padding: '9px 14px', fontSize: 11, fontWeight: 500, color: T.textInv, borderBottom: `2px solid ${T.red}`, fontFamily: "'Inter', sans-serif", letterSpacing: 0.5, marginBottom: -1 }}>Video Evidence</span>
             </div>
-
-            {/* Video viewport */}
-            <div style={{ position: 'relative', background: '#0a0806', aspectRatio: '16/7', overflow: 'hidden' }}>
-              <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, #080c08 0%, #101808 45%, #181c10 100%)' }} />
-              <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, height: '32%', background: 'rgba(48,42,22,0.7)' }} />
-              <div style={{ position: 'absolute', bottom: '30%', left: '2%', width: '28%', height: '60%', background: 'rgba(38,48,55,0.8)' }} />
-              <div style={{ position: 'absolute', bottom: '30%', right: '15%', width: '22%', height: '50%', background: 'rgba(50,48,38,0.5)', border: '1px solid rgba(80,75,50,0.3)' }} />
-
-              {/* Detection boxes */}
-              {incident.detections.slice(0, 3).map((det, i) => {
-                const color = det.violation ? '#e06050' : '#40b870';
-                return (
-                  <div key={i} style={{
-                    position: 'absolute',
-                    left: `${(det.bbox[0] / 1920) * 100}%`,
-                    top: `${(det.bbox[1] / 1080) * 100}%`,
-                    width: `${((det.bbox[2] - det.bbox[0]) / 1920) * 100}%`,
-                    height: `${((det.bbox[3] - det.bbox[1]) / 1080) * 100}%`,
-                    border: `2px solid ${color}`,
-                    borderRadius: 2,
-                    pointerEvents: 'none',
-                    boxShadow: det.violation ? `0 0 6px ${color}` : undefined,
-                  }}>
-                    <span style={{
-                      position: 'absolute', bottom: '100%', left: -1, marginBottom: 2,
-                      fontFamily: "'JetBrains Mono', monospace", fontSize: 8.5, fontWeight: 500,
-                      padding: '2px 6px', borderRadius: 2, whiteSpace: 'nowrap' as const,
-                      background: 'rgba(0,0,0,0.88)', color, border: `1px solid ${color}33`,
-                    }}>
-                      {(det.subclass || det.class).toUpperCase()} {Math.round(det.confidence * 100)}%
-                    </span>
-                  </div>
-                );
-              })}
-
-              {/* Evidence badge */}
-              <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, flexDirection: 'column' as const, alignItems: 'flex-end' }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, padding: '2px 7px', borderRadius: 2, background: 'rgba(20,72,160,0.8)', color: '#90b8f0', border: '1px solid rgba(90,140,220,0.3)' }}>🔒 EVIDENCE LOCKED</span>
-              </div>
-
-              {/* Scanlines */}
-              <div style={{ position: 'absolute', inset: 0, background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.025) 2px, rgba(0,0,0,0.025) 4px)', pointerEvents: 'none' }} />
-            </div>
+            <IncidentClip clipUrl={incident.clip_url} />
           </div>
 
           {/* AI Analysis */}
@@ -373,18 +388,23 @@ export default function IncidentDetailPage({ params }: { params: { id: string } 
             })}
           </div>
 
-          {/* Comments */}
-          <div style={{ padding: '16px 18px' }}>
-            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 700, marginBottom: 12 }}>Comments</div>
-            {incident.comments.map(c => (
-              <div key={c.id} style={{ padding: '8px 10px', marginBottom: 6, background: T.bgPanel, borderRadius: 4, border: `1px solid ${T.border}` }}>
-                <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 2 }}>{c.author}</div>
-                <div style={{ fontSize: 11, color: T.text2 }}>{c.text}</div>
-                <div style={{ fontSize: 9, color: T.text3, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>{formatRelativeTime(c.ts)}</div>
-              </div>
-            ))}
-            <textarea placeholder="Add a comment…" style={{ width: '100%', padding: '8px 10px', borderRadius: 4, border: `1px solid ${T.border}`, fontSize: 11, fontFamily: 'inherit', resize: 'vertical' as const, minHeight: 60, marginTop: 6, background: T.bgPanel }} />
-          </div>
+          {/* Comments — read-only. F-09: the "Add a comment…" textarea had
+              no submit handler and POST /api/v1/incidents/{id}/comments has
+              no backend route; the input was removed rather than fake it.
+              The section renders only when the API actually returns
+              comments (today it returns [] for security events). */}
+          {incident.comments.length > 0 && (
+            <div style={{ padding: '16px 18px' }}>
+              <div style={{ fontFamily: "'Inter', sans-serif", fontSize: 12, fontWeight: 700, marginBottom: 12 }}>Comments</div>
+              {incident.comments.map(c => (
+                <div key={c.id} style={{ padding: '8px 10px', marginBottom: 6, background: T.bgPanel, borderRadius: 4, border: `1px solid ${T.border}` }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 2 }}>{c.author}</div>
+                  <div style={{ fontSize: 11, color: T.text2 }}>{c.text}</div>
+                  <div style={{ fontSize: 9, color: T.text3, marginTop: 4, fontFamily: "'JetBrains Mono', monospace" }}>{formatRelativeTime(c.ts)}</div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
