@@ -178,11 +178,19 @@ func (es *EventStream) parseMessage(data []byte) {
 		log.Printf("[MILESIGHT] %s: msg #%d len=%d sample=%s", es.label, count, len(data), string(data[:min(len(data), 500)]))
 	}
 
-	// Milesight /webstream/track sends pure JSON frames:
+	// Milesight /webstream/track sends pure JSON frames on some firmware:
 	// {"objAttrList":[...],"trackData":{"trackNum":N,"timeUsec":...,"trackList":[...]}}
 	// objAttrList contains detected objects; trackData.trackList has rule-triggered events.
 	if data[0] == '{' {
 		es.parseMilesightTrack(data)
+		return
+	}
+
+	// The panoramic / multi-sensor models send a fixed-layout BINARY frame on
+	// the same endpoint, tagged with the 5-byte magic 33 22 11 00 37. Decode it
+	// into the same internal track representation as the JSON path.
+	if isBinaryTrackFrame(data) {
+		es.parseBinaryTrack(data)
 		return
 	}
 
@@ -228,18 +236,73 @@ type msTrackFrame struct {
 // classNames maps Milesight Class IDs to object type strings.
 var classNames = map[int]string{1: "human", 2: "vehicle", 3: "face"}
 
+// msTrack is the firmware-agnostic representation of one /webstream/track
+// entry. Both the JSON path (parseMilesightTrack) and the binary path
+// (parseBinaryTrack) decode into this so they can share one event-emission
+// path (emitTrackEvents) — the flag→event mapping and the 0→1 edge-detection
+// live in exactly one place.
+type msTrack struct {
+	TrackID int
+	X, Y, W, H int
+	Class      int
+
+	VcaIntrusionDetection int
+	VcaIntrusionEnter     int
+	VcaIntrusionExit      int
+	LineCrossing          int
+	ObjectLoitering       int
+	HumanDetection        int
+	VcaAdvancedMotion     int
+	AiMotion              int
+	ObjectLeftRemoved     int
+	TamperDefocus         int
+}
+
 // parseMilesightTrack handles the flag-based JSON frames from /webstream/track.
-// Uses edge detection: only fires callback on 0→1 transitions, not every frame.
 func (es *EventStream) parseMilesightTrack(data []byte) {
 	var msg msTrackFrame
 	if err := json.Unmarshal(data, &msg); err != nil {
 		return
 	}
 
+	tracks := make([]msTrack, 0, len(msg.TrackData.TrackList))
+	for _, t := range msg.TrackData.TrackList {
+		tracks = append(tracks, msTrack{
+			TrackID:               t.TrackID,
+			X:                     t.X,
+			Y:                     t.Y,
+			W:                     t.W,
+			H:                     t.H,
+			Class:                 t.Class,
+			VcaIntrusionDetection: t.VcaIntrusionDetection,
+			VcaIntrusionEnter:     t.VcaIntrusionEnter,
+			VcaIntrusionExit:      t.VcaIntrusionExit,
+			LineCrossing:          t.LineCrossing,
+			ObjectLoitering:       t.ObjectLoitering,
+			HumanDetection:        t.HumanDetection,
+			VcaAdvancedMotion:     t.VcaAdvancedMotion,
+			AiMotion:              t.AiMotion,
+			ObjectLeftRemoved:     t.ObjectLeftRemoved,
+			TamperDefocus:         t.TamperDefocus,
+		})
+	}
+
+	// The JSON cameras run their VCA at the fixed 320×180 analytics resolution
+	// (track x reaches 319 on the 504 left-ptz, y/w/h scale to match). Stamp it
+	// so the frontend can normalize the bbox to the analytics frame.
+	es.emitTrackEvents(tracks, msAnalyticsFrameW, msAnalyticsFrameH)
+}
+
+// emitTrackEvents maps decoded tracks to events, shared by the JSON and binary
+// decode paths. Uses edge detection: only fires the callback on a 0→1 flag
+// transition, never on every frame. frameW/frameH are the analytics-frame dims
+// the track coordinates live in; they are stamped into details as frame_w/frame_h
+// so the frontend can normalize the bbox correctly.
+func (es *EventStream) emitTrackEvents(tracks []msTrack, frameW, frameH int) {
 	// Track which flags are active THIS frame (to detect 1→0 transitions)
 	currentActive := make(map[string]bool)
 
-	for _, track := range msg.TrackData.TrackList {
+	for _, track := range tracks {
 		objType := classNames[track.Class]
 		if objType == "" {
 			objType = fmt.Sprintf("class_%d", track.Class)
@@ -292,9 +355,13 @@ func (es *EventStream) parseMilesightTrack(data []byte) {
 						{"x": track.X, "y": track.Y, "w": track.W, "h": track.H, "label": objType},
 					},
 				}
+				if frameW > 0 && frameH > 0 {
+					details["frame_w"] = frameW
+					details["frame_h"] = frameH
+				}
 
-				log.Printf("[MILESIGHT] %s: %s %s (rule=%s track=%d pos=%d,%d %dx%d)",
-					es.label, f.eventType, objType, f.ruleName, track.TrackID, track.X, track.Y, track.W, track.H)
+				log.Printf("[MILESIGHT] %s: %s %s (rule=%s track=%d pos=%d,%d %dx%d frame=%dx%d)",
+					es.label, f.eventType, objType, f.ruleName, track.TrackID, track.X, track.Y, track.W, track.H, frameW, frameH)
 
 				es.callback(f.eventType, details)
 				return // one event per transition
