@@ -1812,6 +1812,62 @@ body::before {
   color: white;
 }
 
+/* Second-granularity skip + frame-step buttons — narrower, monospace so
+   the "-30s" / "◀|" labels read as compact transport keys. */
+.transport-btn-sec,
+.transport-btn-frame {
+  width: auto;
+  min-width: 34px;
+  padding: 0 6px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+
+.transport-btn-frame {
+  min-width: 30px;
+  font-size: 12px;
+}
+
+/* Playback speed control (0.5×/1×/2×/4×) — playback mode only */
+.speed-control {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+.speed-btn {
+  min-width: 30px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--font-mono, monospace);
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.speed-btn:hover {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--text-primary);
+}
+
+.speed-btn.active {
+  background: rgba(59, 130, 246, 0.3);
+  color: var(--accent-blue);
+  box-shadow: 0 0 6px rgba(59, 130, 246, 0.25);
+}
+
 /* ── Clickable Playback Timestamp ── */
 .timeline-time-display {
   font-size: 12px;
@@ -1863,45 +1919,141 @@ body::before {
   bottom: 0;
   left: 0;
   right: 0;
-  height: 20px;
+  height: 22px;
   display: flex;
   align-items: flex-end;
+  z-index: 4;
 }
 
+/* Event markers are now interactive buttons: wider, hoverable (tooltip),
+   clickable (seek to that event). */
 .timeline-marker {
   position: absolute;
-  bottom: 2px;
-  width: 3px;
-  border-radius: 1px;
-  min-height: 4px;
+  bottom: 8px;
+  width: 9px;
+  transform: translateX(-50%);
+  border: none;
+  padding: 0;
+  border-radius: 2px;
+  min-height: 8px;
+  cursor: pointer;
+  opacity: 0.9;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  transition: transform 0.1s ease, opacity 0.1s ease, box-shadow 0.1s ease;
+}
+
+.timeline-marker:hover,
+.timeline-marker.marker-hover {
+  opacity: 1;
+  transform: translateX(-50%) scaleY(1.25);
+  box-shadow: 0 0 8px currentColor, 0 0 0 1px rgba(0, 0, 0, 0.45);
+  z-index: 5;
 }
 
 .marker-motion {
   background: var(--accent-amber);
+  color: var(--accent-amber);
 }
 
 .marker-lpr {
   background: var(--accent-cyan);
+  color: var(--accent-cyan);
 }
 
 .marker-object {
   background: var(--accent-purple);
+  color: var(--accent-purple);
 }
 
 .marker-face {
   background: var(--accent-green);
+  color: var(--accent-green);
 }
 
 .marker-other {
   background: var(--text-muted);
+  color: var(--text-muted);
+}
+
+/* Rich tooltip shown above a hovered event marker */
+.timeline-marker-tooltip {
+  position: absolute;
+  bottom: 30px;
+  transform: translateX(-50%);
+  background: rgba(12, 14, 20, 0.96);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.marker-tip-time {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+}
+
+.marker-tip-types {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.marker-tip-type {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Zoom-aware tick ruler inside the track */
+.timeline-ruler {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.timeline-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.timeline-tick.tick-minor {
+  height: 8px;
+}
+
+.timeline-tick.tick-major {
+  height: 14px;
+  background: rgba(255, 255, 255, 0.28);
 }
 
 .timeline-times {
-  display: flex;
-  justify-content: space-between;
+  position: relative;
+  height: 14px;
   margin-top: 4px;
   font-size: 10px;
   color: var(--text-muted);
+}
+
+/* Ruler labels are absolutely positioned at each major tick's x so the
+   scale reads true (replaces the old 5 evenly-spaced labels). */
+.timeline-ruler-labels .ruler-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-family: var(--font-mono, monospace);
+  white-space: nowrap;
 }
 
 /* ========================================

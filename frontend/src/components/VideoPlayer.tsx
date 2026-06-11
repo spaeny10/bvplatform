@@ -38,6 +38,13 @@ interface VideoPlayerProps {
     wsRef?: React.RefObject<WebSocket | null>;
     /** Global playback pause state from timeline transport */
     globalPaused?: boolean;
+    /**
+     * Playback speed multiplier from the timeline transport (0.5/1/2/4).
+     * Applied to the <video> in PLAYBACK mode only and re-applied after every
+     * segment load/auto-advance so it persists across segment boundaries.
+     * Ignored in live mode (HLS playbackRate is unreliable).
+     */
+    playbackRate?: number;
 }
 
 
@@ -60,6 +67,7 @@ export default function VideoPlayer({
     onRename,
     wsRef,
     globalPaused = false,
+    playbackRate = 1,
 }: VideoPlayerProps) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<any>(null);
@@ -214,6 +222,11 @@ export default function VideoPlayer({
     // When the cached segment list was fetched — its signed URLs expire
     // SEGMENT_TOKEN_TTL_MS after this instant (see constants above).
     const segFetchedAtRef = useRef<number>(0);
+    // Latest playback speed, mirrored into a ref so the (memoized) segment
+    // loader can re-apply it after each segment load/auto-advance without
+    // taking playbackRate as a dependency (which would rebuild the loader and
+    // re-run the playback effect on every speed change).
+    const playbackRateRef = useRef<number>(playbackRate);
 
     // ---- PRE-WARM PTZ CONNECTION ----
     useEffect(() => {
@@ -450,6 +463,10 @@ export default function VideoPlayer({
 
                     video.src = cand.url;
                     video.load();
+                    // load() resets playbackRate to 1; re-apply the operator's
+                    // selected speed immediately so an in-flight segment swap
+                    // can't transiently clobber a just-clicked 2×/4×.
+                    video.playbackRate = playbackRateRef.current;
                     try {
                         await new Promise<void>((resolve, reject) => {
                             const onLoaded = () => {
@@ -503,6 +520,12 @@ export default function VideoPlayer({
                 }
 
                 setLoading(false);
+
+                // Re-apply the operator-selected speed. Loading a new src via
+                // video.load() resets playbackRate to 1, so without this the
+                // speed silently reverts at every segment boundary / seek.
+                // Live mode never enters this loader, so this is playback-only.
+                video.playbackRate = playbackRateRef.current;
 
                 if (autoPlay) {
                     video.play().catch(() => { });
@@ -691,7 +714,7 @@ export default function VideoPlayer({
         }
     }, [globalPaused, isLive]);
 
-    const stepFrame = (direction: 1 | -1) => {
+    const stepFrame = useCallback((direction: 1 | -1) => {
         const video = videoRef.current;
         if (!video) return;
         video.pause();
@@ -699,7 +722,31 @@ export default function VideoPlayer({
         // Assume ~30fps => each frame is ~0.0333s
         const frameTime = 1 / 30;
         video.currentTime = Math.max(0, video.currentTime + direction * frameTime);
-    };
+    }, []);
+
+    // Apply the operator-selected playback speed to the element whenever it
+    // changes, and keep the ref in sync so the segment loader re-applies it
+    // after auto-advance. PLAYBACK MODE ONLY — live HLS playbackRate is
+    // unreliable, so we never touch the element while live.
+    useEffect(() => {
+        playbackRateRef.current = playbackRate;
+        if (isLive) return;
+        const video = videoRef.current;
+        if (video) video.playbackRate = playbackRate;
+    }, [playbackRate, isLive]);
+
+    // Frame-step from the timeline transport — broadcast as a window
+    // CustomEvent so every synced tile steps together (same broadcast
+    // pattern as the timestamp-overlay toggle). Playback mode only.
+    useEffect(() => {
+        if (isLive) return;
+        const onStep = (e: Event) => {
+            const dir = (e as CustomEvent<1 | -1>).detail;
+            stepFrame(dir === -1 ? -1 : 1);
+        };
+        window.addEventListener('ironsight:frame-step', onStep);
+        return () => window.removeEventListener('ironsight:frame-step', onStep);
+    }, [isLive, stepFrame]);
 
     // --- PTZ Control Handlers ---
     const ptzTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
