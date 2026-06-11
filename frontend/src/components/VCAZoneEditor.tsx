@@ -141,14 +141,17 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
   // round-trip; the iframe approach is the camera's UI is the source of
   // truth for camera-side rules.
   const [vcaTab, setVcaTab] = useState<'platform' | 'camera'>('platform');
-  // Route iframe through Ironsight same-origin proxy so the camera's UI
-  // can be embedded over https (the camera itself only speaks http, and
-  // its X-Frame-Options would otherwise block embedding). See
-  // internal/api/camera_web_proxy.go for the framing-header strip +
-  // <base href> injection that makes this work across vendors. The
-  // "Open in new tab" fallback link still points at the camera directly
-  // for cases where the proxy chokes on a particular vendor's HTML.
-  const cameraWebURL = `/api/cameras/${cameraId}/web-ui/`;
+  // Camera-side VCA is configured in the camera's OWN web UI. We OPEN IT
+  // IN A NEW TAB at the camera's reachable address (onvif_address host:port,
+  // e.g. 504.bigview.ai:8080) rather than embedding it in an iframe. The
+  // firmware is a JavaScript SPA that navigates to absolute paths ("/");
+  // inside a same-origin iframe that "/" resolves to the Ironsight origin,
+  // so the iframe ended up loading the Ironsight app itself. At its own
+  // origin in a new tab the SPA works correctly, and a top-level navigation
+  // has no mixed-content / X-Frame-Options problem (both of which only
+  // affect framing). internal/api/camera_web_proxy.go remains in the
+  // backend for a possible future separate-origin embed but is no longer
+  // used by this component.
   const cameraDirectURL = cameraIp ? `http://${cameraIp}/` : null;
 
   return (
@@ -186,39 +189,41 @@ export default function VCAZoneEditor({ cameraId, cameraIp }: Props) {
 
       {/* ───────────────────────── Camera tab ───────────────────────── */}
       {vcaTab === 'camera' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{
             padding: '8px 12px', borderRadius: 4, fontSize: 11, lineHeight: 1.5,
             background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.25)',
             color: 'rgba(255,255,255,0.8)',
           }}>
-            This embeds the camera's <strong>full web UI</strong> below (served through the Ironsight proxy, so it works
-            from anywhere you can reach Ironsight). It opens on the camera's own live preview — that's the camera's
-            home page, not an Ironsight live stream. To configure camera-side VCA, navigate to
-            <strong> Settings → Event / VCA</strong> (intrusion, line-cross, etc.) inside the embedded UI.
-            The camera runs detection in its DSP and emits ONVIF events that Ironsight ingests automatically — no separate sync step.
-            {cameraDirectURL && (
-              <>
-                {' '}
-                <a href={cameraDirectURL} target="_blank" rel="noopener noreferrer" style={{ color: '#c084fc', fontWeight: 600 }}>
-                  Open directly ↗
-                </a>
-                {' '}(opens the camera's IP directly, bypassing the proxy — only reachable from a network with a route to the camera).
-              </>
+            Camera-side VCA (intrusion, line-cross, loitering, etc.) is configured in the camera's
+            <strong> own web UI</strong>. Open it in a new tab below, then go to
+            <strong> Settings → Event / VCA</strong>. The camera runs detection in its DSP and emits ONVIF
+            events that Ironsight ingests automatically — no separate sync step.
+            {!cameraDirectURL && (
+              <> <em>This camera has no reachable web address configured (set its ONVIF address in NVR Settings).</em></>
             )}
           </div>
-          <iframe
-            src={cameraWebURL}
-            title="Camera web UI"
-            style={{
-              width: '100%', height: 600, border: '1px solid rgba(255,255,255,0.1)',
-              borderRadius: 4, background: '#000',
-            }}
-            // Camera UIs are trusted (the operator authenticates to the
-            // camera through the same-origin proxy below); sandbox lets the
-            // camera's JS run but restricts cross-origin escape.
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
-          />
+          {cameraDirectURL && (
+            <>
+              <a
+                href={cameraDirectURL}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '8px 16px', borderRadius: 4, fontSize: 13, fontWeight: 600,
+                  background: '#a855f7', color: '#fff', textDecoration: 'none', cursor: 'pointer',
+                }}
+              >
+                Open camera web UI ↗
+              </a>
+              <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', lineHeight: 1.4 }}>
+                Opens <code>{cameraDirectURL}</code> in a new tab. The camera serves its UI over HTTP;
+                authenticate with the camera's own credentials. (Embedding it here isn't possible — the
+                firmware is a single-page app that escapes a same-origin frame.)
+              </div>
+            </>
+          )}
         </div>
       )}
 
