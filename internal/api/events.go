@@ -36,6 +36,58 @@ func decorateEventPlaybackURLs(cfg *config.Config, userID string, events []datab
 	}
 }
 
+// DetectionSource classifies where a detection originated, from the event's
+// details map, into a normalized value the alert feed renders as a badge:
+//
+//	"camera" — camera-side VCA fired the event. Covers the Milesight
+//	           WebSocket VCA path (details.source = "milesight_ws"), the
+//	           Milesight Sense webhook (details.source =
+//	           "milesight-sense-webhook"), and the ONVIF PullPoint rule
+//	           engine (details.driver = "milesight" and/or a
+//	           details.topic of "tns1:RuleEngine/...").
+//	"server" — the server-side AI pipeline produced it (YOLO / Qwen vLM),
+//	           signalled by details.source in {"yolo","qwen","ai"}.
+//	""       — origin could not be determined.
+//
+// Kept here (API layer) rather than in the DB layer because it's a
+// presentation concern; the stored details are untouched.
+func DetectionSource(details map[string]interface{}) string {
+	if details == nil {
+		return ""
+	}
+	str := func(k string) string {
+		if v, ok := details[k].(string); ok {
+			return strings.ToLower(strings.TrimSpace(v))
+		}
+		return ""
+	}
+
+	switch src := str("source"); src {
+	case "milesight_ws", "milesight-sense-webhook", "onvif", "milesight":
+		return "camera"
+	case "yolo", "qwen", "ai", "server":
+		return "server"
+	}
+
+	// No explicit source key (the ONVIF rule-engine shape). Fall back to the
+	// driver / topic signals these camera-side events always carry.
+	if str("driver") == "milesight" {
+		return "camera"
+	}
+	if topic := str("topic"); strings.HasPrefix(topic, "tns1:ruleengine/") || strings.HasPrefix(topic, "milesight:") {
+		return "camera"
+	}
+	return ""
+}
+
+// decorateEventSources fills the read-time Source field on every event so the
+// feed can show a camera-vs-server badge. Mutates in place.
+func decorateEventSources(events []database.Event) {
+	for i := range events {
+		events[i].Source = DetectionSource(events[i].Details)
+	}
+}
+
 // HandleQueryEvents returns filtered events for a time range. Enforces
 // per-user site-based visibility: admins / SOC roles see all cameras,
 // customer-side roles only see events from their assigned cameras.
@@ -77,6 +129,7 @@ func HandleQueryEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 			events = []database.Event{}
 		}
 		decorateEventPlaybackURLs(cfg, claims.UserID, events)
+		decorateEventSources(events)
 		writeJSON(w, events)
 	}
 }
@@ -300,6 +353,7 @@ func HandleSearchEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 			events = []database.Event{}
 		}
 		decorateEventPlaybackURLs(cfg, claims.UserID, events)
+		decorateEventSources(events)
 
 		resp := SearchEventsResponse{
 			Events:     events,

@@ -176,6 +176,14 @@ type Event struct {
 	Details   map[string]interface{} `json:"details"`
 	Thumbnail string                 `json:"thumbnail,omitempty"`
 
+	// Source is a normalized detection origin derived at read time from
+	// Details ("camera" for camera-side VCA — milesight_ws / sense webhook /
+	// ONVIF rule-engine; "server" for the YOLO/Qwen AI pipeline). Lets the
+	// alert feed render a "Camera VCA" vs "Server AI" badge without the client
+	// having to re-implement the source taxonomy. Not stored — computed by the
+	// API handler via DetectionSource(). Empty when origin is unknown.
+	Source string `json:"source,omitempty"`
+
 	// SegmentID links the event to the recording segment that contains its
 	// moment. Populated at insert time by looking up the segment covering
 	// event_time for this camera; nil when recording was unavailable.
