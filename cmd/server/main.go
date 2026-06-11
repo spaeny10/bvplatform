@@ -583,7 +583,11 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 				// Trigger event-based recording clip creation
 				recEngine.TriggerEvent(cameraID, eventType)
 
-				// Broadcast to WebSocket clients (include event_id for thumbnail correlation)
+				// Broadcast to WebSocket clients (include event_id for thumbnail correlation).
+				// "source" mirrors the normalized DetectionSource the REST feed
+				// projects (decorateEventSources), so boot-time-subscribed live
+				// events render the camera-vs-server badge consistently with the
+				// HandleCreateCamera live path (which already sets it).
 				wsMsg, _ := json.Marshal(map[string]interface{}{
 					"type":       "event",
 					"id":         evt.ID,
@@ -592,6 +596,7 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 					"event_type": eventType,
 					"event_time": evt.EventTime.Format(time.RFC3339),
 					"details":    details,
+					"source":     api.DetectionSource(details),
 					"time":       time.Now().Format(time.RFC3339),
 				})
 				hub.Broadcast(wsMsg)

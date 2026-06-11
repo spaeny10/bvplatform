@@ -441,6 +441,7 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 				"camera_id": cameraID.String(),
 				"event":     eventType,
 				"details":   details,
+				"source":    DetectionSource(details),
 				"time":      time.Now().Format(time.RFC3339),
 			})
 			hub.Broadcast(wsMsg)
