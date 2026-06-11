@@ -177,7 +177,7 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/", HandleListCameras(db))
 			r.Post("/", HandleCreateCamera(db, recEngine, hlsServer, mtxServer, hub, subReg))
 			r.Get("/{id}", HandleGetCamera(db))
-			r.Patch("/{id}", HandleUpdateCamera(db))
+			r.Patch("/{id}", HandleUpdateCamera(db, mtxServer))
 			r.Delete("/{id}", HandleDeleteCamera(db, recEngine, hlsServer, mtxServer, subReg))
 
 			// Recordings per camera

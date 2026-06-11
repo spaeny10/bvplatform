@@ -807,7 +807,7 @@ export default function CameraGrid({
                         if (camera) {
                             return (
                                 <div
-                                    key={slotIndex}
+                                    key={`cam-${assignedCameraId}`}
                                     className={`custom-grid-item static-grid-cell ${selectedCamera === camera.id ? 'selected' : ''}`}
                                     onClick={() => onSelectCamera(camera.id)}
                                 >
@@ -853,7 +853,7 @@ export default function CameraGrid({
                         } else {
                             return (
                                 <div
-                                    key={slotIndex}
+                                    key={`empty-${slotIndex}`}
                                     className="custom-grid-item static-grid-cell static-grid-cell-empty"
                                     onClick={() => setPickerOpenSlot(isPickerOpen ? -1 : slotIndex)}
                                 >

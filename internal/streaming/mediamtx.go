@@ -186,6 +186,23 @@ func (m *MediaMTXServer) AddStream(cameraID uuid.UUID, cameraName, rtspURI, subS
 	}()
 }
 
+// SetStreamSource updates the in-memory stream map for a camera WITHOUT
+// firing AddStream's fire-and-forget control-API goroutine. The UPDATE path
+// uses this so it can drive the runtime path replace synchronously via
+// ReplaceStreamSource — calling AddStream there would race its detached add
+// against the delete+re-add we're about to do (and could leave a goroutine
+// blocked on the hang-prone /v3/config/* PATCH). The in-memory entry is also
+// what the next bootstrap / ReplaceStreamSource reads.
+func (m *MediaMTXServer) SetStreamSource(cameraID uuid.UUID, cameraName, rtspURI, subStreamURI string) {
+	m.mu.Lock()
+	m.streams[cameraID] = streamInfo{
+		cameraName:   cameraName,
+		rtspURI:      rtspURI,
+		subStreamURI: subStreamURI,
+	}
+	m.mu.Unlock()
+}
+
 // RemoveStream deletes a camera stream from MediaMTX at runtime.
 // Same failure-tolerance rule as AddStream — if the API call fails, the
 // in-memory map is still updated so the next bootstrap reflects reality.

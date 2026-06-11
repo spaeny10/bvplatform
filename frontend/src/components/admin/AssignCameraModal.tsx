@@ -27,6 +27,7 @@ export function CameraSection({ siteId }: { siteId: string }) {
   const [vcaCameraId, setVcaCameraId] = useState<string | null>(null);
   const [testingCam, setTestingCam] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleTestCamera = async (camId: string) => {
     setTestingCam(camId);
@@ -51,18 +52,40 @@ export function CameraSection({ siteId }: { siteId: string }) {
   const unassigned    = allCameras.filter((c: IRONSightCamera) => !c.site_id);
   const elsewhere     = allCameras.filter((c: IRONSightCamera) => c.site_id && c.site_id !== siteId);
 
+  // All three handlers surface failures instead of swallowing the rejected
+  // mutation promise — a silent failure here is exactly what made an assign
+  // that 403'd (e.g. a stale CSRF token) look like it had simply done nothing.
   const handleAssign = async (cameraId: string) => {
-    await assignCamera.mutateAsync({ siteId, cameraId, locationLabel: locationLabels[cameraId] || '' });
+    setActionError(null);
+    try {
+      await assignCamera.mutateAsync({ siteId, cameraId, locationLabel: locationLabels[cameraId] || '' });
+    } catch (err: any) {
+      setActionError(`Assign failed: ${err?.message || 'unknown error'}`);
+    }
   };
 
   const handleUnassign = async (cameraId: string) => {
-    await unassignCamera.mutateAsync({ siteId, cameraId });
+    setActionError(null);
+    try {
+      await unassignCamera.mutateAsync({ siteId, cameraId });
+    } catch (err: any) {
+      setActionError(`Unassign failed: ${err?.message || 'unknown error'}`);
+    }
   };
 
-  // Move: unassign from current site, then assign here
+  // Move: a single assign-to-target call. AssignCameraToSite (platform_db.go)
+  // is a full upsert — it overwrites site_id/location and closes any open
+  // device_assignments row for the camera — so assigning to the new site moves
+  // it atomically. The old unassign-then-assign pair could orphan the camera
+  // (site_id=NULL, "Move failed" banner) if the assign failed after the
+  // unassign committed; dropping the unassign removes that torn state.
   const handleMove = async (cam: IRONSightCamera) => {
-    await unassignCamera.mutateAsync({ siteId: cam.site_id!, cameraId: cam.id });
-    await assignCamera.mutateAsync({ siteId, cameraId: cam.id, locationLabel: locationLabels[cam.id] || '' });
+    setActionError(null);
+    try {
+      await assignCamera.mutateAsync({ siteId, cameraId: cam.id, locationLabel: locationLabels[cam.id] || '' });
+    } catch (err: any) {
+      setActionError(`Move failed: ${err?.message || 'unknown error'}`);
+    }
   };
 
 
@@ -76,6 +99,15 @@ export function CameraSection({ siteId }: { siteId: string }) {
           Showing cameras from NVR master list. Add new cameras via <strong style={{ color: '#8891A5' }}>Admin → NVR Settings</strong>.
         </span>
       </div>
+
+      {actionError && (
+        <div style={{
+          margin: '10px 16px', padding: '8px 12px', borderRadius: 4, fontSize: 11,
+          background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)', color: '#EF4444',
+        }}>
+          {actionError}
+        </div>
+      )}
 
       {/* Assigned here */}
       {assignedHere.length > 0 && (
