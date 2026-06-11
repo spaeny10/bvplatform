@@ -197,7 +197,10 @@ function getConfidencePct(event: Event): number | null {
 //     wrong, e.g. a 1920px-wide thumbnail would divide a ~5000 grid coord to
 //     2.6 instead of 0.5).
 //   • YOLO x1/y1/x2/y2 corner form — already normalized 0-1.
-const MILESIGHT_GRID = 10000; // Milesight analytics grid is a fixed 0-10000 range
+// Milesight /webstream/track boxes live in the VCA analytics frame (the driver
+// stamps frame_w/frame_h — 320x180); fall back to these if details omit them.
+const MS_ANALYTICS_W = 320;
+const MS_ANALYTICS_H = 180;
 interface NormBox { x: number; y: number; w: number; h: number; label?: string }
 
 function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormBox[] {
@@ -205,17 +208,18 @@ function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormB
     const boxes = d.bounding_boxes ?? d.boundingBoxes ?? d.bbox ?? d.boxes;
     if (!Array.isArray(boxes) || boxes.length === 0) return [];
 
-    // Milesight WS track boxes are in the fixed 0-10000 analytics grid. Detect
-    // by the driver-stamped source rather than a >1 magnitude heuristic — the
-    // grid's small boxes (e.g. w=300 → 0.03) would otherwise be misread as
-    // already-normalized.
+    // Milesight /webstream/track boxes are analytics-frame pixels (frame_w×frame_h,
+    // ~320×180 — driver-stamped on every milesight_ws event), NOT the 0-10000 region
+    // grid and NOT the thumbnail pixel size. Detect by the driver-stamped source and
+    // normalize by the frame dims.
     const rawSource = typeof d.source === 'string' ? d.source.toLowerCase().trim() : '';
-    const isMilesightGrid = rawSource === 'milesight_ws';
+    const isMilesight = rawSource === 'milesight_ws';
 
-    // Frame dims for pixel→fraction conversion (non-Milesight pixel payloads):
-    // prefer explicit details, else the rendered thumbnail's natural size.
-    const fw = Number(d.frame_w ?? d.frameWidth ?? d.width) || frameW || 0;
-    const fh = Number(d.frame_h ?? d.frameHeight ?? d.height) || frameH || 0;
+    // Frame dims for pixel→fraction conversion: prefer explicit details; for
+    // Milesight fall back to the fixed VCA analytics frame; else the rendered
+    // thumbnail's natural size.
+    const fw = Number(d.frame_w ?? d.frameWidth ?? d.width) || (isMilesight ? MS_ANALYTICS_W : frameW) || 0;
+    const fh = Number(d.frame_h ?? d.frameHeight ?? d.height) || (isMilesight ? MS_ANALYTICS_H : frameH) || 0;
 
     const out: NormBox[] = [];
     for (const b of boxes) {
@@ -227,10 +231,10 @@ function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormB
             w = Number(b.x2) - Number(b.x1); h = Number(b.y2) - Number(b.y1);
         }
         if (![x, y, w, h].every(isFinite)) continue;
-        if (isMilesightGrid) {
-            // Fixed 0-10000 grid → divide every component by the constant.
-            x /= MILESIGHT_GRID; w /= MILESIGHT_GRID;
-            y /= MILESIGHT_GRID; h /= MILESIGHT_GRID;
+        if (isMilesight) {
+            // Analytics-frame pixels → normalize by the frame dims (frame_w/h).
+            if (fw <= 0 || fh <= 0) continue;
+            x /= fw; w /= fw; y /= fh; h /= fh;
         } else {
             // Heuristic: any coordinate > 1 means pixel-space → normalize by frame.
             const isPixel = x > 1 || y > 1 || w > 1 || h > 1;
