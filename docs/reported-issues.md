@@ -35,6 +35,8 @@
 |----|----------|---------|--------|------------|
 | F-01 | 06-11 | Seek/play bar: tick marks (sec/min/hr), clearer/clickable event markers, fast-forward / rewind / speed up / slow down | 🟢 | **PR #72** — zoom-aware tick ruler, interactive markers (tooltip + click-to-seek), playback speed 0.5/1/2/4×, skip ±10s/±30s + frame-step |
 | F-02 | 06-11 | Alert feed: show what object was detected, snapshot with bounding box, camera-vs-server source, group by active grid, better sort + multi-select | 🟢 | **PR #71** — object/rule/confidence chips, snapshot + bbox overlay, 📷 Camera-VCA / 🧠 Server-AI source badge, group-by-active-grid + multi-select + sort |
+| F-03 | 06-11 | Show the detection zone/polygon on the live feed as an overlay | 🟢 | **PR #78** — toggleable SVG VCA-zone overlay (intrusion/region polygons + line-cross tripwires w/ direction arrows) on the live `VideoPlayer`, ported from `AlarmVideoFeed`. Aspect-aligned: viewBox = the video's intrinsic dims so it letterboxes identically to `object-fit:contain` (pixel-alignment e2e proves a vertex 0px off on the 3.37:1 panoramic). Source = platform `vca_rules` (drawn in VCAZoneEditor); camera-side zone import is a separate hard follow-up. |
+| F-04 | 06-11 | Only 504 right-PTZ delivered events; want all cameras + snapshot w/ bbox | 🟢 | Root-caused across **B-09** (ONVIF init-snapshot flood), **B-10** (subscription leak), **B-11** (vcaAdvancedMotion unmapped), **O-07** (binary `/webstream/track` decoder for the panoramics), **O-08** (bbox normalized to the 320×180 analytics frame). All 6 cameras now deliver motion events; panoramics + 504-left carry bounding boxes. |
 
 ### Questions / no code change
 
