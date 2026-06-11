@@ -21,7 +21,16 @@ interface TimelineProps {
     globalPaused?: boolean;
     /** Toggle global pause/play */
     onTogglePause?: () => void;
+    /** Current playback speed multiplier (playback mode only) */
+    playbackRate?: number;
+    /** Set playback speed multiplier */
+    onSetPlaybackRate?: (rate: number) => void;
+    /** Step a single frame forward (+1) or back (-1) — playback mode only */
+    onStepFrame?: (direction: 1 | -1) => void;
 }
+
+// Playback speed options (playback mode only — HLS playbackRate is unreliable)
+const PLAYBACK_RATES = [0.5, 1, 2, 4];
 
 const EVENT_TYPES = [
     { key: 'motion', label: 'Motion', color: 'motion' },
@@ -68,6 +77,9 @@ export default function Timeline({
     onScrubEnd,
     globalPaused = false,
     onTogglePause,
+    playbackRate = 1,
+    onSetPlaybackRate,
+    onStepFrame,
 }: TimelineProps) {
     const trackRef = useRef<HTMLDivElement>(null);
     const isDragging = useRef(false);
@@ -78,6 +90,13 @@ export default function Timeline({
     const [isScrubbing, setIsScrubbing] = useState(false);
     const [cameraMenuOpen, setCameraMenuOpen] = useState(false);
     const cameraMenuRef = useRef<HTMLDivElement>(null);
+    const [isMounted, setIsMounted] = useState(false);
+    // Hovered event marker (for tooltip). Holds the marker index.
+    const [hoverMarker, setHoverMarker] = useState<number | null>(null);
+
+    useEffect(() => {
+        setIsMounted(true);
+    }, []);
 
     // Close camera menu on click outside
     useEffect(() => {
@@ -135,6 +154,22 @@ export default function Timeline({
     // Playhead is always at center (50%)
     const playheadPos = 50;
 
+    // Ruler tick label formatter. Granularity follows the chosen MAJOR
+    // interval: sub-minute majors show seconds, sub-day show HH:MM, day+
+    // shows the hour. Guarded on isMounted so SSR doesn't emit a locale
+    // string that mismatches on hydration.
+    const formatTick = useCallback((d: Date, majorMs: number): string => {
+        if (!isMounted) return '';
+        if (majorMs < 60_000) {
+            // seconds-resolution window: HH:MM:SS
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+        }
+        if (majorMs < 24 * 60 * 60_000) {
+            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        }
+        return d.toLocaleTimeString([], { hour: '2-digit', hour12: false }) + ':00';
+    }, [isMounted]);
+
     // Zoom in/out handlers
     const zoomIn = useCallback(() => {
         setZoomIndex((prev) => Math.max(0, prev - 1));
@@ -168,24 +203,73 @@ export default function Timeline({
                 return Object.entries(b.counts).some(([type]) => filters[type]);
             })
             .map((bucket) => {
-                const bucketTime = new Date(bucket.bucket_time).getTime();
-                const pos = ((bucketTime - startTime.getTime()) / windowMs) * 100;
-                const height = Math.max(4, (bucket.total / maxTotal) * 18);
+                const bucketMs = new Date(bucket.bucket_time).getTime();
+                const pos = ((bucketMs - startTime.getTime()) / windowMs) * 100;
+                const height = Math.max(8, (bucket.total / maxTotal) * 18);
 
-                // Determine primary type for color
-                const primaryType = Object.entries(bucket.counts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'other';
+                // Count only the active (filtered-in) event types for this bucket.
+                const activeCounts = Object.entries(bucket.counts).filter(([type]) => filters[type]);
+                const visibleTotal = activeCounts.reduce((sum, [, n]) => sum + n, 0);
+                // Determine primary type for color (highest count among active types)
+                const primaryType = activeCounts.sort((a, b) => b[1] - a[1])[0]?.[0] || 'other';
 
                 return {
-                    left: `${pos}%`,
-                    height: `${height}px`,
+                    pos,
+                    bucketMs,
+                    height,
                     type: primaryType,
+                    count: visibleTotal,
+                    counts: Object.fromEntries(activeCounts),
                 };
             })
-            .filter((m) => {
-                const left = parseFloat(m.left);
-                return left >= 0 && left <= 100;
+            .filter((m) => m.pos >= 0 && m.pos <= 100 && m.count > 0);
+    }, [buckets, filters, startTime, windowMs]);
+
+    // ------------------------------------------------------------------
+    // Zoom-aware tick ruler. Pick a "nice" interval from the visible span
+    // so labels never crowd, then walk the window placing minor + major
+    // ticks aligned to the SAME time→x mapping the markers/playhead use.
+    const ticks = useMemo(() => {
+        const winStart = startTime.getTime();
+        // Candidate intervals in ms, sorted ascending. Each "major" tick is
+        // labelled; minor ticks subdivide between majors.
+        const STEPS: { major: number; minor: number }[] = [
+            { major: 5_000, minor: 1_000 },          // 5s major / 1s minor   (≤30s window)
+            { major: 10_000, minor: 5_000 },         // 10s / 5s              (≤1m)
+            { major: 30_000, minor: 10_000 },        // 30s / 10s             (≤2-3m)
+            { major: 60_000, minor: 15_000 },        // 1m / 15s              (≤5m)
+            { major: 5 * 60_000, minor: 60_000 },    // 5m / 1m               (≤30m)
+            { major: 10 * 60_000, minor: 2 * 60_000 },// 10m / 2m
+            { major: 30 * 60_000, minor: 5 * 60_000 },// 30m / 5m             (≤2h)
+            { major: 60 * 60_000, minor: 15 * 60_000 },// 1h / 15m            (≤8h)
+            { major: 2 * 60 * 60_000, minor: 30 * 60_000 },// 2h / 30m
+            { major: 6 * 60 * 60_000, minor: 60 * 60_000 },// 6h / 1h         (24h)
+        ];
+        // Target ~6-8 major labels across the track.
+        const targetMajors = 7;
+        let chosen = STEPS[STEPS.length - 1];
+        for (const s of STEPS) {
+            if (windowMs / s.major <= targetMajors) { chosen = s; break; }
+        }
+
+        const out: { pos: number; major: boolean; label: string }[] = [];
+        const firstTick = Math.ceil(winStart / chosen.minor) * chosen.minor;
+        const winEnd = winStart + windowMs;
+        // Guard against pathological tiny intervals producing huge arrays.
+        const maxTicks = 400;
+        let count = 0;
+        for (let t = firstTick; t <= winEnd && count < maxTicks; t += chosen.minor, count++) {
+            const pos = ((t - winStart) / windowMs) * 100;
+            if (pos < 0 || pos > 100) continue;
+            const isMajor = t % chosen.major === 0;
+            out.push({
+                pos,
+                major: isMajor,
+                label: isMajor ? formatTick(new Date(t), chosen.major) : '',
             });
-    }, [buckets, filters, startTime]);
+        }
+        return out;
+    }, [startTime, windowMs, formatTick]);
 
     // Handle click on timeline track
     const handleTrackClick = useCallback(
@@ -359,6 +443,30 @@ export default function Timeline({
         [currentTime, onSeek, onGoLive]
     );
 
+    // Second-granularity skip (the "fast forward / rewind" the operator
+    // wants). Uses the same onSeek mechanism as the minute/hour jumps —
+    // negative seconds = backward, positive = forward. Forward past "now"
+    // snaps to live.
+    const skipSeconds = useCallback(
+        (seconds: number) => {
+            const newTime = new Date(currentTime.getTime() + seconds * 1000);
+            if (seconds > 0 && newTime >= new Date()) {
+                onGoLive();
+            } else {
+                onSeek(newTime);
+            }
+        },
+        [currentTime, onSeek, onGoLive]
+    );
+
+    // Click an event marker → seek the timeline to that bucket's time.
+    const seekToMarker = useCallback(
+        (bucketMs: number) => {
+            onSeek(new Date(bucketMs));
+        },
+        [onSeek]
+    );
+
     const skipToPrevEvent = useCallback(() => {
         // events are sorted newest first. find first event whose time is older than currentTime
         const now = currentTime.getTime();
@@ -393,12 +501,6 @@ export default function Timeline({
         }
     }, [currentTime, events, onSeek, jumpForward]);
 
-    const [isMounted, setIsMounted] = useState(false);
-
-    useEffect(() => {
-        setIsMounted(true);
-    }, []);
-
     // "Go to date/time" — inline editable timestamp
     const [editingTime, setEditingTime] = useState(false);
     const [goToValue, setGoToValue] = useState('');
@@ -422,23 +524,6 @@ export default function Timeline({
     const startEditingTime = () => {
         setEditingTime(true);
         setTimeout(() => timeInputRef.current?.focus(), 0);
-    };
-
-    // Format time — shows seconds when zoomed ≤ 5m, tenths when ≤ 2m
-    const formatTime = (date: Date, forceShort = false) => {
-        if (!isMounted) return '';
-        if (!forceShort && windowMs <= 2 * 60 * 1000) {
-            // HH:MM:SS.s
-            const s = date.getSeconds().toString().padStart(2, '0');
-            const ds = Math.floor(date.getMilliseconds() / 100); // tenths
-            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ':' + s + '.' + ds;
-        }
-        if (!forceShort && windowMs <= 5 * 60 * 1000) {
-            // HH:MM:SS
-            const s = date.getSeconds().toString().padStart(2, '0');
-            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ':' + s;
-        }
-        return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
     return (
@@ -471,6 +556,19 @@ export default function Timeline({
                         <button className="transport-btn" onClick={() => jumpBack(5)} title="-5 min (←)">
                             ◀
                         </button>
+                        {/* Second-granularity rewind — finer than the minute jumps */}
+                        <button className="transport-btn transport-btn-sec" onClick={() => skipSeconds(-30)} title="-30 sec">
+                            -30s
+                        </button>
+                        <button className="transport-btn transport-btn-sec" onClick={() => skipSeconds(-10)} title="-10 sec">
+                            -10s
+                        </button>
+                        {/* Frame-step back — playback mode only */}
+                        {!isLive && onStepFrame && (
+                            <button className="transport-btn transport-btn-frame" onClick={() => onStepFrame(-1)} title="Step back 1 frame">
+                                ◀|
+                            </button>
+                        )}
                         {/* Global play/pause — only in playback mode */}
                         {!isLive && onTogglePause && (
                             <button
@@ -481,6 +579,19 @@ export default function Timeline({
                                 {globalPaused ? '▶' : '⏸'}
                             </button>
                         )}
+                        {/* Frame-step forward — playback mode only */}
+                        {!isLive && onStepFrame && (
+                            <button className="transport-btn transport-btn-frame" onClick={() => onStepFrame(1)} title="Step forward 1 frame">
+                                |▶
+                            </button>
+                        )}
+                        {/* Second-granularity fast-forward */}
+                        <button className="transport-btn transport-btn-sec" onClick={() => skipSeconds(10)} title="+10 sec">
+                            +10s
+                        </button>
+                        <button className="transport-btn transport-btn-sec" onClick={() => skipSeconds(30)} title="+30 sec">
+                            +30s
+                        </button>
                         <button className="transport-btn" onClick={() => jumpForward(5)} title="+5 min (→)">
                             ▶
                         </button>
@@ -491,6 +602,26 @@ export default function Timeline({
                             ⏭
                         </button>
                     </div>
+
+                    {/* Playback speed control — playback mode only (HLS live
+                        playbackRate is unreliable, so hide it when live). */}
+                    {!isLive && onSetPlaybackRate && (
+                        <>
+                            <span style={{ width: 1, height: 20, background: 'var(--border-color)', flexShrink: 0 }} />
+                            <div className="speed-control" title="Playback speed">
+                                {PLAYBACK_RATES.map((rate) => (
+                                    <button
+                                        key={rate}
+                                        className={`speed-btn ${playbackRate === rate ? 'active' : ''}`}
+                                        onClick={() => onSetPlaybackRate(rate)}
+                                        title={`Play at ${rate}× speed`}
+                                    >
+                                        {rate}×
+                                    </button>
+                                ))}
+                            </div>
+                        </>
+                    )}
 
                     {/* Divider */}
                     <span style={{ width: 1, height: 20, background: 'var(--border-color)', flexShrink: 0 }} />
@@ -631,6 +762,19 @@ export default function Timeline({
                 {/* Center guide line */}
                 <div className="timeline-center-guide" />
 
+                {/* Zoom-aware tick ruler (in-track marks). Aligned to the same
+                    time→x mapping as the playhead/markers. Major ticks are
+                    taller; minor ticks are short. */}
+                <div className="timeline-ruler" aria-hidden="true">
+                    {ticks.map((t, i) => (
+                        <div
+                            key={i}
+                            className={`timeline-tick ${t.major ? 'tick-major' : 'tick-minor'}`}
+                            style={{ left: `${t.pos}%` }}
+                        />
+                    ))}
+                </div>
+
                 {/* Progress fill */}
                 <div className="timeline-progress" style={{ width: `${playheadPos}%` }} />
 
@@ -665,18 +809,49 @@ export default function Timeline({
                     </>
                 )}
 
-                {/* Event markers */}
+                {/* Event markers — wider, hoverable (tooltip) and clickable
+                    (seek to that event's time). */}
                 <div className="timeline-markers">
-                    {markers.map((marker, i) => (
+                    {markers.map((marker, i) => {
+                        const typeLabel = EVENT_TYPES.find(t => t.key === marker.type)?.label || 'Event';
+                        return (
+                            <button
+                                key={i}
+                                type="button"
+                                className={`timeline-marker marker-${marker.type} ${hoverMarker === i ? 'marker-hover' : ''}`}
+                                style={{
+                                    left: `${marker.pos}%`,
+                                    height: `${marker.height}px`,
+                                }}
+                                onMouseEnter={() => setHoverMarker(i)}
+                                onMouseLeave={() => setHoverMarker(prev => prev === i ? null : prev)}
+                                onClick={(e) => { e.stopPropagation(); seekToMarker(marker.bucketMs); }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                title={`${typeLabel} — ${isMounted ? new Date(marker.bucketMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}${marker.count > 1 ? ` ×${marker.count}` : ''}`}
+                                aria-label={`Seek to ${typeLabel} event`}
+                            />
+                        );
+                    })}
+                    {/* Rich hover tooltip for the focused marker */}
+                    {hoverMarker !== null && markers[hoverMarker] && (
                         <div
-                            key={i}
-                            className={`timeline-marker marker-${marker.type}`}
-                            style={{
-                                left: marker.left,
-                                height: marker.height,
-                            }}
-                        />
-                    ))}
+                            className="timeline-marker-tooltip"
+                            style={{ left: `${markers[hoverMarker].pos}%` }}
+                        >
+                            <div className="marker-tip-time">
+                                {isMounted ? new Date(markers[hoverMarker].bucketMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''}
+                            </div>
+                            <div className="marker-tip-types">
+                                {Object.entries(markers[hoverMarker].counts).map(([type, n]) => (
+                                    <span key={type} className="marker-tip-type">
+                                        <span className={`filter-dot ${EVENT_TYPES.find(t => t.key === type)?.color || 'other'}`} />
+                                        {EVENT_TYPES.find(t => t.key === type)?.label || type}
+                                        {n > 1 ? ` ×${n}` : ''}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 {/* Coverage bars — rendered at the very bottom of the track */}
@@ -716,13 +891,18 @@ export default function Timeline({
                 </div>
             </div>
 
-            {/* Timeline Labels */}
-            <div className="timeline-times">
-                <span>{formatTime(startTime)}</span>
-                <span>{formatTime(new Date(startTime.getTime() + windowMs * 0.25))}</span>
-                <span>{formatTime(new Date(startTime.getTime() + windowMs * 0.5))}</span>
-                <span>{formatTime(new Date(startTime.getTime() + windowMs * 0.75))}</span>
-                <span>{formatTime(endTime)}</span>
+            {/* Timeline ruler labels — one label per MAJOR tick, positioned
+                at the same x as its in-track tick so the scale reads true. */}
+            <div className="timeline-times timeline-ruler-labels">
+                {ticks.filter(t => t.major && t.label).map((t, i) => (
+                    <span
+                        key={i}
+                        className="ruler-label"
+                        style={{ left: `${t.pos}%` }}
+                    >
+                        {t.label}
+                    </span>
+                ))}
             </div>
         </div>
     );

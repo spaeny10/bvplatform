@@ -36,6 +36,8 @@ interface CameraGridProps {
     isAdmin?: boolean;
     onRenameCamera?: (cameraId: string, newName: string) => void;
     globalPaused?: boolean;
+    /** Playback speed multiplier applied to each tile's <video> (playback mode) */
+    playbackRate?: number;
     // Reports the set of camera ids in the ACTIVE layout (static assignments
     // or freeform items) up to the parent so the timeline/events queries can
     // scope to the layout the operator is actually viewing. Fires on mount,
@@ -192,6 +194,7 @@ export default function CameraGrid({
     isAdmin = false,
     onRenameCamera,
     globalPaused = false,
+    playbackRate = 1,
     onVisibleCamerasChange,
 }: CameraGridProps) {
     const [savedLayouts, setSavedLayouts] = useState<SavedLayout[]>([]);
@@ -874,6 +877,7 @@ export default function CameraGrid({
                                         onRename={onRenameCamera}
                                         onDoubleClick={() => onPeekCamera?.(camera.id)}
                                         globalPaused={globalPaused}
+                                        playbackRate={playbackRate}
                                     />
 
                                     {isPickerOpen && (
@@ -1003,6 +1007,7 @@ export default function CameraGrid({
                                         onRename={onRenameCamera}
                                         onDoubleClick={() => onPeekCamera?.(camera.id)}
                                         globalPaused={globalPaused}
+                                        playbackRate={playbackRate}
                                     />
 
                                     {isEditing && (

@@ -435,6 +435,26 @@ function HomeInner() {
         setGlobalPaused(prev => !prev);
     }, []);
 
+    // Global playback SPEED — controlled from the Timeline transport bar,
+    // applied to every VideoPlayer element. Playback mode only; live HLS
+    // ignores it (the rate control is hidden when live). Default 1×.
+    const [playbackRate, setPlaybackRate] = useState(1);
+    const handleSetPlaybackRate = useCallback((rate: number) => {
+        setPlaybackRate(rate);
+    }, []);
+    // Reset to 1× whenever we go (back) to live so returning to playback
+    // doesn't inherit a stale speed the operator can't see a control for.
+    useEffect(() => {
+        if (isLive) setPlaybackRate(1);
+    }, [isLive]);
+
+    // Frame-step — broadcast to every VideoPlayer via a CustomEvent (same
+    // pattern the timestamp-overlay toggle uses) so all synced tiles nudge
+    // together without threading a ref through CameraGrid.
+    const handleStepFrame = useCallback((direction: 1 | -1) => {
+        window.dispatchEvent(new CustomEvent('ironsight:frame-step', { detail: direction }));
+    }, []);
+
     // Keyboard shortcuts — placed here so handleGoLive / handleTimelineSeek are in scope
     const { helpOpen, closeHelp } = useKeyboardShortcuts({
         onGoLive: handleGoLive,
@@ -662,6 +682,7 @@ function HomeInner() {
                                 isAdmin={user?.role === 'admin'}
                                 onRenameCamera={handleRenameCamera}
                                 globalPaused={globalPaused}
+                                playbackRate={playbackRate}
                                 onVisibleCamerasChange={handleVisibleCamerasChange}
                             />
                         </div>
@@ -683,6 +704,9 @@ function HomeInner() {
                             onScrubEnd={handleScrubEnd}
                             globalPaused={globalPaused}
                             onTogglePause={handleTogglePause}
+                            playbackRate={playbackRate}
+                            onSetPlaybackRate={handleSetPlaybackRate}
+                            onStepFrame={handleStepFrame}
                         />
                     </>
                 )}
@@ -773,6 +797,7 @@ function HomeInner() {
                                 streamQuality="high"
                                 wsRef={wsRef}
                                 globalPaused={globalPaused}
+                                playbackRate={playbackRate}
                             />
                             {/* Speaker Talk-Down Bar */}
                             {peekSpeakers.length > 0 && (
