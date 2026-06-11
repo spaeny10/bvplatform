@@ -2,9 +2,11 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
-import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment } from '@/lib/api';
+import { ptzMove, ptzStop, ptzPrewarm, fetchPlaybackSegments, PlaybackSegment, listVCARules, type VCARule } from '@/lib/api';
 import { useFeatureFlag } from '@/lib/feature-flags';
 import { startMsePlayer, isMseSupported, type MsePlayerHandle } from '@/lib/mse-player';
+import { useVCAZonesToggle } from '@/hooks/useVCAZonesToggle';
+import VCAZoneOverlay from './VCAZoneOverlay';
 
 // Segment URLs from /api/playback/{id} carry signed media tokens with a
 // 5-minute TTL (DefaultMediaTTL server-side). The cached segment list is
@@ -135,6 +137,35 @@ export default function VideoPlayer({
         setScale(1);
         setPan({ x: 0, y: 0 });
     }, [cameraId]);
+
+    // ---- LIVE VCA ZONE OVERLAY ----
+    // Configured VCA detection zones for this camera, drawn over the live
+    // feed as an SVG overlay (see VCAZoneOverlay). Toggle is global across
+    // every tile via useVCAZonesToggle (localStorage + CustomEvent broadcast,
+    // same pattern as the timestamp overlay). Default ON for the security view.
+    const { showZones, toggleZones } = useVCAZonesToggle();
+    const [zones, setZones] = useState<VCARule[]>([]);
+
+    // Fetch the camera's zones on cameraId change. Tolerate empty list and
+    // errors with no overlay, no crash, and no console spam: listVCARules
+    // already returns [] on non-2xx, and we swallow throws here.
+    useEffect(() => {
+        // Zones are a live-view concept; skip the fetch entirely in playback.
+        if (!isLive) {
+            setZones([]);
+            return;
+        }
+        let cancelled = false;
+        setZones([]);
+        listVCARules(cameraId)
+            .then(rules => {
+                if (!cancelled) setZones(Array.isArray(rules) ? rules : []);
+            })
+            .catch(() => {
+                if (!cancelled) setZones([]);
+            });
+        return () => { cancelled = true; };
+    }, [cameraId, isLive]);
 
     // Overlay visibility: read localStorage on mount, listen for the global
     // toggle event so clicking any tile's overlay flips visibility on every
@@ -867,6 +898,20 @@ export default function VideoPlayer({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     {isLive && (
                         <button
+                            className="stream-quality-btn"
+                            onClick={(e) => { e.stopPropagation(); toggleZones(); }}
+                            title={showZones ? 'Hide VCA detection zones on all tiles' : 'Show VCA detection zones on all tiles'}
+                            style={{
+                                color: showZones ? 'var(--accent-blue)' : 'var(--text-secondary)',
+                                borderColor: showZones ? 'rgba(79,195,247,0.4)' : 'var(--border-color)',
+                                opacity: zones.length > 0 ? 1 : 0.55,
+                            }}
+                        >
+                            ZONES
+                        </button>
+                    )}
+                    {isLive && (
+                        <button
                             className={`stream-quality-btn ${useMainStream ? 'hd' : 'sd'}`}
                             onClick={toggleCellQuality}
                             title={useMainStream ? 'Switch to sub-stream (SD)' : 'Switch to main stream (HD)'}
@@ -898,6 +943,32 @@ export default function VideoPlayer({
                     cursor: allowZoom && scale > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'
                 }}
             />
+
+            {/* ── LIVE VCA zone overlay ──────────────────────────────────────
+                Drawn only in live mode, when zones are toggled on, when the
+                stream is actually painting (not loading/errored), and when the
+                camera has at least one zone. The wrapper fills the cell exactly
+                like the <video> and carries the IDENTICAL transform (the same
+                translate/scale digital-zoom values and the same default
+                center transform-origin), so the SVG zones track the video 1:1
+                under pan/zoom. The SVG inside uses preserveAspectRatio meet to
+                letterbox its 0–100 user space the same way the video's
+                object-fit:contain letterboxes the frame. */}
+            {isLive && showZones && !error && !loading && zones.length > 0 && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        inset: 0,
+                        pointerEvents: 'none',
+                        zIndex: 1,
+                        transform: `translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
+                        transformOrigin: '50% 50%',
+                        transition: isDragging ? 'none' : 'transform 0.1s ease',
+                    }}
+                >
+                    <VCAZoneOverlay rules={zones} />
+                </div>
+            )}
 
 
             {/* Loading state */}
