@@ -708,6 +708,7 @@ function HomeInner() {
             <EventListPanel
                 cameras={cameras}
                 liveEvents={events}
+                activeLayoutCameraIds={activeLayoutCameraIds}
                 open={eventPanelOpen}
                 onClose={() => setEventPanelOpen(false)}
                 onEventClick={(event) => {

@@ -133,6 +133,10 @@ export interface Event {
     event_type: string;
     details: Record<string, any>;
     thumbnail: string;
+    // Normalized detection origin projected by the API (DetectionSource):
+    // "camera" = camera-side VCA (Milesight WS / Sense / ONVIF rule engine),
+    // "server" = server-side AI pipeline (YOLO / Qwen). Absent when unknown.
+    source?: 'camera' | 'server' | '';
 }
 
 export interface TimelineBucket {
