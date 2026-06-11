@@ -948,6 +948,17 @@ func (db *DB) GetTimelineBuckets(ctx context.Context, cameraIDs []uuid.UUID, sta
 	args := []interface{}{start, end}
 	argN := 3
 
+	// Defense-in-depth: an empty camera filter must NEVER be interpreted as
+	// "all cameras." Without this guard, an empty cameraIDs slice would skip
+	// both branches below, emit no camera_id predicate, and the query would
+	// aggregate events across EVERY camera — leaking one camera's events onto
+	// another camera's timeline. Callers that legitimately want every camera
+	// must not reach this function with an empty slice; the RBAC/global-view
+	// path handles "show all" upstream. Here, empty == zero rows.
+	if len(cameraIDs) == 0 {
+		return []TimelineBucket{}, nil
+	}
+
 	if len(cameraIDs) == 1 {
 		where = append(where, fmt.Sprintf("camera_id = $%d", argN))
 		args = append(args, cameraIDs[0])
@@ -1009,6 +1020,29 @@ func (db *DB) GetTimelineBuckets(ctx context.Context, cameraIDs []uuid.UUID, sta
 		buckets = append(buckets, *b)
 	}
 	return buckets, nil
+}
+
+// ListAllCameraIDs returns the UUIDs of every active (non-deleted) camera.
+// Used by the timeline handler to expand a global-view caller's implicit
+// "all cameras" request into an explicit ID list, so GetTimelineBuckets is
+// never asked to interpret an empty slice as "every camera" (it now returns
+// zero rows for an empty slice — see GetTimelineBuckets).
+func (db *DB) ListAllCameraIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := db.Pool.Query(ctx, `SELECT id FROM cameras_active`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // ============================================================
