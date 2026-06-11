@@ -66,6 +66,11 @@ func DetectionSource(details map[string]interface{}) string {
 	case "milesight_ws", "milesight-sense-webhook", "onvif", "milesight":
 		return "camera"
 	case "yolo", "qwen", "ai", "server":
+		// NOTE: as of this writing no ingest path actually stamps a "server"
+		// source into events.details — server-side AI results live in the
+		// detections table / alarm broadcasts, not events. The "server" arm
+		// is forward-looking, for when the AI pipeline starts persisting its
+		// detections as events. Today this returns "camera" for everything.
 		return "server"
 	}
 
@@ -105,19 +110,9 @@ func HandleQueryEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		}
 
 		q := parseEventQuery(r)
-		if restricted {
-			// If the request explicitly asked for a camera_id, ensure it's in
-			// the allowed set; otherwise clear it and fall back to the ANY()
-			// whitelist below. A non-allowed explicit camera → zero rows.
-			if q.CameraID != nil {
-				if !containsUUID(allowed, *q.CameraID) {
-					writeJSON(w, []database.Event{})
-					return
-				}
-			} else {
-				q.CameraIDs = allowed
-				q.CameraIDsNonNil = true
-			}
+		if denied := applyEventRBAC(&q, restricted, allowed); denied {
+			writeJSON(w, []database.Event{})
+			return
 		}
 
 		events, err := db.QueryEvents(r.Context(), q)
@@ -132,6 +127,38 @@ func HandleQueryEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		decorateEventSources(events)
 		writeJSON(w, events)
 	}
+}
+
+// applyEventRBAC narrows an event query to the caller's authorized cameras and
+// reports whether the request must short-circuit to zero rows. It reconciles
+// the three client scoping shapes (single camera_id, multi camera_ids, none)
+// with the RBAC whitelist:
+//   - single camera_id: must be in the allowed set, else denied.
+//   - multi camera_ids: intersect with allowed; empty intersection → denied.
+//   - none: scope to the full allowed set.
+//
+// Global-view callers (restricted == false) are untouched. Kept as a shared
+// helper so /api/events and /api/search/events stay consistent.
+func applyEventRBAC(q *database.EventQuery, restricted bool, allowed []uuid.UUID) (denied bool) {
+	if !restricted {
+		return false
+	}
+	switch {
+	case q.CameraID != nil:
+		if !containsUUID(allowed, *q.CameraID) {
+			return true
+		}
+	case q.CameraIDsNonNil && len(q.CameraIDs) > 0:
+		isect := intersectUUIDs(q.CameraIDs, allowed)
+		if len(isect) == 0 {
+			return true
+		}
+		q.CameraIDs = isect
+	default:
+		q.CameraIDs = allowed
+		q.CameraIDsNonNil = true
+	}
+	return false
 }
 
 // HandleGetTimeline returns bucketed event counts for the timeline scrubber
@@ -316,20 +343,13 @@ func HandleSearchEvents(cfg *config.Config, db *database.DB) http.HandlerFunc {
 		}
 
 		q := parseEventQuery(r)
-		if restricted {
-			if q.CameraID != nil {
-				if !containsUUID(allowed, *q.CameraID) {
-					writeJSON(w, SearchEventsResponse{
-						Events:            []database.Event{},
-						Restricted:        true,
-						AuthorizedCameras: allowed,
-					})
-					return
-				}
-			} else {
-				q.CameraIDs = allowed
-				q.CameraIDsNonNil = true
-			}
+		if denied := applyEventRBAC(&q, restricted, allowed); denied {
+			writeJSON(w, SearchEventsResponse{
+				Events:            []database.Event{},
+				Restricted:        true,
+				AuthorizedCameras: allowed,
+			})
+			return
 		}
 
 		// Request one extra row so we can report has_more without a COUNT.
@@ -404,7 +424,29 @@ func parseEventQuery(r *http.Request) database.EventQuery {
 		Search:    r.URL.Query().Get("search"),
 	}
 
-	if cidStr := r.URL.Query().Get("camera_id"); cidStr != "" {
+	// Multi-camera scope: camera_ids=<uuid>,<uuid>,... Used by the alert feed
+	// when 2+ cameras are selected so a high-volume camera can't starve a
+	// low-volume one out of the LIMIT-200 window. A single camera_id still
+	// works (back-compat). When both are present, camera_ids wins. Unparseable
+	// IDs are dropped; if NONE parse, CameraIDsNonNil stays false so we don't
+	// accidentally force zero rows from a pure typo — the request degrades to
+	// "all authorized cameras", same as omitting the param.
+	if idsStr := r.URL.Query().Get("camera_ids"); idsStr != "" {
+		var ids []uuid.UUID
+		for _, s := range strings.Split(idsStr, ",") {
+			if cid, err := uuid.Parse(strings.TrimSpace(s)); err == nil {
+				ids = append(ids, cid)
+			}
+		}
+		if len(ids) == 1 {
+			// Collapse to the single-ID path so the cheaper `= $n` predicate is
+			// used and the RBAC single-ID check in the handler applies.
+			q.CameraID = &ids[0]
+		} else if len(ids) > 1 {
+			q.CameraIDs = ids
+			q.CameraIDsNonNil = true
+		}
+	} else if cidStr := r.URL.Query().Get("camera_id"); cidStr != "" {
 		if cid, err := uuid.Parse(cidStr); err == nil {
 			q.CameraID = &cid
 		}
