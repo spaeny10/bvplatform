@@ -355,6 +355,8 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
             <div
                 key={event.id ?? i}
                 className="event-item"
+                data-testid="alert-row"
+                data-source={src || ''}
                 style={{ cursor: 'pointer', borderLeft: `3px solid ${color(event.event_type)}` }}
                 onClick={() => {
                     setExpandedId(isExpanded ? null : event.id);
@@ -367,6 +369,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                         <img
                             src={thumbSrc}
                             alt="event snapshot"
+                            data-testid="alert-thumbnail"
                             style={{ width: '100%', maxHeight: 120, objectFit: 'contain', display: 'block' }}
                             loading="lazy"
                             onLoad={e => {
@@ -423,7 +426,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                         {/* Detection chips: object class · rule · confidence · source badge */}
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, margin: '3px 0' }}>
                             {objClass && (
-                                <span style={{
+                                <span data-testid="alert-object-class" style={{
                                     fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
                                     background: `${color(event.event_type)}22`, color: color(event.event_type),
                                     border: `1px solid ${color(event.event_type)}44`,
@@ -432,7 +435,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                                 </span>
                             )}
                             {ruleName && (
-                                <span style={{
+                                <span data-testid="alert-rule" style={{
                                     fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 3,
                                     background: 'rgba(168,85,247,0.12)', color: '#a855f7',
                                     border: '1px solid rgba(168,85,247,0.3)',
@@ -442,7 +445,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                                 </span>
                             )}
                             {confidence != null && (
-                                <span style={{
+                                <span data-testid="alert-confidence" style={{
                                     fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
                                     background: confidence >= 80 ? 'rgba(239,68,68,0.15)' : confidence >= 60 ? 'rgba(234,179,8,0.15)' : 'rgba(107,114,128,0.15)',
                                     color: confidence >= 80 ? '#ef4444' : confidence >= 60 ? '#eab308' : '#9ca3af',
@@ -453,7 +456,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                                 </span>
                             )}
                             {(isCamera || isServer) && (
-                                <span style={{
+                                <span data-testid="alert-source-badge" style={{
                                     fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3, letterSpacing: 0.3,
                                     background: isCamera ? 'rgba(34,197,94,0.12)' : 'rgba(0,212,255,0.12)',
                                     color: isCamera ? '#22c55e' : '#00d4ff',
@@ -530,6 +533,7 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                 {/* Scope + sort row */}
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                     <button
+                        data-testid="scope-layout-btn"
                         onClick={() => setScopeToLayout(v => !v)}
                         disabled={activeLayoutCameraIds.length === 0}
                         title={activeLayoutCameraIds.length === 0 ? 'No active grid layout' : 'Scope feed to the cameras in the active grid layout'}
