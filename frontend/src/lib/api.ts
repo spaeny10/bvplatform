@@ -638,11 +638,15 @@ export async function getDevicePreview(address: string, auth: { username: string
     return URL.createObjectURL(blob);
 }
 
-// Events & Timeline  
+// Events & Timeline
 export async function queryEvents(params: {
     start: string;
     end: string;
     camera_id?: string;
+    // Multi-camera scope. When 2+ cameras are selected the feed passes them
+    // here so the backend ANDs `camera_id = ANY(...)` into the query, rather
+    // than going unscoped and letting a high-volume camera starve the LIMIT.
+    camera_ids?: string[];
     types?: string;
     search?: string;
     limit?: number;
@@ -650,7 +654,13 @@ export async function queryEvents(params: {
     const query = new URLSearchParams();
     query.set('start', params.start);
     query.set('end', params.end);
-    if (params.camera_id) query.set('camera_id', params.camera_id);
+    if (params.camera_ids && params.camera_ids.length > 1) {
+        query.set('camera_ids', params.camera_ids.join(','));
+    } else if (params.camera_ids && params.camera_ids.length === 1) {
+        query.set('camera_id', params.camera_ids[0]);
+    } else if (params.camera_id) {
+        query.set('camera_id', params.camera_id);
+    }
     if (params.types) query.set('types', params.types);
     if (params.search) query.set('search', params.search);
     if (params.limit) query.set('limit', params.limit.toString());

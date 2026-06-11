@@ -26,12 +26,20 @@ const EVENT_ICONS: Record<string, string> = {
     loitering: '⏱️',
     human: '🚶',
     vehicle: '🚗',
+    peoplecount: '👥',
     tamper: '⚠️',
     videoloss: '📵',
     other: '📋',
 };
 
-const EVENT_TYPES = ['motion', 'lpr', 'object', 'face', 'intrusion', 'linecross', 'tamper', 'videoloss'];
+// EVENT_TYPES must list every event_type the backend can emit, or the feed
+// won't request, default-on, or expose a toggle for it. Cross-checked against
+// internal/onvif/events.go classifyEvent + internal/milesight normalizeEventType
+// / parseMilesightTrack: motion, human, vehicle, face, intrusion, linecross,
+// loitering, peoplecount, tamper, object, lpr, videoloss. (Earlier this omitted
+// human/vehicle/loitering/peoplecount — so on real data those rows never
+// appeared.)
+const EVENT_TYPES = ['motion', 'human', 'vehicle', 'lpr', 'object', 'face', 'intrusion', 'linecross', 'loitering', 'peoplecount', 'tamper', 'videoloss'];
 
 const EVENT_COLORS: Record<string, string> = {
     motion: '#f59e0b',
@@ -43,6 +51,7 @@ const EVENT_COLORS: Record<string, string> = {
     loitering: '#eab308',
     human: '#ef4444',
     vehicle: '#3b82f6',
+    peoplecount: '#06b6d4',
     tamper: '#f97316',
     videoloss: '#6b7280',
     other: '#6b7280',
@@ -86,6 +95,8 @@ const TYPE_TO_CLASS: Record<string, string> = {
     object: 'Object',
     motion: 'Motion',
     tamper: 'Tamper',
+    peoplecount: 'People Count',
+    videoloss: 'Video Loss',
 };
 
 function titleCase(s: string): string {
@@ -125,6 +136,43 @@ function getRuleName(event: Event): string | null {
     return null;
 }
 
+// getPlateNumber pulls an LPR/ANPR plate string out of the details, tolerating
+// the handful of keys different drivers use. Returned verbatim (plates are
+// already display-ready), null when absent.
+function getPlateNumber(event: Event): string | null {
+    const d = event.details || {};
+    const raw = d.plate_number ?? d.plate ?? d.plateNumber ?? d.license_plate ?? d.licensePlate;
+    if (typeof raw === 'string' && raw.trim()) return raw.trim().toUpperCase();
+    return null;
+}
+
+// getEventDetail restores the per-type detail line the pre-enrichment feed
+// showed (getEventDetail in main): the high-value bit is the LPR plate, plus
+// short human-readable text for types that carry no object class / score. Falls
+// back to null so we render nothing rather than noise. The object-class / rule
+// / confidence chips already cover the rest, so this only adds what those miss.
+function getEventDetail(event: Event): string | null {
+    const d = event.details || {};
+    switch (event.event_type) {
+        case 'lpr': {
+            const plate = getPlateNumber(event);
+            return plate ? `Plate: ${plate}` : 'License plate detected';
+        }
+        case 'motion':
+            return d.ismotion === 'true' || d.ismotion === true ? 'Motion started' : 'Motion detected';
+        case 'tamper':
+            return 'Camera tamper detected';
+        case 'videoloss':
+            return 'Video signal lost';
+        case 'peoplecount': {
+            const n = d.count ?? d.people_count ?? d.peopleCount;
+            return n != null ? `People count: ${n}` : 'People count update';
+        }
+        default:
+            return null;
+    }
+}
+
 // getConfidencePct returns a 0-100 integer, or null when no score is present
 // (true for the ONVIF rule-engine events in the test set).
 function getConfidencePct(event: Event): number | null {
@@ -136,10 +184,20 @@ function getConfidencePct(event: Event): number | null {
 }
 
 // ── Bounding-box normalization ────────────────────────────────────────────
-// Reuses ActiveAlarmView's CSS-percentage overlay approach. ONVIF VCA boxes
-// are already normalized 0-1; Milesight panoramic boxes are pixel-space and
-// must be divided by the frame W/H (carried in details when present, else the
-// thumbnail's natural size). Output is always a 0-1 fractional rect.
+// Reuses ActiveAlarmView's CSS-percentage overlay approach. Output is always a
+// 0-1 fractional rect so the overlay can be positioned as a % of the painted
+// image. There are THREE coordinate spaces to reconcile:
+//   • ONVIF VCA boxes — already normalized 0-1, pass straight through.
+//   • Milesight /webstream/track boxes (details.source === "milesight_ws") —
+//     emitted in Milesight's fixed analytics GRID, an integer 0-10000 range
+//     (NOT stream pixels). Confirmed by internal/drivers/milesight_vca.go:
+//     "Milesight uses 0-10000 integer coordinates" (region points are written
+//     as pt.X*10000). Normalize these by the 10000 CONSTANT, keyed off the
+//     event source — never by the thumbnail's pixel size (which would be wildly
+//     wrong, e.g. a 1920px-wide thumbnail would divide a ~5000 grid coord to
+//     2.6 instead of 0.5).
+//   • YOLO x1/y1/x2/y2 corner form — already normalized 0-1.
+const MILESIGHT_GRID = 10000; // Milesight analytics grid is a fixed 0-10000 range
 interface NormBox { x: number; y: number; w: number; h: number; label?: string }
 
 function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormBox[] {
@@ -147,8 +205,15 @@ function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormB
     const boxes = d.bounding_boxes ?? d.boundingBoxes ?? d.bbox ?? d.boxes;
     if (!Array.isArray(boxes) || boxes.length === 0) return [];
 
-    // Frame dims for pixel→fraction conversion: prefer explicit details, else
-    // the rendered thumbnail's natural size.
+    // Milesight WS track boxes are in the fixed 0-10000 analytics grid. Detect
+    // by the driver-stamped source rather than a >1 magnitude heuristic — the
+    // grid's small boxes (e.g. w=300 → 0.03) would otherwise be misread as
+    // already-normalized.
+    const rawSource = typeof d.source === 'string' ? d.source.toLowerCase().trim() : '';
+    const isMilesightGrid = rawSource === 'milesight_ws';
+
+    // Frame dims for pixel→fraction conversion (non-Milesight pixel payloads):
+    // prefer explicit details, else the rendered thumbnail's natural size.
     const fw = Number(d.frame_w ?? d.frameWidth ?? d.width) || frameW || 0;
     const fh = Number(d.frame_h ?? d.frameHeight ?? d.height) || frameH || 0;
 
@@ -162,11 +227,17 @@ function getNormalizedBoxes(event: Event, frameW: number, frameH: number): NormB
             w = Number(b.x2) - Number(b.x1); h = Number(b.y2) - Number(b.y1);
         }
         if (![x, y, w, h].every(isFinite)) continue;
-        // Heuristic: any coordinate > 1 means pixel-space → normalize by frame.
-        const isPixel = x > 1 || y > 1 || w > 1 || h > 1;
-        if (isPixel) {
-            if (fw <= 0 || fh <= 0) continue; // can't normalize without frame dims
-            x /= fw; w /= fw; y /= fh; h /= fh;
+        if (isMilesightGrid) {
+            // Fixed 0-10000 grid → divide every component by the constant.
+            x /= MILESIGHT_GRID; w /= MILESIGHT_GRID;
+            y /= MILESIGHT_GRID; h /= MILESIGHT_GRID;
+        } else {
+            // Heuristic: any coordinate > 1 means pixel-space → normalize by frame.
+            const isPixel = x > 1 || y > 1 || w > 1 || h > 1;
+            if (isPixel) {
+                if (fw <= 0 || fh <= 0) continue; // can't normalize without frame dims
+                x /= fw; w /= fw; y /= fh; h /= fh;
+            }
         }
         const label = typeof b.label === 'string' ? b.label : undefined;
         out.push({ x, y, w, h, label });
@@ -201,6 +272,16 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
 
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+    // Auto-clear the "This layout" scope when the active layout becomes empty
+    // (last cell removed / layout closed). Otherwise the toggle stays visually
+    // ON but effectiveCameraIds silently falls back to all-cameras, so the feed
+    // shows every camera while the button claims it's layout-scoped.
+    useEffect(() => {
+        if (scopeToLayout && activeLayoutCameraIds.length === 0) {
+            setScopeToLayout(false);
+        }
+    }, [scopeToLayout, activeLayoutCameraIds.length]);
+
     // The effective camera scope: explicit multi-select wins; otherwise, if
     // "This layout" is on, fall back to the active layout's cameras.
     const effectiveCameraIds = useMemo<string[]>(() => {
@@ -218,20 +299,37 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                 : new Date(Date.now() - 24 * 3600 * 1000);
 
             const types = Array.from(activeTypes).join(',');
-            // The list endpoint takes a single camera_id; with a multi-select
-            // or layout scope we query unscoped (or by the single id when
-            // exactly one is chosen) and filter client-side below. The list
-            // payload already includes details + thumbnail + source, so no
-            // per-event fetch is needed.
-            const singleCam = effectiveCameraIds.length === 1 ? effectiveCameraIds[0] : undefined;
-            const data = await queryEvents({
+            const baseParams = {
                 start: start.toISOString(),
                 end: end.toISOString(),
-                camera_id: singleCam,
                 types: types || undefined,
                 search: search || undefined,
-                limit: 200,
-            });
+            };
+
+            let data: Event[];
+            if (effectiveCameraIds.length > 1) {
+                // Multi-camera scope. A single unscoped limit:200 lets a
+                // high-volume camera (e.g. 504 right-ptz) consume the entire
+                // window and starve a low-volume camera to zero rows. Fan out
+                // one scoped query PER camera with its own limit, then merge —
+                // every selected camera is guaranteed its share. The per-camera
+                // limit is sized so the merged set still comfortably fills the
+                // 200-row display window.
+                const perCam = Math.max(50, Math.ceil(200 / effectiveCameraIds.length));
+                const results = await Promise.all(
+                    effectiveCameraIds.map(id =>
+                        queryEvents({ ...baseParams, camera_id: id, limit: perCam }).catch(() => [] as Event[])
+                    )
+                );
+                data = results.flat();
+            } else {
+                // 0 cameras → all (RBAC-scoped server-side); exactly 1 → scoped.
+                data = await queryEvents({
+                    ...baseParams,
+                    camera_id: effectiveCameraIds[0],
+                    limit: 200,
+                });
+            }
             setRemoteEvents(data ?? []);
         } catch {
             setRemoteEvents([]);
@@ -340,6 +438,8 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
         const objClass = getObjectClass(event);
         const ruleName = getRuleName(event);
         const confidence = getConfidencePct(event);
+        const plate = getPlateNumber(event);
+        const detailLine = getEventDetail(event);
         // Trust only the backend-normalized Event.source ("camera"/"server").
         // We deliberately do NOT fall back to raw details.source — that key is
         // overloaded by ONVIF (e.g. "VideoSourceToken") and would mislabel rows.
@@ -370,7 +470,13 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                             src={thumbSrc}
                             alt="event snapshot"
                             data-testid="alert-thumbnail"
-                            style={{ width: '100%', maxHeight: 120, objectFit: 'contain', display: 'block' }}
+                            // width:100% + height:auto renders the image at its natural
+                            // aspect with NO letterboxing — so the painted-image box
+                            // equals this <img> box, and the absolute-% overlay below
+                            // measures against the actual subject. (The old
+                            // objectFit:'contain' + maxHeight:120 letterboxed the frame
+                            // inside a fixed-height box, offsetting every bbox.)
+                            style={{ width: '100%', height: 'auto', display: 'block' }}
                             loading="lazy"
                             onLoad={e => {
                                 const el = e.currentTarget;
@@ -382,29 +488,38 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                             }}
                         />
                         {/* Bounding boxes — CSS-percentage overlay matching the image (reuses ActiveAlarmView logic) */}
-                        {showBoxes && boxes.map((b, bi) => (
-                            <div key={bi} style={{
-                                position: 'absolute',
-                                left: `${b.x * 100}%`,
-                                top: `${b.y * 100}%`,
-                                width: `${b.w * 100}%`,
-                                height: `${b.h * 100}%`,
-                                border: '2px solid #3B82F6',
-                                background: 'rgba(59,130,246,0.08)',
-                                pointerEvents: 'none',
-                                boxSizing: 'border-box',
-                            }}>
-                                <div style={{
-                                    position: 'absolute', top: -16, left: -2,
-                                    background: 'rgba(59,130,246,0.9)', color: '#fff',
-                                    fontSize: 9, fontWeight: 700, padding: '1px 5px',
-                                    borderRadius: '3px 3px 0 0', whiteSpace: 'nowrap',
-                                    fontFamily: "'JetBrains Mono', monospace",
+                        {showBoxes && boxes.map((b, bi) => {
+                            // The label normally sits just ABOVE the box (top:-16).
+                            // For a box hugging the top edge that label clips behind
+                            // the overflow:hidden wrapper, so flip it INSIDE the box
+                            // (top:0) when there isn't room above it.
+                            const labelInside = b.y < 0.08;
+                            return (
+                                <div key={bi} style={{
+                                    position: 'absolute',
+                                    left: `${b.x * 100}%`,
+                                    top: `${b.y * 100}%`,
+                                    width: `${b.w * 100}%`,
+                                    height: `${b.h * 100}%`,
+                                    border: '2px solid #3B82F6',
+                                    background: 'rgba(59,130,246,0.08)',
+                                    pointerEvents: 'none',
+                                    boxSizing: 'border-box',
                                 }}>
-                                    {(b.label || objClass || event.event_type).toUpperCase()}{confidence != null ? ` ${confidence}%` : ''}
+                                    <div style={{
+                                        position: 'absolute',
+                                        top: labelInside ? 0 : -16, left: -2,
+                                        background: 'rgba(59,130,246,0.9)', color: '#fff',
+                                        fontSize: 9, fontWeight: 700, padding: '1px 5px',
+                                        borderRadius: labelInside ? '0 0 3px 0' : '3px 3px 0 0',
+                                        whiteSpace: 'nowrap',
+                                        fontFamily: "'JetBrains Mono', monospace",
+                                    }}>
+                                        {(b.label || objClass || event.event_type).toUpperCase()}{confidence != null ? ` ${confidence}%` : ''}
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
 
@@ -423,8 +538,18 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                             </span>
                         </div>
 
-                        {/* Detection chips: object class · rule · confidence · source badge */}
+                        {/* Detection chips: object class · plate · rule · confidence · source badge */}
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, margin: '3px 0' }}>
+                            {plate && (
+                                <span data-testid="alert-plate" style={{
+                                    fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
+                                    background: 'rgba(59,130,246,0.15)', color: '#3b82f6',
+                                    border: '1px solid rgba(59,130,246,0.4)', letterSpacing: 0.5,
+                                    fontFamily: "'JetBrains Mono', monospace",
+                                }} title={`License plate: ${plate}`}>
+                                    🚗 {plate}
+                                </span>
+                            )}
                             {objClass && (
                                 <span data-testid="alert-object-class" style={{
                                     fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 3,
@@ -467,6 +592,15 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                             )}
                         </div>
 
+                        {/* Per-type detail line (restored from the pre-enrichment feed).
+                            Skipped for LPR when a plate chip is already shown — the
+                            chip carries the same info more prominently. */}
+                        {detailLine && !(event.event_type === 'lpr' && plate) && (
+                            <div data-testid="alert-detail" style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 1 }}>
+                                {detailLine}
+                            </div>
+                        )}
+
                         <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
                             📷 {getCameraName(event.camera_id)}
                         </div>
@@ -500,6 +634,15 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
             {/* ── Header ── */}
             <div className="event-list-header">
                 <h3>Events {loading ? '…' : `(${displayedEvents.length})`}</h3>
+                {/* The display window is capped at 200 rows. Oldest / By-confidence
+                    only reorder THAT newest-200 window — they don't reach further
+                    back — so label it honestly when the window is full and a
+                    truncation-dependent sort is active. */}
+                {!loading && displayedEvents.length >= 200 && (sortMode === 'oldest' || sortMode === 'confidence') && (
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 500 }}>
+                        newest 200
+                    </span>
+                )}
                 <button className="btn btn-sm" onClick={onClose}>✕</button>
             </div>
 
