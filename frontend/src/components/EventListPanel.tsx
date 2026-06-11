@@ -340,9 +340,12 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
         const objClass = getObjectClass(event);
         const ruleName = getRuleName(event);
         const confidence = getConfidencePct(event);
-        const src = event.source || event.details?.source;
-        const isCamera = src === 'camera' || src === 'milesight_ws' || src === 'milesight-sense-webhook' || src === 'onvif';
-        const isServer = src === 'server' || src === 'yolo' || src === 'qwen' || src === 'ai';
+        // Trust only the backend-normalized Event.source ("camera"/"server").
+        // We deliberately do NOT fall back to raw details.source — that key is
+        // overloaded by ONVIF (e.g. "VideoSourceToken") and would mislabel rows.
+        const src = event.source;
+        const isCamera = src === 'camera';
+        const isServer = src === 'server';
 
         const dims = event.id ? imgDims[event.id] : undefined;
         const boxes = getNormalizedBoxes(event, dims?.w ?? 0, dims?.h ?? 0);
