@@ -26,6 +26,18 @@ import { useSite } from '@/hooks/useSites';
 
 type Page = 'live' | 'export' | 'analytics' | 'map';
 
+// Local NVR camera ids are UUIDs (e.g. d99d8b06-4902-410e-bbde-ecee80c971bb) —
+// the same ids /api/cameras and the events/timeline endpoints key on. Some
+// surfaces (site-scoped camera lists, synthetic/platform ids) can carry an id
+// that is NOT a local camera UUID; sending such an id to the timeline endpoint
+// is silently dropped server-side and used to widen the query to ALL cameras
+// (cross-camera event leak). Gate every camera id that feeds the timeline /
+// events / coverage requests through this check so only real UUIDs are sent.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isCameraUUID(id: string | null | undefined): id is string {
+    return !!id && UUID_RE.test(id);
+}
+
 // Outer shell — just provides the toast context so inner component can useToast
 export default function Home() {
     return (
@@ -322,10 +334,18 @@ function HomeInner() {
                 .filter(([_, active]) => active)
                 .map(([type]) => type);
 
-            // Use isolated camera if set, otherwise filter to visible cameras
-            const timelineCameraIds = isolatedCamera
+            // Use isolated camera if set, otherwise filter to visible cameras.
+            // CROSS-CAMERA LEAK FIX: the timeline endpoint keys on the camera's
+            // real local UUID (the same id /api/cameras returns). If we send an
+            // id the backend can't parse as a UUID it is dropped server-side,
+            // and an empty camera filter used to be treated as "all cameras" —
+            // so e.g. 504's events showed up on the 5001 timeline. Resolve to
+            // valid camera UUIDs here and never send a non-UUID id. If nothing
+            // resolves, send no filter at all (undefined) rather than a bad id.
+            const rawTimelineCameraIds = isolatedCamera
                 ? [isolatedCamera]
                 : visibleCameraIds;
+            const timelineCameraIds = rawTimelineCameraIds.filter(isCameraUUID);
 
             const [buckets, eventData] = await Promise.all([
                 getTimeline({
@@ -337,7 +357,10 @@ function HomeInner() {
                 queryEvents({
                     start: eventsStart.toISOString(),
                     end: eventsEnd.toISOString(),
-                    camera_id: isolatedCamera || selectedCamera || undefined,
+                    // Same UUID guard as the timeline above: only scope to a
+                    // camera when we hold its real local UUID, otherwise query
+                    // unscoped rather than send an id the backend will drop.
+                    camera_id: [isolatedCamera, selectedCamera].find(isCameraUUID),
                     types: activeFilters.join(','),
                     limit: 200, // doubled for the wider window
                 }),
