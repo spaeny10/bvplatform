@@ -257,6 +257,14 @@ func (es *EventStream) parseMilesightTrack(data []byte) {
 			{track.LineCrossing, "linecross", "Line Crossing"},
 			{track.ObjectLoitering, "loitering", "Object Loitering"},
 			{track.HumanDetection, "human", "Human Detection"},
+			// Basic / AI motion. Most Milesight cameras on the WS path only ever
+			// report vcaAdvancedMotion (and aiMotion on AI models) — without these
+			// the WS driver parsed motion and silently dropped it (B-11). Both map
+			// to eventType "motion", so they share the "trackID:motion" edge-detect
+			// key and emit at most ONE motion event per track transition even if
+			// both flags are set in the same frame.
+			{track.VcaAdvancedMotion, "motion", "Advanced Motion"},
+			{track.AiMotion, "motion", "AI Motion"},
 			{track.ObjectLeftRemoved, "object", "Object Left/Removed"},
 			{track.TamperDefocus, "intrusion", "Tamper/Defocus"},
 		}
