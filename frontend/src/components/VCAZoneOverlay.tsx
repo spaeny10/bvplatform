@@ -11,14 +11,18 @@
 //
 // COORDINATE MODEL — why this aligns with the video:
 //   VCA region points are normalized 0.0–1.0. We render them into a
-//   viewBox="0 0 100 100" user space (x*100, y*100). The live <video> uses
+//   viewBox="0 0 frameW frameH" user space (x*frameW, y*frameH) whose aspect
+//   ratio EQUALS the camera frame's aspect ratio. The live <video> uses
 //   `object-fit: contain` (operator.css `.video-cell video`), which
 //   letterboxes the frame inside the cell. preserveAspectRatio="xMidYMid
-//   meet" makes this SVG letterbox its 100×100 user space *identically*, so
-//   the normalized coords land on the painted video rect (not the cell box)
-//   regardless of camera vs cell aspect ratio — matching whatever the video
-//   element paints. The wrapper that hosts this SVG carries the same
-//   transform (translate+scale) as the <video> so zones track digital zoom.
+//   meet" makes this SVG letterbox its frameW×frameH user space *identically*
+//   to the video's contain-letterbox (same aspect → same fitted rect), so the
+//   normalized coords land on the painted video rect (not the cell box) for
+//   every camera aspect — including panoramics (~3.37:1) and PTZs (~1.22:1).
+//   A square viewBox (the old 100×100) only matched square cameras and offset
+//   the zones on everything else. The wrapper that hosts this SVG carries the
+//   same transform (translate+scale) as the <video> so zones track digital
+//   zoom.
 
 import type { VCARule } from '@/lib/api';
 
@@ -38,17 +42,33 @@ const ZONE_STROKE: Record<string, string> = {
 
 interface VCAZoneOverlayProps {
     rules: VCARule[];
+    // Intrinsic video frame dimensions (video.videoWidth/Height). The viewBox
+    // adopts these so its aspect == the camera aspect, making the SVG's meet
+    // letterbox coincide with the video's object-fit:contain letterbox.
+    frameW: number;
+    frameH: number;
 }
 
-export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
+export default function VCAZoneOverlay({ rules, frameW, frameH }: VCAZoneOverlayProps) {
+    // Unknown frame dims → we can't build an aspect-correct viewBox, so don't
+    // draw (a wrong-aspect overlay is worse than none).
+    if (frameW <= 0 || frameH <= 0) return null;
+
     const drawable = rules.filter(
         r => r.enabled && Array.isArray(r.region) && r.region.length >= 2,
     );
     if (drawable.length === 0) return null;
 
+    // User-space scale factor. The original sizes were tuned for a 100-unit
+    // tall space; scale them by frameH/100 so text/arrows keep the same visual
+    // proportion now that the viewBox is frameH units tall. (Polygon/line
+    // strokes use vectorEffect="non-scaling-stroke" → screen px, so they need
+    // no scaling here.)
+    const u = frameH / 100;
+
     return (
         <svg
-            viewBox="0 0 100 100"
+            viewBox={`0 0 ${frameW} ${frameH}`}
             preserveAspectRatio="xMidYMid meet"
             style={{
                 position: 'absolute',
@@ -66,8 +86,8 @@ export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
                 // Tripwire: a 2-point line with a direction arrow.
                 if (rule.rule_type === 'linecross' && rule.region.length === 2) {
                     const [a, b] = rule.region;
-                    const x1 = a.x * 100, y1 = a.y * 100;
-                    const x2 = b.x * 100, y2 = b.y * 100;
+                    const x1 = a.x * frameW, y1 = a.y * frameH;
+                    const x2 = b.x * frameW, y2 = b.y * frameH;
                     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
                     // Arrow: perpendicular to the line, pointing in the configured
                     // direction. 'both' -> double-headed; one-way -> single.
@@ -75,7 +95,7 @@ export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
                     const len = Math.hypot(dx, dy) || 1;
                     // Unit perpendicular (rotate the line dir 90°).
                     const px = -dy / len, py = dx / len;
-                    const arrowLen = 8;
+                    const arrowLen = 8 * u;
                     const dir = rule.direction;
                     // left_to_right follows the perpendicular +; right_to_left the -.
                     const sign = dir === 'right_to_left' ? -1 : 1;
@@ -105,17 +125,17 @@ export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
                             <defs>
                                 <marker
                                     id={`vca-arrow-${rule.id}`}
-                                    markerWidth={6} markerHeight={6} refX={4} refY={3}
+                                    markerWidth={6 * u} markerHeight={6 * u} refX={4 * u} refY={3 * u}
                                     orient="auto" markerUnits="userSpaceOnUse"
                                 >
-                                    <path d="M0,0 L5,3 L0,6 Z" fill={stroke} />
+                                    <path d={`M0,0 L${5 * u},${3 * u} L0,${6 * u} Z`} fill={stroke} />
                                 </marker>
                             </defs>
                             <text
-                                x={mx} y={my} dy={-3}
-                                fill={stroke} fontSize={4} fontWeight={600} textAnchor="middle"
+                                x={mx} y={my} dy={-3 * u}
+                                fill={stroke} fontSize={4 * u} fontWeight={600} textAnchor="middle"
                                 style={{ fontFamily: "'JetBrains Mono', monospace", paintOrder: 'stroke' }}
-                                stroke="rgba(0,0,0,0.6)" strokeWidth={0.4}
+                                stroke="rgba(0,0,0,0.6)" strokeWidth={0.4 * u}
                             >
                                 {rule.name}
                             </text>
@@ -125,10 +145,10 @@ export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
 
                 // Intrusion / region-entrance / loitering: a filled polygon.
                 const pts = rule.region
-                    .map(p => `${(p.x * 100).toFixed(2)},${(p.y * 100).toFixed(2)}`)
+                    .map(p => `${(p.x * frameW).toFixed(2)},${(p.y * frameH).toFixed(2)}`)
                     .join(' ');
-                const cx = (rule.region.reduce((s, p) => s + p.x, 0) / rule.region.length) * 100;
-                const cy = (rule.region.reduce((s, p) => s + p.y, 0) / rule.region.length) * 100;
+                const cx = (rule.region.reduce((s, p) => s + p.x, 0) / rule.region.length) * frameW;
+                const cy = (rule.region.reduce((s, p) => s + p.y, 0) / rule.region.length) * frameH;
                 return (
                     <g key={rule.id}>
                         <polygon
@@ -141,10 +161,10 @@ export default function VCAZoneOverlay({ rules }: VCAZoneOverlayProps) {
                         />
                         <text
                             x={cx} y={cy}
-                            fill={stroke} fontSize={4} fontWeight={600}
+                            fill={stroke} fontSize={4 * u} fontWeight={600}
                             textAnchor="middle" dominantBaseline="middle"
                             style={{ fontFamily: "'JetBrains Mono', monospace", paintOrder: 'stroke' }}
-                            stroke="rgba(0,0,0,0.6)" strokeWidth={0.4}
+                            stroke="rgba(0,0,0,0.6)" strokeWidth={0.4 * u}
                         >
                             {rule.name}
                         </text>

@@ -954,7 +954,7 @@ export default function VideoPlayer({
                 under pan/zoom. The SVG inside uses preserveAspectRatio meet to
                 letterbox its 0–100 user space the same way the video's
                 object-fit:contain letterboxes the frame. */}
-            {isLive && showZones && !error && !loading && zones.length > 0 && (
+            {isLive && showZones && !error && !loading && zones.length > 0 && resolution?.w && resolution?.h && (
                 <div
                     style={{
                         position: 'absolute',
@@ -966,7 +966,7 @@ export default function VideoPlayer({
                         transition: isDragging ? 'none' : 'transform 0.1s ease',
                     }}
                 >
-                    <VCAZoneOverlay rules={zones} />
+                    <VCAZoneOverlay rules={zones} frameW={resolution?.w ?? 0} frameH={resolution?.h ?? 0} />
                 </div>
             )}
 
