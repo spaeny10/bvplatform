@@ -100,8 +100,19 @@ func HandleGetTimeline(db *database.DB) http.HandlerFunc {
 
 		var cameraIDs []uuid.UUID
 
+		// Track whether the caller actually supplied a camera filter. We must
+		// distinguish "no filter given" (global-view → all cameras) from
+		// "filter given but every value was unparseable" (a bug on the
+		// caller's side that must NOT silently widen to all cameras). Earlier,
+		// non-UUID camera_ids were dropped, leaving an empty slice that the DB
+		// layer treated as "all cameras" — so a request for one camera's
+		// timeline leaked every camera's events. See P fix: empty filter now
+		// means zero rows in GetTimelineBuckets.
+		camerasParamProvided := false
+
 		// Support comma-separated camera_ids param
 		if idsStr := r.URL.Query().Get("camera_ids"); idsStr != "" {
+			camerasParamProvided = true
 			for _, s := range strings.Split(idsStr, ",") {
 				s = strings.TrimSpace(s)
 				if cid, err := uuid.Parse(s); err == nil {
@@ -110,9 +121,20 @@ func HandleGetTimeline(db *database.DB) http.HandlerFunc {
 			}
 		} else if cidStr := r.URL.Query().Get("camera_id"); cidStr != "" {
 			// Backwards compat: single camera_id
+			camerasParamProvided = true
 			if cid, err := uuid.Parse(cidStr); err == nil {
 				cameraIDs = append(cameraIDs, cid)
 			}
+		}
+
+		// A camera filter was supplied but NOTHING parsed as a valid UUID. The
+		// caller asked to scope the timeline to specific camera(s) using IDs
+		// the backend can't recognize. Proceeding with an empty slice would
+		// (pre-fix) have meant "all cameras"; returning 400 makes the client
+		// bug loud instead of silently leaking other cameras' events.
+		if camerasParamProvided && len(cameraIDs) == 0 {
+			http.Error(w, "camera_ids/camera_id provided but no valid camera UUID parsed", http.StatusBadRequest)
+			return
 		}
 
 		// Narrow requested cameras to the caller's authorized set.
@@ -126,6 +148,21 @@ func HandleGetTimeline(db *database.DB) http.HandlerFunc {
 				writeJSON(w, []database.TimelineBucket{})
 				return
 			}
+		} else if len(cameraIDs) == 0 {
+			// Global-view caller (admin / SOC) with no explicit camera filter:
+			// the product behavior is "all cameras." GetTimelineBuckets no
+			// longer treats an empty slice as all-cameras (that was the leak),
+			// so expand the implicit request to the full camera-ID list here.
+			allIDs, err := db.ListAllCameraIDs(r.Context())
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if len(allIDs) == 0 {
+				writeJSON(w, []database.TimelineBucket{})
+				return
+			}
+			cameraIDs = allIDs
 		}
 
 		intervalStr := r.URL.Query().Get("interval")
