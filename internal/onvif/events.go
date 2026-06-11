@@ -335,16 +335,31 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 				NotificationMessage []struct {
 					Message struct {
 						// LOCAL-05: PropertyOperation is an attribute of the
-						// <tt:Message> element. ONVIF spec values are
-						// "Initialized" (subscription bootstrap snapshot —
-						// every renewal cycle redumps current rule state),
-						// "Changed" (state transition — the real events),
-						// and "Deleted" (rule removed). We filter
-						// Initialized+all-false-state messages downstream
-						// so subscription renewals don't pile rows of the
-						// no-event state into the events table.
-						PropertyOperation string `xml:"PropertyOperation,attr"`
-						InnerXML          string `xml:",innerxml"`
+						// INNER <tt:Message> element, NOT the outer
+						// <wsnt:Message> wrapper. The ONVIF nesting is:
+						//   wsnt:NotificationMessage
+						//     > wsnt:Message            <- this struct
+						//         > tt:Message[@PropertyOperation]  <- Inner
+						//             > tt:Source / tt:Data
+						// encoding/xml matches by local name, so a nested
+						// field named "Message" inside this struct binds the
+						// inner tt:Message and coexists with ,innerxml (which
+						// captures the same bytes raw). Decoding the attr from
+						// the outer wrapper always yielded "" and bypassed the
+						// Initialized filter — every subscription-renewal
+						// snapshot was recorded as an alert (B-09).
+						//
+						// ONVIF spec values: "Initialized" (subscription
+						// bootstrap snapshot — every renewal cycle redumps
+						// current rule state), "Changed" (state transition —
+						// the real events), "Deleted" (rule removed). We
+						// filter Initialized+all-false-state messages
+						// downstream so renewals don't pile no-event-state
+						// rows into the events table.
+						Inner struct {
+							PropertyOperation string `xml:"PropertyOperation,attr"`
+						} `xml:"Message"`
+						InnerXML string `xml:",innerxml"`
 					} `xml:"Message"`
 					Topic struct {
 						Value string `xml:",chardata"`
@@ -377,7 +392,7 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 
 		evt.Details["topic"] = topic
 		evt.Details["raw"] = msg.Message.InnerXML
-		evt.Details["property_operation"] = msg.Message.PropertyOperation
+		evt.Details["property_operation"] = msg.Message.Inner.PropertyOperation
 
 		// Parse common data items from the message
 		parseDataItems(msg.Message.InnerXML, evt.Details)
@@ -405,7 +420,7 @@ func (es *EventSubscriber) parseNotificationMessages(data []byte) ([]parsedEvent
 		// active state (e.g. IsHuman=true on a persistent alarm
 		// that was active when the subscription cycle restarted) —
 		// these are rare but real signals.
-		if isInitializedNoEventState(msg.Message.PropertyOperation, evt.Details) {
+		if isInitializedNoEventState(msg.Message.Inner.PropertyOperation, evt.Details) {
 			continue
 		}
 

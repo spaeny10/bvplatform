@@ -24,6 +24,7 @@
 | B-06 | 06-10 → 06-11 | Playback shows the same feed for front & back cameras | 🟢 | **PR #68** (cell keying) **+** DB fix: 504 & 5001 "back" had **duplicate RTSP URLs** (both `:554/channel1`) → corrected to `:555/channel1`. Root cause is **O-02** |
 | B-07 | 06-10 | Site assignment doesn't persist (5001 → "Ironclad HQ Yard 5001" shows unassigned) | 🟢 | **PR #68** — a CSRF-token 403 was being silently swallowed by the assign modal; `authFetch` now bootstraps/retries the token and the modal surfaces errors |
 | B-08 | 06-11 | Events from other cameras (504) show on the 5001 timeline | 🟢 | **PR #70** — timeline & events now scope to the active grid layout (CameraGrid→page bridge); empty-filter no longer means "all cameras" (e2e-proven) |
+| B-09 | 06-11 | Event/alert feed flooded with thousands of bogus events from 504 right-PTZ (8386 on one camera, ~6.5/min — "tons of events I didn't configure") | 🟢 | ONVIF `PropertyOperation` was parsed from the wrong element (outer `wsnt:Message` wrapper vs inner `tt:Message`), so it always decoded as `""` and the LOCAL-05 `Initialized`-state filter was bypassed — every subscription-renewal no-event-state snapshot was recorded as an alert. Fixed the parse (`internal/onvif/events.go`, nested inner-element decode) + parse-level regression test; purged 8446 noise rows on the test DB. Verified flat after deploy. |
 
 ### Feature requests
 
