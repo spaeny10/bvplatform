@@ -2,6 +2,7 @@
 
 > Owner: Caleb · Task index: `ironsight/backlog/mvp-milestones.md` (monorepo)
 > Feature inventory: [docs/feature-registry/](feature-registry/) · Upstream phase plan: `claude_code_phase_plan.md` (read-only, monorepo root)
+> Reported bugs/requests (intake log): [docs/reported-issues.md](reported-issues.md)
 
 ## Strategic pivot (2026-06)
 
