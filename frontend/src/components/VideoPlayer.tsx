@@ -463,6 +463,10 @@ export default function VideoPlayer({
 
                     video.src = cand.url;
                     video.load();
+                    // load() resets playbackRate to 1; re-apply the operator's
+                    // selected speed immediately so an in-flight segment swap
+                    // can't transiently clobber a just-clicked 2×/4×.
+                    video.playbackRate = playbackRateRef.current;
                     try {
                         await new Promise<void>((resolve, reject) => {
                             const onLoaded = () => {
