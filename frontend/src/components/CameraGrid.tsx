@@ -36,6 +36,13 @@ interface CameraGridProps {
     isAdmin?: boolean;
     onRenameCamera?: (cameraId: string, newName: string) => void;
     globalPaused?: boolean;
+    // Reports the set of camera ids in the ACTIVE layout (static assignments
+    // or freeform items) up to the parent so the timeline/events queries can
+    // scope to the layout the operator is actually viewing. Fires on mount,
+    // on layout switch, and on any assignment change. See the cross-camera
+    // timeline leak fix: the timeline used to query ALL loaded cameras, so a
+    // 5001 layout still showed 504's events.
+    onVisibleCamerasChange?: (cameraIds: string[]) => void;
 }
 
 // LOCAL-06: localStorage key namespace migration. P1-B-07 renamed the
@@ -185,6 +192,7 @@ export default function CameraGrid({
     isAdmin = false,
     onRenameCamera,
     globalPaused = false,
+    onVisibleCamerasChange,
 }: CameraGridProps) {
     const [savedLayouts, setSavedLayouts] = useState<SavedLayout[]>([]);
     const [activeLayoutName, setActiveLayoutName] = useState<string>('');
@@ -392,6 +400,35 @@ export default function CameraGrid({
             return updated;
         });
     }, [activeLayoutName, staticAssignments, staticPreset, currentLayout, cols]);
+
+    // --- Report the active layout's camera set up to the parent ---
+    // The timeline/events queries must scope to the cameras in the ACTIVE
+    // layout, not every loaded camera. Compute that set from whichever mode
+    // is active and emit it whenever it changes (mount, layout switch via
+    // activeLayoutName, preset/assignment change, freeform item change).
+    // Only valid (currently-loaded) camera ids are emitted.
+    useEffect(() => {
+        if (!onVisibleCamerasChange) return;
+        const cameraIdSet = new Set(cameras.map(c => c.id));
+        let ids: string[];
+        if (!activeLayoutName) {
+            // No layout active → empty set; the parent decides what "no
+            // layout" means (it sends no camera filter = all cameras).
+            ids = [];
+        } else if (gridMode === 'static') {
+            // Static: deduped slot assignments (drop empties), valid ids only.
+            ids = Array.from(new Set(Object.values(staticAssignments)))
+                .filter(id => !!id && cameraIdSet.has(id));
+        } else {
+            // Freeform: the camera ids carried by the layout items.
+            ids = Array.from(new Set(
+                currentLayout
+                    .map(item => item.cameraId)
+                    .filter((id): id is string => !!id && cameraIdSet.has(id)),
+            ));
+        }
+        onVisibleCamerasChange(ids);
+    }, [onVisibleCamerasChange, activeLayoutName, gridMode, staticAssignments, currentLayout, cameras]);
 
     // --- Load Layout ---
     const handleLoadLayout = (layout: SavedLayout) => {

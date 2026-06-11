@@ -313,6 +313,22 @@ function HomeInner() {
     // Compute visible camera IDs for timeline filtering (memoized to prevent re-render loops)
     const visibleCameraIds = useMemo(() => cameras.map((c) => c.id), [cameras]);
 
+    // Cameras in the ACTIVE grid layout, reported up by CameraGrid. The
+    // timeline/events queries scope to THIS set, not every loaded camera —
+    // otherwise switching to a layout with only the 5001 cameras still
+    // queried all cameras and showed 504's events (cross-camera leak). Held
+    // in state because CameraGrid owns the layout (static assignments /
+    // freeform items) internally. Empty = no layout active → timeline sends
+    // no camera filter (all cameras).
+    const [activeLayoutCameraIds, setActiveLayoutCameraIds] = useState<string[]>([]);
+    const handleVisibleCamerasChange = useCallback((ids: string[]) => {
+        setActiveLayoutCameraIds(prev => {
+            // Skip no-op updates so loadTimeline's dependency doesn't churn.
+            if (prev.length === ids.length && prev.every((id, i) => id === ids[i])) return prev;
+            return ids;
+        });
+    }, []);
+
     // Load timeline data when time range changes
     const loadTimeline = useCallback(async () => {
         try {
@@ -342,9 +358,12 @@ function HomeInner() {
             // so e.g. 504's events showed up on the 5001 timeline. Resolve to
             // valid camera UUIDs here and never send a non-UUID id. If nothing
             // resolves, send no filter at all (undefined) rather than a bad id.
+            // Scope to the ACTIVE LAYOUT's cameras (reported by CameraGrid),
+            // not every loaded camera. An isolated (peeked) camera still wins.
+            // If no layout is active the set is empty → no filter (all cameras).
             const rawTimelineCameraIds = isolatedCamera
                 ? [isolatedCamera]
-                : visibleCameraIds;
+                : activeLayoutCameraIds;
             const timelineCameraIds = rawTimelineCameraIds.filter(isCameraUUID);
 
             const [buckets, eventData] = await Promise.all([
@@ -376,7 +395,7 @@ function HomeInner() {
         } catch (err) {
             console.error('Failed to load timeline:', err);
         }
-    }, [isLive, playbackTime, selectedCamera, isolatedCamera, visibleCameraIds, filters]);
+    }, [isLive, playbackTime, selectedCamera, isolatedCamera, activeLayoutCameraIds, filters]);
 
     useEffect(() => {
         loadTimeline();
@@ -643,6 +662,7 @@ function HomeInner() {
                                 isAdmin={user?.role === 'admin'}
                                 onRenameCamera={handleRenameCamera}
                                 globalPaused={globalPaused}
+                                onVisibleCamerasChange={handleVisibleCamerasChange}
                             />
                         </div>
 
