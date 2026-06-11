@@ -37,6 +37,22 @@ type EventSubscriber struct {
 	mu       sync.Mutex
 	Classify EventClassifierFunc // optional: vendor-specific topic classifier
 	Enrich   EventEnricherFunc   // optional: vendor-specific metadata extractor
+
+	// doRequest is the SOAP transport. It defaults to es.client.DoRequest
+	// but can be overridden in tests with a fake that returns canned SOAP
+	// (and counts CreatePullPointSubscription calls) so the pull loop and
+	// the Renew/Unsubscribe builders are exercisable without a real camera.
+	doRequest func(ctx context.Context, url, body string) ([]byte, error)
+}
+
+// do routes a SOAP request through the injected transport when set,
+// otherwise through the real ONVIF client. Lets tests intercept every
+// SOAP call (create / pull / renew / unsubscribe) deterministically.
+func (es *EventSubscriber) do(ctx context.Context, url, body string) ([]byte, error) {
+	if es.doRequest != nil {
+		return es.doRequest(ctx, url, body)
+	}
+	return es.client.DoRequest(ctx, url, body)
 }
 
 // InjectEvent allows external event sources (e.g. Milesight WebSocket) to fire
@@ -82,14 +98,37 @@ func (es *EventSubscriber) Stop() {
 	}
 }
 
-// pullLoop continuously pulls events from the camera using PullPoint subscription.
-// Proactively renews the subscription before the TTL expires so active cameras
-// (which never hit the "empty" renewal path) don't lose their subscription.
+// pullLoop continuously pulls events from the camera using a single
+// PullPoint subscription that it keeps alive with real WS-Notification
+// Renews.
+//
+// B-10 (subscription leak/churn) — what changed and why:
+//   - NO MORE idle re-subscribe. "No events" is the normal steady state
+//     (the camera only emits on a real rule transition). The old loop
+//     created a brand-new subscription after ~60s of empty polls, which
+//     made the camera re-dump its entire Initialized rule state and
+//     consumed another slot in its small subscription pool (~4–5),
+//     never releasing the old one → "Maximum number of Subscribe
+//     reached". We now just keep polling the same subscriptionAddr; the
+//     empty counter is logging-only.
+//   - Proactive renewal uses a real wsnt:Renew (renewSubscription),
+//     which extends the SAME subscription's TTL — no new slot, no
+//     Initialized snapshot. Only if Renew fails do we unsubscribe the
+//     old addr and recreate.
+//   - Every replace (renew-failed fallback + maxErrors-died path)
+//     unsubscribes the old addr first, and the loop unsubscribes the
+//     live addr on shutdown — so we stop leaking slots across renewals
+//     and app restarts.
 func (es *EventSubscriber) pullLoop(ctx context.Context) {
-	const subscriptionTTL = 3600 * time.Second // must match PT3600S in createPullPointSubscription
+	const subscriptionTTL = 3600 * time.Second // must match PT3600S in create/renew
 	const renewBeforeSec = 300 * time.Second   // renew 5 minutes before expiry
-	const renewAfterEmpty = 20                 // also renew after 20 consecutive empty polls (~60s)
+	const logEmptyEvery = 100                   // log a heartbeat every ~100 empty polls (~5min)
 	const maxErrors = 10
+
+	// subscriptionAddr is owned by this goroutine; the deferred
+	// unsubscribe below reads it on exit (no concurrent access).
+	var subscriptionAddr string
+	var expiresAt time.Time
 
 	newSubscription := func() (string, time.Time, error) {
 		addr, err := es.createPullPointSubscription(ctx)
@@ -101,14 +140,40 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		return addr, time.Now().Add(subscriptionTTL), nil
 	}
 
+	// recreate releases the current (dead/expiring) subscription before
+	// creating a fresh one, so we never stack a new slot on top of an old
+	// one. Best-effort unsubscribe — a dead sub can't be released anyway.
+	recreate := func() (string, time.Time, error) {
+		if subscriptionAddr != "" {
+			if err := es.unsubscribe(ctx, subscriptionAddr); err != nil {
+				log.Printf("[EVENTS] Unsubscribe (pre-recreate) failed for camera %s (continuing): %v", es.cameraID, err)
+			}
+		}
+		return newSubscription()
+	}
+
+	// Release the camera-side slot promptly on shutdown / context-cancel
+	// instead of leaking it until the PT3600S TTL reaps it. Uses a fresh
+	// short-lived context because ctx may already be canceled here.
+	defer func() {
+		if subscriptionAddr == "" {
+			return
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := es.unsubscribe(shutdownCtx, subscriptionAddr); err != nil {
+			log.Printf("[EVENTS] Unsubscribe on shutdown failed for camera %s (continuing): %v", es.cameraID, err)
+		} else {
+			log.Printf("[EVENTS] Unsubscribed camera %s on shutdown", es.cameraID)
+		}
+	}()
+
 	// Initial subscription — retry until success or context canceled.
 	// When the camera reports its subscription cap is exhausted (typical
 	// on Milesight/Hikvision after stale subs leak across restarts) we
 	// back off much harder: retrying every 60s would just keep leaking
 	// and hammering the device. The camera reaps stale subs on its
 	// PT3600S TTL, so 5-minute waits give the pool a chance to drain.
-	var subscriptionAddr string
-	var expiresAt time.Time
 	for subscriptionAddr == "" {
 		addr, exp, err := newSubscription()
 		if addr != "" {
@@ -144,13 +209,22 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		default:
 		}
 
-		// Proactive renewal: refresh subscription before it expires
+		// Proactive renewal: extend the EXISTING subscription's TTL with a
+		// real wsnt:Renew before it expires. No new subscription, no
+		// Initialized snapshot, no extra slot consumed. Only if the camera
+		// rejects/fails the Renew do we unsubscribe-old + recreate.
 		if time.Until(expiresAt) < renewBeforeSec {
-			log.Printf("[EVENTS] Proactively renewing subscription for camera %s (expires in %s)", es.cameraID, time.Until(expiresAt).Round(time.Second))
-			if addr, exp, _ := newSubscription(); addr != "" {
-				subscriptionAddr = addr
-				expiresAt = exp
-				consecutiveErrors = 0
+			log.Printf("[EVENTS] Renewing subscription for camera %s (expires in %s)", es.cameraID, time.Until(expiresAt).Round(time.Second))
+			if err := es.renewSubscription(ctx, subscriptionAddr); err == nil {
+				expiresAt = time.Now().Add(subscriptionTTL)
+			} else {
+				log.Printf("[EVENTS] Renew failed for camera %s (%v) — unsubscribing old + recreating", es.cameraID, err)
+				if addr, exp, _ := recreate(); addr != "" {
+					subscriptionAddr = addr
+					expiresAt = exp
+					consecutiveErrors = 0
+					consecutiveEmpty = 0
+				}
 			}
 		}
 
@@ -161,17 +235,21 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 				log.Printf("[EVENTS] Pull error for camera %s (%d/%d): %v", es.cameraID, consecutiveErrors, maxErrors, err)
 			}
 			if consecutiveErrors >= maxErrors {
-				// Subscription probably died — force a fresh one immediately
+				// Subscription is genuinely dead — release the old slot and
+				// force a fresh one immediately.
 				log.Printf("[EVENTS] Subscription lost for camera %s — re-subscribing", es.cameraID)
-				addr, exp, subErr := newSubscription()
+				addr, exp, subErr := recreate()
 				if addr != "" {
 					subscriptionAddr = addr
 					expiresAt = exp
 					consecutiveErrors = 0
+					consecutiveEmpty = 0
 				} else {
-					// Camera unreachable — back off and retry. Stretch
-					// the wait if it's the subscription-cap error so we
-					// don't keep adding to the leak.
+					// Camera unreachable — the old addr is gone (we already
+					// tried to unsubscribe it). Back off and retry; stretch
+					// the wait on the subscription-cap error so we don't keep
+					// adding to the leak.
+					subscriptionAddr = ""
 					wait := 30 * time.Second
 					if isSubscriptionCapError(subErr) {
 						wait = 5 * time.Minute
@@ -183,6 +261,28 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 					case <-ctx.Done():
 						return
 					}
+					// Re-establish before resuming the poll loop.
+					for subscriptionAddr == "" {
+						a, e, err2 := newSubscription()
+						if a != "" {
+							subscriptionAddr = a
+							expiresAt = e
+							consecutiveErrors = 0
+							consecutiveEmpty = 0
+							break
+						}
+						w := 60 * time.Second
+						if isSubscriptionCapError(err2) {
+							w = 5 * time.Minute
+						}
+						select {
+						case <-time.After(w):
+						case <-es.stopCh:
+							return
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			} else {
 				time.Sleep(2 * time.Second)
@@ -192,14 +292,13 @@ func (es *EventSubscriber) pullLoop(ctx context.Context) {
 		consecutiveErrors = 0
 
 		if len(events) == 0 {
+			// No events is the NORMAL state — do NOT re-subscribe here.
+			// Just keep polling the same subscription. Counter is for a
+			// periodic heartbeat log only.
 			consecutiveEmpty++
-			if consecutiveEmpty >= renewAfterEmpty {
-				log.Printf("[EVENTS] No events for %ds — renewing subscription for camera %s", consecutiveEmpty*3, es.cameraID)
-				if addr, exp, _ := newSubscription(); addr != "" {
-					subscriptionAddr = addr
-					expiresAt = exp
-					consecutiveEmpty = 0
-				}
+			if consecutiveEmpty%logEmptyEvery == 0 {
+				log.Printf("[EVENTS] Camera %s idle (%d empty polls) — still subscribed, next renew in %s",
+					es.cameraID, consecutiveEmpty, time.Until(expiresAt).Round(time.Second))
 			}
 			continue
 		}
@@ -237,7 +336,7 @@ func (es *EventSubscriber) createPullPointSubscription(ctx context.Context) (str
   </s:Body>
 </s:Envelope>`, es.client.BuildSecurityHeader())
 
-	resp, err := es.client.DoRequest(ctx, eventsAddr, body)
+	resp, err := es.do(ctx, eventsAddr, body)
 	if err != nil {
 		return "", err
 	}
@@ -312,12 +411,133 @@ func (es *EventSubscriber) pullMessages(ctx context.Context, subscriptionAddr st
   </s:Body>
 </s:Envelope>`, action, subscriptionAddr, newMessageID(), es.client.BuildSecurityHeader())
 
-	resp, err := es.client.DoRequest(ctx, subscriptionAddr, body)
+	resp, err := es.do(ctx, subscriptionAddr, body)
 	if err != nil {
 		return nil, err
 	}
 
 	return es.parseNotificationMessages(resp)
+}
+
+// renewSubscription sends a WS-BaseNotification wsnt:Renew to the
+// subscription manager endpoint, extending the camera-side TTL WITHOUT
+// creating a new PullPoint subscription. This is the key to fixing the
+// leak/churn (B-10): the old code "renewed" by calling
+// CreatePullPointSubscription, which spun up a brand-new subscription
+// (and made the camera re-dump its full Initialized rule state) every
+// renewal cycle while never releasing the prior one — eventually
+// exhausting the camera's subscription pool ("Maximum number of
+// Subscribe reached"). A real Renew reuses the same SubscriptionManager
+// so there's no extra slot consumed and no Initialized snapshot.
+//
+// SOAP action: http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest
+// Body:        <wsnt:Renew><wsnt:TerminationTime>PT3600S</wsnt:TerminationTime></wsnt:Renew>
+//
+// Some cameras reject Renew (non-conformant SubscriptionManager); the
+// caller treats any error here as "renew unsupported/failed" and falls
+// back to unsubscribe-old + recreate.
+func (es *EventSubscriber) renewSubscription(ctx context.Context, subscriptionAddr string) error {
+	const action = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/RenewRequest"
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:wsa="http://www.w3.org/2005/08/addressing"
+            xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+  <s:Header>
+    <wsa:Action s:mustUnderstand="1">%s</wsa:Action>
+    <wsa:To s:mustUnderstand="1">%s</wsa:To>
+    <wsa:MessageID>urn:uuid:%s</wsa:MessageID>
+    %s
+  </s:Header>
+  <s:Body>
+    <wsnt:Renew>
+      <wsnt:TerminationTime>PT3600S</wsnt:TerminationTime>
+    </wsnt:Renew>
+  </s:Body>
+</s:Envelope>`, action, subscriptionAddr, newMessageID(), es.client.BuildSecurityHeader())
+
+	resp, err := es.do(ctx, subscriptionAddr, body)
+	if err != nil {
+		return err
+	}
+	// A SOAP fault comes back HTTP 200 from some cameras (DoRequest only
+	// errors on non-200), so inspect the body. RenewResponse means success;
+	// a Fault means the camera rejected the renew and we must recreate.
+	if isSOAPFault(resp) {
+		return fmt.Errorf("renew rejected by camera: %s", soapFaultReason(resp))
+	}
+	return nil
+}
+
+// unsubscribe sends a WS-BaseNotification wsnt:Unsubscribe to the
+// subscription manager endpoint, releasing the camera-side slot
+// immediately instead of leaking it until the PT3600S TTL reaps it.
+// Best-effort: callers log and continue on error (a dead/unreachable
+// subscription can't be unsubscribed anyway, and the TTL will reap it).
+//
+// SOAP action: http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest
+// Body:        <wsnt:Unsubscribe/>
+func (es *EventSubscriber) unsubscribe(ctx context.Context, subscriptionAddr string) error {
+	if subscriptionAddr == "" {
+		return nil
+	}
+	const action = "http://docs.oasis-open.org/wsn/bw-2/SubscriptionManager/UnsubscribeRequest"
+	body := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+            xmlns:wsa="http://www.w3.org/2005/08/addressing"
+            xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2">
+  <s:Header>
+    <wsa:Action s:mustUnderstand="1">%s</wsa:Action>
+    <wsa:To s:mustUnderstand="1">%s</wsa:To>
+    <wsa:MessageID>urn:uuid:%s</wsa:MessageID>
+    %s
+  </s:Header>
+  <s:Body>
+    <wsnt:Unsubscribe/>
+  </s:Body>
+</s:Envelope>`, action, subscriptionAddr, newMessageID(), es.client.BuildSecurityHeader())
+
+	_, err := es.do(ctx, subscriptionAddr, body)
+	return err
+}
+
+// isSOAPFault reports whether a SOAP response body carries a Fault
+// element (namespace-prefix-agnostic). Used to detect a camera that
+// rejected a Renew with HTTP 200 + <s:Fault>.
+func isSOAPFault(resp []byte) bool {
+	s := string(resp)
+	return strings.Contains(s, ":Fault>") || strings.Contains(s, "<Fault>")
+}
+
+// soapFaultReason pulls the human-readable reason text out of a SOAP
+// fault for logging. Best-effort: returns a truncated raw body if no
+// recognizable reason element is present.
+func soapFaultReason(resp []byte) string {
+	if r := extractTagText(string(resp), "Text"); r != "" {
+		return r
+	}
+	if r := extractTagText(string(resp), "faultstring"); r != "" {
+		return r
+	}
+	s := string(resp)
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return s
+}
+
+// extractTagText returns the text content of the first <…:tag>…</…:tag>
+// (prefix-agnostic) in raw. Local helper so the fault parsing doesn't
+// pull in a full SOAP unmarshal.
+func extractTagText(raw, tag string) string {
+	for _, open := range []string{":" + tag + ">", "<" + tag + ">"} {
+		if i := strings.Index(raw, open); i >= 0 {
+			start := i + len(open)
+			if end := strings.Index(raw[start:], "</"); end >= 0 {
+				return strings.TrimSpace(raw[start : start+end])
+			}
+		}
+	}
+	return ""
 }
 
 // newMessageID returns a fresh UUID for the wsa:MessageID header. Some
