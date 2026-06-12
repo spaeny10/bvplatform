@@ -206,6 +206,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			r.Get("/{id}/vca/pull", HandleVCAPull(db))
 			r.Post("/{id}/vca/pull", HandleVCAPull(db))
 
+			// One-click zone import: reads the camera's active VCA zone
+			// config and writes it to vca_rules so the live overlay
+			// shows them immediately. Admin/supervisor only.
+			r.Post("/{id}/sync-zones", HandleSyncZones(db))
+
 			// Same-origin proxy for the camera's own web UI. The
 			// VCAZoneEditor iframes this so operators can configure
 			// on-device VCA without leaving Ironsight. See
