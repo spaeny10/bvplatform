@@ -84,20 +84,21 @@ func portSubstring(uri string) string {
 	if len(s) > 7 && s[:7] == "rtsp://" {
 		s = s[7:]
 	}
-	// Strip credentials.
+	// Strip credentials (everything up to and including '@').
 	for i := 0; i < len(s); i++ {
 		if s[i] == '@' {
 			s = s[i+1:]
 			break
 		}
 	}
-	// Find port after last colon before slash.
-	for i := len(s) - 1; i >= 0; i-- {
+	// Strip path: trim from the first '/' (host:port is before it).
+	for i := 0; i < len(s); i++ {
 		if s[i] == '/' {
 			s = s[:i]
 			break
 		}
 	}
+	// s is now "host:port" — find the last colon for the port.
 	for i := len(s) - 1; i >= 0; i-- {
 		if s[i] == ':' {
 			return s[i+1:]
