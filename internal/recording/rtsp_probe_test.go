@@ -204,3 +204,74 @@ func TestProbeRTSPStream_ContextCancellationDuringBackoff(t *testing.T) {
 
 // ensure fmt is used (kept for adding richer assertions later) — silence unused-import lint.
 var _ = fmt.Sprintf
+
+// ── B-16: ClassifyProbeError ──────────────────────────────────────────────────
+
+// TestClassifyProbeError_Success: a nil error is ProbeSuccess.
+func TestClassifyProbeError_Success(t *testing.T) {
+	if got := ClassifyProbeError(nil); got != ProbeSuccess {
+		t.Errorf("ClassifyProbeError(nil) = %v, want ProbeSuccess", got)
+	}
+}
+
+// TestClassifyProbeError_DefinitiveFailures: hard server rejections must map to
+// ProbeDefinitiveFailure so block-add (HandleCreateCamera) returns 400.
+func TestClassifyProbeError_DefinitiveFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"404 not found", "ffprobe rtsp://...: exit status 1 (stderr: method DESCRIBE failed: 404 Stream Not Found)"},
+		{"404 bare", "Server returned 404"},
+		{"connection refused", "dial tcp 5001.bigview.ai:554: connect: connection refused"},
+		{"no route to host", "connect: no route to host"},
+		{"401 unauthorized", "method DESCRIBE failed: 401 Unauthorized"},
+		{"401 bare", "Server returned 401"},
+		{"invalid data", "Invalid data found when processing input"},
+		{"could not find codec", "could not find codec parameters"},
+		{"stream not found", "Stream Not Found"},
+		{"ffmpeg path not configured", "rtsp probe: ffmpeg path not configured"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyProbeError(errors.New(tc.msg))
+			if got != ProbeDefinitiveFailure {
+				t.Errorf("ClassifyProbeError(%q) = %v, want ProbeDefinitiveFailure", tc.msg, got)
+			}
+		})
+	}
+}
+
+// TestClassifyProbeError_Inconclusive: timeout/kill class must map to
+// ProbeInconclusive so wide/cellular cameras are allowed optimistically.
+func TestClassifyProbeError_Inconclusive(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  string
+	}{
+		{"signal killed", "ffprobe rtsp://5001.bigview.ai:554/channel1/main: signal: killed"},
+		{"context deadline exceeded", "ffprobe rtsp://...: context deadline exceeded"},
+		{"context canceled", "ffprobe rtsp://...: context canceled"},
+		// Generic connect timeout — no server fragment → Inconclusive by default.
+		{"generic timeout no fragment", "ffprobe rtsp://...: exit status 1 (stderr: Connection timed out)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyProbeError(errors.New(tc.msg))
+			if got != ProbeInconclusive {
+				t.Errorf("ClassifyProbeError(%q) = %v, want ProbeInconclusive", tc.msg, got)
+			}
+		})
+	}
+}
+
+// TestClassifyProbeError_UnknownDefaultsToInconclusive: unrecognised error
+// strings fall back to Inconclusive so novel transient conditions don't
+// permanently block camera adds.
+func TestClassifyProbeError_UnknownDefaultsToInconclusive(t *testing.T) {
+	msg := "ffprobe: some novel error we've never seen before"
+	got := ClassifyProbeError(errors.New(msg))
+	if got != ProbeInconclusive {
+		t.Errorf("ClassifyProbeError(%q) = %v, want ProbeInconclusive (unknown defaults to inconclusive)", msg, got)
+	}
+}
