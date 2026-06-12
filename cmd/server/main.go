@@ -358,8 +358,17 @@ func main() {
 		log.Println("[SERVER] Batch workers delegated to sibling container (RUN_WORKERS=false)")
 	}
 
-	// Auto-start recording and streaming for cameras that have recording enabled
+	// Auto-start recording and streaming for cameras that have recording enabled.
+	// B-15: autoStartCameras no longer marks cameras offline on probe failure;
+	// the status reconciler (below) reflects live mediamtx readiness instead.
 	go autoStartCameras(ctx, db, cfg, recEngine, hlsServer, mtxServer, hub, det, subReg, aiClient)
+
+	// B-15: status reconciler — drives camera status from mediamtx /v3/paths/list
+	// every ~30s, with a 2-miss debounce before writing "offline". Started after
+	// autoStartCameras so mediamtx has had time to register paths. The reconciler
+	// is the ONLY authoritative writer of "online"/"offline" for ongoing status;
+	// the boot probe in autoStartCameras handles URI correction only.
+	streaming.RunStatusReconciler(ctx, db, mtxServer)
 
 	// Notification dispatcher — feeds the alarm-disposition emails and
 	// (next batch) the monthly-summary report. SMTP and Twilio fall
@@ -521,15 +530,44 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 			continue
 		}
 
-		// Connect to camera via ONVIF to verify
+		// Connect to camera via ONVIF to verify reachability.
+		// B-15: on ONVIF failure we log and continue — the status reconciler will
+		// reflect the actual stream state from mediamtx within ~30-60s. We no
+		// longer write "offline" here because cellular cameras are often slow to
+		// connect at boot and a premature "offline" write would persist forever
+		// if the camera later becomes reachable (the reconciler corrects it).
 		client := onvif.NewClient(cam.OnvifAddress, cam.Username, cam.Password)
 		if _, err := client.Connect(ctx); err != nil {
-			log.Printf("[STARTUP] Camera %s offline: %v", cam.Name, err)
-			db.UpdateCameraStatus(ctx, cam.ID, "offline")
-			continue
+			log.Printf("[STARTUP] Camera %s ONVIF connect failed (leaving status to reconciler): %v", cam.Name, err)
+			// Do NOT mark offline — reconciler handles ongoing status.
 		}
 
-		db.UpdateCameraStatus(ctx, cam.ID, "online")
+		// B-13 / B-14 / B-15: probe the RTSP stream at boot for URI discovery /
+		// correction only. On probe FAILURE we log and continue — we do NOT mark
+		// offline or skip starting recording/HLS, because cellular cameras may
+		// still be settling and the probe would give a false-offline (B-15).
+		// On SUCCESS we store any corrected URI. The status reconciler drives
+		// "online" / "offline" based on live mediamtx readiness, not this probe.
+		if cfg.FFmpegPath != "" {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 90*time.Second)
+			probedMain, probedSub, probeErr := api.ProbeAndSelectStream(
+				probeCtx, cfg.FFmpegPath, cam.RTSPUri, cam.SubStreamUri, cam.OnvifAddress)
+			probeCancel()
+			if probeErr != nil {
+				log.Printf("[STARTUP] Camera %s stream probe failed (leaving status to reconciler): %v", cam.Name, probeErr)
+				// B-15: do NOT call UpdateCameraStreamError / mark offline here.
+				// The reconciler will set the correct status within ~30-60s based
+				// on whether mediamtx is actually receiving data from this camera.
+			} else {
+				// If the probe found a better URI (e.g., corrected NAT port), store it.
+				if probedMain != cam.RTSPUri || probedSub != cam.SubStreamUri {
+					log.Printf("[STARTUP] Camera %s: stream URI corrected by probe (%s → %s)", cam.Name, cam.RTSPUri, probedMain)
+					cam.RTSPUri = probedMain
+					cam.SubStreamUri = probedSub
+					db.UpdateCameraRTSP(ctx, cam.ID, probedMain, probedSub, cam.ProfileToken, cam.Manufacturer, cam.Model, cam.Firmware)
+				}
+			}
+		}
 
 		// Only start recording/HLS if storage is configured
 		if cfg.StoragePath != "" {
@@ -1033,10 +1071,20 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 					}()
 				}
 
-				// Async thumbnail capture via FFmpeg (bounded by semaphore)
+				// Async thumbnail capture (bounded by semaphore). Primary path
+				// reads the LOCAL recording segment covering event_time — a
+				// network-free ffmpeg seek that works even when the live RTSP
+				// is slow (cellular trailers) or the HEVC main stream chokes a
+				// fresh grab. Falls back to an RTSP SUB-stream grab only on a
+				// recording gap. Shared with the runtime camera-add path via
+				// recording.CaptureEventThumbnail.
 				if cam.RTSPUri != "" {
 					eventID := evt.ID
-					rtspUri := cam.RTSPUri
+					eventTime := evt.EventTime
+					camIDStr := cameraID.String()
+					subStreamUri := cam.SubStreamUri
+					storagePath := cfg.StoragePath
+					ffmpegPath := cfg.FFmpegPath
 					// Try to acquire semaphore slot; skip thumbnail if too many in-flight
 					select {
 					case thumbSem <- struct{}{}:
@@ -1047,7 +1095,9 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 									log.Printf("[THUMB] PANIC in thumbnail goroutine for event %d: %v", eventID, rec)
 								}
 							}()
-							thumb, err := recording.CaptureFrame(cfg.FFmpegPath, rtspUri, 3)
+							thumb, via, err := recording.CaptureEventThumbnail(
+								ffmpegPath, storagePath, camIDStr, eventTime,
+								"", time.Time{}, subStreamUri, 12)
 							if err != nil {
 								log.Printf("[THUMB] Failed to capture thumbnail for event %d: %v", eventID, err)
 								return
@@ -1058,13 +1108,13 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 								log.Printf("[THUMB] Failed to store thumbnail for event %d: %v", eventID, err)
 								return
 							}
-							log.Printf("[THUMB] Captured thumbnail for event %d (camera %s)", eventID, cameraID.String())
+							log.Printf("[THUMB] Captured thumbnail for event %d (camera %s) via %s", eventID, camIDStr, via)
 
 							// Broadcast thumbnail update so frontend can patch it in
 							thumbMsg, _ := json.Marshal(map[string]interface{}{
 								"type":      "event_thumbnail",
 								"event_id":  eventID,
-								"camera_id": cameraID.String(),
+								"camera_id": camIDStr,
 								"thumbnail": thumb,
 							})
 							hub.Broadcast(thumbMsg)

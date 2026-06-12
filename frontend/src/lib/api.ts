@@ -611,6 +611,21 @@ export function getVCASnapshotURL(cameraId: string): string {
     return `${API_BASE}/cameras/${cameraId}/vca/snapshot`;
 }
 
+export interface VCASyncResult {
+    camera_id: string;
+    imported: number;
+    rules: Array<{ rule_type: string; name: string; enabled: boolean; point_count: number }>;
+}
+
+// syncCameraVCAZones imports the camera's current on-device VCA zone
+// configuration into vca_rules so the live overlay picks them up.
+// Requires admin or soc_supervisor role.
+export async function syncCameraVCAZones(cameraId: string): Promise<VCASyncResult> {
+    const res = await authFetch(`${API_BASE}/cameras/${cameraId}/sync-zones`, { method: 'POST' });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+}
+
 // Camera management
 export async function discoverCameras(): Promise<DiscoveredDevice[]> {
     const res = await authFetch(`${API_BASE}/discover`, { method: 'POST' });

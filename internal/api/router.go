@@ -175,9 +175,9 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 		// Camera CRUD
 		r.Route("/cameras", func(r chi.Router) {
 			r.Get("/", HandleListCameras(db))
-			r.Post("/", HandleCreateCamera(db, recEngine, hlsServer, mtxServer, hub, subReg))
+			r.Post("/", HandleCreateCamera(cfg, db, recEngine, hlsServer, mtxServer, hub, subReg, cfg.FFmpegPath))
 			r.Get("/{id}", HandleGetCamera(db))
-			r.Patch("/{id}", HandleUpdateCamera(db, mtxServer))
+			r.Patch("/{id}", HandleUpdateCamera(db, mtxServer, cfg.FFmpegPath))
 			r.Delete("/{id}", HandleDeleteCamera(db, recEngine, hlsServer, mtxServer, subReg))
 
 			// Recordings per camera
@@ -205,6 +205,11 @@ func NewRouter(cfg *config.Config, db *database.DB, hub *Hub, recEngine *recordi
 			// stay invisible.
 			r.Get("/{id}/vca/pull", HandleVCAPull(db))
 			r.Post("/{id}/vca/pull", HandleVCAPull(db))
+
+			// One-click zone import: reads the camera's active VCA zone
+			// config and writes it to vca_rules so the live overlay
+			// shows them immediately. Admin/supervisor only.
+			r.Post("/{id}/sync-zones", HandleSyncZones(db))
 
 			// Same-origin proxy for the camera's own web UI. The
 			// VCAZoneEditor iframes this so operators can configure

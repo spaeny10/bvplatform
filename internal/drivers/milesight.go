@@ -114,20 +114,25 @@ func (d *MilesightDriver) NormalizeRTSPURI(uri string, username, password string
 	}
 
 	// Some Milesight firmware (seen in the wild on MS-C8477 with a
-	// misconfigured "RTSP Port" UI field) returns an unusably small
-	// port number — port 0, port 1, or anything in the privileged
-	// range below 1024 that isn't a known RTSP port. The actual stream
-	// is always on the standard 554; the bogus port comes from the
-	// camera's GetStreamUri response. Override anything in that range
-	// to 554 so FFmpeg can dial.
+	// misconfigured "RTSP Port" UI field) returns an unusably small port
+	// number — port 0 or port 1. The actual stream is on the standard 554;
+	// the bogus port comes from the camera's GetStreamUri response.
+	//
+	// B-14 guard: we intentionally narrow this from "anything < 1024" to
+	// only port 0 and port 1. The wider sub-1024 guard was collapsing NAT-
+	// derived ports (e.g., 555, 556, 557 for camera slots 1-3 behind the
+	// same router) back to 554, so every camera in a multi-camera trailer
+	// ended up dialling the same port and only one worked. Ports in the
+	// 554–558 range are valid RTSP ports in the BigView trailer convention;
+	// 80 and 443 are HTTP/HTTPS tunneling; any other port the camera
+	// reported is left as-is (the probe sweep in probeAndSelectStream will
+	// find the right one if the camera lied about it).
 	host := parsed.Hostname()
 	port := parsed.Port()
 	if port == "" {
 		parsed.Host = host + ":554"
-	} else if p, err := strconv.Atoi(port); err == nil && p < 1024 && p != 80 && p != 443 {
-		// 80/443 are the legitimate HTTP/HTTPS ports cameras
-		// occasionally use for RTSP-over-HTTP tunneling — leave those
-		// alone. Anything else under 1024 is the firmware bug.
+	} else if p, err := strconv.Atoi(port); err == nil && (p == 0 || p == 1) {
+		// Port 0 / port 1 are the known Milesight firmware bug values.
 		parsed.Host = host + ":554"
 	}
 
