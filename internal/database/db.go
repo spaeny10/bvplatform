@@ -124,19 +124,25 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 	if encErr != nil {
 		return encErr
 	}
+	var lastStreamErr interface{}
+	if c.LastStreamError != "" {
+		lastStreamErr = c.LastStreamError
+	}
 	_, err := db.Pool.Exec(ctx, `
 		INSERT INTO cameras (id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
 			events_enabled, audio_enabled, camera_group, schedule, privacy_mask,
 			status, profile_token, has_ptz, manufacturer, model, firmware,
 			device_class, sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)`,
 		c.ID, c.Name, c.OnvifAddress, c.Username, storedPassword, c.RTSPUri, c.SubStreamUri,
 		c.RetentionDays, c.Recording, c.RecordingMode, c.PreBufferSec, c.PostBufferSec, c.RecordingTriggers,
 		c.EventsEnabled, c.AudioEnabled, c.CameraGroup, c.Schedule, c.PrivacyMask,
 		c.Status, c.ProfileToken, c.HasPTZ, c.Manufacturer, c.Model, c.Firmware,
 		deviceClass, senseToken,
+		lastStreamErr,
 		c.CreatedAt, c.UpdatedAt,
 	)
 	return err
@@ -148,6 +154,7 @@ func (db *DB) CreateCamera(ctx context.Context, c *Camera) error {
 func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	c := &Camera{}
 	var senseToken *string
+	var lastStreamErr *string
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
@@ -156,15 +163,19 @@ func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 			COALESCE(site_id, ''),
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at
 		FROM cameras_active WHERE id = $1`, id,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model,
-		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt)
+		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &lastStreamErr, &c.CreatedAt, &c.UpdatedAt)
 	if senseToken != nil {
 		c.SenseWebhookToken = *senseToken
+	}
+	if lastStreamErr != nil {
+		c.LastStreamError = *lastStreamErr
 	}
 
 	if err == pgx.ErrNoRows {
@@ -179,6 +190,7 @@ func (db *DB) GetCamera(ctx context.Context, id uuid.UUID) (*Camera, error) {
 func (db *DB) GetCameraIncludeDeleted(ctx context.Context, id uuid.UUID) (*Camera, error) {
 	c := &Camera{}
 	var senseToken *string
+	var lastStreamErr *string
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
@@ -187,15 +199,19 @@ func (db *DB) GetCameraIncludeDeleted(ctx context.Context, id uuid.UUID) (*Camer
 			COALESCE(site_id, ''),
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at, deleted_at
 		FROM cameras WHERE id = $1`, id,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model,
-		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt)
+		&c.Firmware, &c.SiteID, &c.DeviceClass, &senseToken, &lastStreamErr, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt)
 	if senseToken != nil {
 		c.SenseWebhookToken = *senseToken
+	}
+	if lastStreamErr != nil {
+		c.LastStreamError = *lastStreamErr
 	}
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -214,6 +230,7 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 			COALESCE(site_id, ''),
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at
 		FROM cameras_active ORDER BY name`)
 	if err != nil {
@@ -225,18 +242,22 @@ func (db *DB) ListCameras(ctx context.Context) ([]Camera, error) {
 	for rows.Next() {
 		var c Camera
 		var senseToken *string
+		var lastStreamErr *string
 		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri,
 			&c.SubStreamUri, &c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec,
 			&c.PostBufferSec, &c.RecordingTriggers,
 			&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 			&c.Status, &c.ProfileToken, &c.HasPTZ,
 			&c.Manufacturer, &c.Model, &c.Firmware, &c.SiteID,
-			&c.DeviceClass, &senseToken,
+			&c.DeviceClass, &senseToken, &lastStreamErr,
 			&c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if senseToken != nil {
 			c.SenseWebhookToken = *senseToken
+		}
+		if lastStreamErr != nil {
+			c.LastStreamError = *lastStreamErr
 		}
 		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 		cameras = append(cameras, c)
@@ -256,6 +277,7 @@ func (db *DB) ListCamerasIncludeDeleted(ctx context.Context) ([]Camera, error) {
 			COALESCE(site_id, ''),
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at, deleted_at
 		FROM cameras ORDER BY name`)
 	if err != nil {
@@ -267,18 +289,22 @@ func (db *DB) ListCamerasIncludeDeleted(ctx context.Context) ([]Camera, error) {
 	for rows.Next() {
 		var c Camera
 		var senseToken *string
+		var lastStreamErr *string
 		if err := rows.Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri,
 			&c.SubStreamUri, &c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec,
 			&c.PostBufferSec, &c.RecordingTriggers,
 			&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 			&c.Status, &c.ProfileToken, &c.HasPTZ,
 			&c.Manufacturer, &c.Model, &c.Firmware, &c.SiteID,
-			&c.DeviceClass, &senseToken,
+			&c.DeviceClass, &senseToken, &lastStreamErr,
 			&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
 			return nil, err
 		}
 		if senseToken != nil {
 			c.SenseWebhookToken = *senseToken
+		}
+		if lastStreamErr != nil {
+			c.LastStreamError = *lastStreamErr
 		}
 		c.Password = db.decryptCred(c.Password) // P1-A-05: plaintext-facing for consumers
 		cameras = append(cameras, c)
@@ -296,6 +322,7 @@ func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera,
 	}
 	c := &Camera{}
 	var senseToken *string
+	var lastStreamErr *string
 	err := db.Pool.QueryRow(ctx, `
 		SELECT id, name, onvif_address, username, password, rtsp_uri, sub_stream_uri,
 			retention_days, recording, recording_mode, pre_buffer_sec, post_buffer_sec, recording_triggers,
@@ -304,18 +331,22 @@ func (db *DB) GetCameraBySenseToken(ctx context.Context, token string) (*Camera,
 			COALESCE(site_id, ''),
 			COALESCE(device_class, 'continuous'),
 			sense_webhook_token,
+			last_stream_error,
 			created_at, updated_at
 		FROM cameras_active WHERE sense_webhook_token = $1`, token,
 	).Scan(&c.ID, &c.Name, &c.OnvifAddress, &c.Username, &c.Password, &c.RTSPUri, &c.SubStreamUri,
 		&c.RetentionDays, &c.Recording, &c.RecordingMode, &c.PreBufferSec, &c.PostBufferSec, &c.RecordingTriggers,
 		&c.EventsEnabled, &c.AudioEnabled, &c.CameraGroup, &c.Schedule, &c.PrivacyMask,
 		&c.Status, &c.ProfileToken, &c.HasPTZ, &c.Manufacturer, &c.Model, &c.Firmware,
-		&c.SiteID, &c.DeviceClass, &senseToken, &c.CreatedAt, &c.UpdatedAt)
+		&c.SiteID, &c.DeviceClass, &senseToken, &lastStreamErr, &c.CreatedAt, &c.UpdatedAt)
 	if err == pgx.ErrNoRows {
 		return nil, nil
 	}
 	if senseToken != nil {
 		c.SenseWebhookToken = *senseToken
+	}
+	if lastStreamErr != nil {
+		c.LastStreamError = *lastStreamErr
 	}
 	c.Password = db.decryptCred(c.Password) // P1-A-05
 	return c, err
@@ -427,6 +458,31 @@ func (db *DB) UpdateCamera(ctx context.Context, id uuid.UUID, update CameraUpdat
 func (db *DB) UpdateCameraStatus(ctx context.Context, id uuid.UUID, status string) error {
 	_, err := db.Pool.Exec(ctx, "UPDATE cameras SET status = $1, updated_at = $2 WHERE id = $3",
 		status, time.Now(), id)
+	return err
+}
+
+// UpdateCameraStreamError records a stream-probe failure reason and sets
+// the camera offline. Pass an empty string to clear a previous error
+// (i.e., probe succeeded — caller should separately call UpdateCameraStatus
+// to set "online"). This is the write side of the B-13 / B-14 fix; the
+// read side surfaces last_stream_error in Camera.LastStreamError.
+func (db *DB) UpdateCameraStreamError(ctx context.Context, id uuid.UUID, streamErr string) error {
+	var stored interface{}
+	if streamErr != "" {
+		stored = streamErr
+	}
+	_, err := db.Pool.Exec(ctx,
+		"UPDATE cameras SET status = 'offline', last_stream_error = $1, updated_at = $2 WHERE id = $3",
+		stored, time.Now(), id)
+	return err
+}
+
+// ClearCameraStreamError clears the last_stream_error and marks the camera
+// online in one round-trip. Called after a successful stream probe.
+func (db *DB) ClearCameraStreamError(ctx context.Context, id uuid.UUID) error {
+	_, err := db.Pool.Exec(ctx,
+		"UPDATE cameras SET status = 'online', last_stream_error = NULL, updated_at = $1 WHERE id = $2",
+		time.Now(), id)
 	return err
 }
 

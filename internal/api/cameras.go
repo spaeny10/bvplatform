@@ -215,11 +215,67 @@ func HandleGetCamera(db *database.DB) http.HandlerFunc {
 	}
 }
 
+// ProbeAndSelectStream probes the candidate (port, path) matrix for mainUri
+// and optionally subUri, returning the first URIs that successfully serve a
+// video stream. It uses the existing RTSPCandidateURIs + ProbeRTSPStream
+// helpers so the NAT port-derivation and path-sweep logic lives in one place.
+//
+// Returns the working main URI (and sub URI, which may be empty if the sub
+// probe fails) and the probe error when NO main candidate passes. Callers
+// decide what to do on error — create blocks, update+autostart set offline.
+//
+// The onvifAddress is forwarded to RTSPCandidateURIs so the NAT-derived port
+// (ONVIF_port - 7526) is tried first in the candidate set.
+//
+// Exported so cmd/server/main.go can call it from autoStartCameras at boot.
+func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvifAddress string) (workedMain, workedSub string, probeErr error) {
+	mainCandidates := recording.RTSPCandidateURIs(mainUri, onvifAddress, "main")
+	if len(mainCandidates) == 0 {
+		mainCandidates = []string{mainUri}
+	}
+	for _, uri := range mainCandidates {
+		if err := recording.ProbeRTSPStream(ctx, ffmpegPath, uri); err == nil {
+			workedMain = uri
+			break
+		}
+	}
+	if workedMain == "" {
+		// Return the probe error from the FIRST candidate (most likely the one the
+		// operator intended) so the error message is actionable, not just "the last
+		// candidate in a long list failed."
+		probeErr = recording.ProbeRTSPStream(ctx, ffmpegPath, mainCandidates[0])
+		if probeErr == nil {
+			// Shouldn't happen — first candidate would have matched above.
+			probeErr = fmt.Errorf("rtsp probe: no working stream found among %d candidates", len(mainCandidates))
+		}
+		return "", "", probeErr
+	}
+
+	// Sub is optional: if it fails, log and proceed with empty sub.
+	if subUri != "" {
+		subCandidates := recording.RTSPCandidateURIs(subUri, onvifAddress, "sub")
+		if len(subCandidates) == 0 {
+			subCandidates = []string{subUri}
+		}
+		for _, uri := range subCandidates {
+			if err := recording.ProbeRTSPStream(ctx, ffmpegPath, uri); err == nil {
+				workedSub = uri
+				break
+			}
+		}
+		if workedSub == "" {
+			log.Printf("[PROBE] Sub-stream probe failed for all candidates of %s — proceeding without sub-stream", subUri)
+		}
+	}
+
+	return workedMain, workedSub, nil
+}
+
 // HandleCreateCamera adds a new camera. Admin / supervisor only —
 // camera rows carry device credentials and the onvif_address the
 // web-UI proxy dials (F-14: same gate as reboot/Milesight config; a
 // viewer or customer account must not be able to register devices).
-func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *Hub, subReg *SubscriberRegistry) http.HandlerFunc {
+func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *Hub, subReg *SubscriberRegistry, ffmpegPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -338,6 +394,26 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			}
 		}
 
+		// B-13 / B-14: verify the RTSP stream actually plays before persisting.
+		// probeAndSelectStream builds the NAT-aware candidate matrix (derived port
+		// first, then fallback sweep) and probes each candidate with ffprobe. The
+		// first candidate that returns a video stream wins. On complete failure we
+		// block the create with HTTP 400 and the probe error so the operator knows
+		// exactly what went wrong rather than landing a silently-broken camera.
+		if ffmpegPath != "" {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 90*time.Second)
+			probedMain, probedSub, probeErr := ProbeAndSelectStream(probeCtx, ffmpegPath, mainUri, subUri, input.OnvifAddress)
+			probeCancel()
+			if probeErr != nil {
+				http.Error(w, "RTSP stream probe failed — camera would be silently broken. Verify the RTSP address and credentials. Probe error: "+probeErr.Error(), http.StatusBadRequest)
+				return
+			}
+			mainUri = probedMain
+			subUri = probedSub
+		} else {
+			log.Printf("[CAMERA] ffmpegPath not configured — skipping RTSP stream probe for %s", input.Name)
+		}
+
 		// Apply driver defaults or generic defaults
 		retentionDays := 30
 		recordingMode := ""
@@ -382,8 +458,10 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			return
 		}
 
-		// Update to online since we just successfully connected
-		db.UpdateCameraStatus(r.Context(), cam.ID, "online")
+		// Stream probe succeeded (or was skipped due to missing ffmpegPath) —
+		// mark online and clear any stale error. If ffmpegPath was empty we
+		// got this far so the ONVIF connect worked; we accept the risk.
+		db.ClearCameraStreamError(r.Context(), cam.ID)
 		cam.Status = "online"
 
 		if cam.Recording {
@@ -533,7 +611,7 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 // recording engine dial. The CanAccessCamera check is defense-in-depth
 // tenant scoping on top of the role gate (UpdateCamera's WHERE clause
 // has no org/site filter of its own).
-func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) http.HandlerFunc {
+func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer, ffmpegPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -579,6 +657,39 @@ func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) ht
 
 		camera, _ := db.GetCamera(r.Context(), id)
 
+		// B-13 / B-14: if the RTSP URIs changed, probe the new ones before
+		// declaring the camera online. On failure mark it offline + record
+		// last_stream_error so the operator can see why. Non-blocking on
+		// the HTTP response — the DB write happens regardless; the status
+		// update reflects the probe result.
+		uriChanged := prev != nil && camera != nil &&
+			(camera.RTSPUri != prev.RTSPUri || camera.SubStreamUri != prev.SubStreamUri)
+		if uriChanged && camera != nil && ffmpegPath != "" {
+			probeCtx, probeCancel := context.WithTimeout(r.Context(), 90*time.Second)
+			probedMain, probedSub, probeErr := ProbeAndSelectStream(
+				probeCtx, ffmpegPath, camera.RTSPUri, camera.SubStreamUri, camera.OnvifAddress)
+			probeCancel()
+			if probeErr != nil {
+				log.Printf("[API] RTSP probe failed after URI update for %s: %v", camera.Name, probeErr)
+				db.UpdateCameraStreamError(r.Context(), camera.ID, probeErr.Error())
+				camera.Status = "offline"
+				camera.LastStreamError = probeErr.Error()
+			} else {
+				// Store the verified (possibly corrected) URIs and mark online.
+				if probedMain != camera.RTSPUri || probedSub != camera.SubStreamUri {
+					_ = db.UpdateCamera(r.Context(), camera.ID, database.CameraUpdate{
+						RtspURI:     &probedMain,
+						SubStreamURI: &probedSub,
+					})
+					camera.RTSPUri = probedMain
+					camera.SubStreamUri = probedSub
+				}
+				db.ClearCameraStreamError(r.Context(), camera.ID)
+				camera.Status = "online"
+				camera.LastStreamError = ""
+			}
+		}
+
 		// BUG-4: if the RTSP source URIs actually CHANGED, the running mediamtx
 		// is still pointing at the old source under the SAME path name (the
 		// path name is the camera UUID, which doesn't change), so a plain
@@ -587,8 +698,6 @@ func HandleUpdateCamera(db *database.DB, mtxServer *streaming.MediaMTXServer) ht
 		// with the new source so live view picks up the new URI without a
 		// container restart. Recording reads the DB directly, so it's already
 		// correct regardless of this.
-		uriChanged := prev != nil && camera != nil &&
-			(camera.RTSPUri != prev.RTSPUri || camera.SubStreamUri != prev.SubStreamUri)
 		if mtxServer != nil && camera != nil && uriChanged {
 			// Update the in-memory stream map to the new source first — use the
 			// map-only setter (not AddStream) so we don't race AddStream's
