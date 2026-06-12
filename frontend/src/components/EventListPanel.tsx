@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import type { ReactNode } from 'react';
 import { Camera, Event, queryEvents } from '@/lib/api';
 
 interface EventListPanelProps {
@@ -269,7 +270,18 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
     // --- Remote events from API ---
     const [remoteEvents, setRemoteEvents] = useState<Event[]>([]);
     const [loading, setLoading] = useState(false);
-    const [expandedId, setExpandedId] = useState<number | null>(null);
+    // The event whose detail modal is open (null = closed). Clicking a row
+    // sets this; the modal renders the larger snapshot + full details.
+    const [detailEvent, setDetailEvent] = useState<Event | null>(null);
+
+    // Close the detail modal on Escape. Bound only while a modal is open so we
+    // don't leak a global key listener for the whole feed's lifetime.
+    useEffect(() => {
+        if (!detailEvent) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailEvent(null); };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [detailEvent]);
     // Per-thumbnail natural size, keyed by event id — lets pixel-space bbox
     // coords normalize against the actual image when frame dims aren't in details.
     const [imgDims, setImgDims] = useState<Record<number, { w: number; h: number }>>({});
@@ -387,6 +399,19 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [remoteEvents, liveEvents, matchesFilters, useCustomRange, sortMode, cameras]);
 
+    // The detail modal shows a live view of the clicked event: re-resolve it
+    // from the current event set by id so a thumbnail that arrives via the
+    // async "event_thumbnail" WS patch a few seconds AFTER the click still
+    // appears in the open modal (detailEvent itself is a click-time snapshot).
+    const activeDetailEvent = useMemo<Event | null>(() => {
+        if (!detailEvent) return null;
+        if (detailEvent.id) {
+            const fresh = [...liveEvents, ...remoteEvents].find(e => e.id === detailEvent.id);
+            if (fresh) return fresh;
+        }
+        return detailEvent;
+    }, [detailEvent, liveEvents, remoteEvents]);
+
     // Group rows by camera when requested (or when scoping to a layout).
     const grouped = useMemo(() => {
         const doGroup = groupByCamera || (scopeToLayout && effectiveCameraIds.length > 0);
@@ -433,7 +458,6 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
 
     // ── Single enriched row (reused by flat + grouped renders) ──
     const renderRow = (event: Event, i: number) => {
-        const isExpanded = expandedId === event.id;
         const hasThumbnail = !!event.thumbnail;
         const thumbSrc = hasThumbnail
             ? (event.thumbnail.startsWith('data:') ? event.thumbnail : `data:image/jpeg;base64,${event.thumbnail}`)
@@ -462,10 +486,10 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                 data-testid="alert-row"
                 data-source={src || ''}
                 style={{ cursor: 'pointer', borderLeft: `3px solid ${color(event.event_type)}` }}
-                onClick={() => {
-                    setExpandedId(isExpanded ? null : event.id);
-                    onEventClick(event);
-                }}
+                // Row click opens the detail modal. The ⏩ button (and the
+                // modal's "Jump to video") perform the video seek — so a click
+                // no longer silently jumps the player out from under the user.
+                onClick={() => setDetailEvent(event)}
             >
                 {/* Thumbnail + bounding-box overlay */}
                 {hasThumbnail && (
@@ -627,6 +651,189 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                     >
                         ⏩
                     </button>
+                </div>
+            </div>
+        );
+    };
+
+    // ── Detail modal ──────────────────────────────────────────────────────
+    // Clicking a row opens this. Shows the larger snapshot with the same
+    // bbox-overlay logic as the row, the full detection metadata, the source
+    // badge, the per-type detail, and the raw details JSON (collapsible). The
+    // "Jump to video" button calls the existing onEventClick seek then closes.
+    const renderDetailModal = () => {
+        const event = activeDetailEvent;
+        if (!event) return null;
+
+        const hasThumbnail = !!event.thumbnail;
+        const thumbSrc = hasThumbnail
+            ? (event.thumbnail.startsWith('data:') ? event.thumbnail : `data:image/jpeg;base64,${event.thumbnail}`)
+            : '';
+        const objClass = getObjectClass(event);
+        const ruleName = getRuleName(event);
+        const confidence = getConfidencePct(event);
+        const plate = getPlateNumber(event);
+        const detailLine = getEventDetail(event);
+        const src = event.source;
+        const isCamera = src === 'camera';
+        const isServer = src === 'server';
+        const dims = event.id ? imgDims[event.id] : undefined;
+        const boxes = getNormalizedBoxes(event, dims?.w ?? 0, dims?.h ?? 0);
+        const showBoxes = boxes.length > 0;
+
+        const rawDetails = (() => {
+            try { return JSON.stringify(event.details ?? {}, null, 2); }
+            catch { return '{}'; }
+        })();
+
+        // One labelled metadata row. Skipped (returns null) when value is empty.
+        const field = (label: string, value: ReactNode) => {
+            if (value == null || value === '') return null;
+            return (
+                <div style={{ display: 'flex', gap: 8, fontSize: 13, lineHeight: 1.5 }}>
+                    <span style={{ color: 'var(--text-muted)', minWidth: 96, flexShrink: 0 }}>{label}</span>
+                    <span style={{ color: 'var(--text-primary)', wordBreak: 'break-word' }}>{value}</span>
+                </div>
+            );
+        };
+
+        return (
+            <div
+                className="modal-overlay"
+                data-testid="event-detail-overlay"
+                onClick={() => setDetailEvent(null)}
+            >
+                <div
+                    className="modal"
+                    data-testid="event-detail-modal"
+                    onClick={e => e.stopPropagation()}
+                    style={{ maxWidth: 640, maxHeight: '90vh', overflowY: 'auto' }}
+                >
+                    {/* Header */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                        <span style={{ fontSize: 22 }}>{EVENT_ICONS[event.event_type] || EVENT_ICONS.other}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 17, fontWeight: 700, color: color(event.event_type) }}>
+                                {objClass || event.event_type}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                                {formatTime(event.event_time)} · 📷 {getCameraName(event.camera_id)}
+                            </div>
+                        </div>
+                        <button
+                            className="btn btn-sm"
+                            data-testid="event-detail-close"
+                            title="Close"
+                            onClick={() => setDetailEvent(null)}
+                        >
+                            ✕
+                        </button>
+                    </div>
+
+                    {/* Larger snapshot + bbox overlay (same logic as the row) */}
+                    {hasThumbnail ? (
+                        <div
+                            data-testid="event-detail-thumb-wrap"
+                            style={{ position: 'relative', width: '100%', borderRadius: 6, overflow: 'hidden', marginBottom: 16, background: '#080a06' }}
+                        >
+                            <img
+                                src={thumbSrc}
+                                alt="event snapshot"
+                                data-testid="event-detail-thumbnail"
+                                style={{ width: '100%', height: 'auto', display: 'block' }}
+                                onLoad={e => {
+                                    const el = e.currentTarget;
+                                    if (event.id && el.naturalWidth > 0) {
+                                        setImgDims(prev => prev[event.id]
+                                            ? prev
+                                            : { ...prev, [event.id]: { w: el.naturalWidth, h: el.naturalHeight } });
+                                    }
+                                }}
+                            />
+                            {showBoxes && boxes.map((b, bi) => {
+                                const labelInside = b.y < 0.08;
+                                return (
+                                    <div key={bi} style={{
+                                        position: 'absolute',
+                                        left: `${b.x * 100}%`, top: `${b.y * 100}%`,
+                                        width: `${b.w * 100}%`, height: `${b.h * 100}%`,
+                                        border: '2px solid #3B82F6', background: 'rgba(59,130,246,0.08)',
+                                        pointerEvents: 'none', boxSizing: 'border-box',
+                                    }}>
+                                        <div style={{
+                                            position: 'absolute',
+                                            top: labelInside ? 0 : -16, left: -2,
+                                            background: 'rgba(59,130,246,0.9)', color: '#fff',
+                                            fontSize: 10, fontWeight: 700, padding: '1px 6px',
+                                            borderRadius: labelInside ? '0 0 3px 0' : '3px 3px 0 0',
+                                            whiteSpace: 'nowrap', fontFamily: "'JetBrains Mono', monospace",
+                                        }}>
+                                            {(b.label || objClass || event.event_type).toUpperCase()}{confidence != null ? ` ${confidence}%` : ''}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <div style={{
+                            padding: 24, marginBottom: 16, borderRadius: 6, textAlign: 'center',
+                            background: 'var(--bg-tertiary)', color: 'var(--text-muted)', fontSize: 13,
+                        }}>
+                            No snapshot captured for this event.
+                        </div>
+                    )}
+
+                    {/* Source badge */}
+                    {(isCamera || isServer) && (
+                        <div style={{ marginBottom: 12 }}>
+                            <span data-testid="event-detail-source-badge" style={{
+                                fontSize: 12, fontWeight: 700, padding: '3px 9px', borderRadius: 4, letterSpacing: 0.3,
+                                background: isCamera ? 'rgba(34,197,94,0.12)' : 'rgba(0,212,255,0.12)',
+                                color: isCamera ? '#22c55e' : '#00d4ff',
+                                border: `1px solid ${isCamera ? 'rgba(34,197,94,0.35)' : 'rgba(0,212,255,0.35)'}`,
+                            }} title={isCamera ? 'Detected by the camera’s onboard VCA' : 'Detected by the server-side AI pipeline'}>
+                                {isCamera ? '📷 Camera VCA' : '🧠 Server AI'}
+                            </span>
+                        </div>
+                    )}
+
+                    {/* Metadata fields */}
+                    <div data-testid="event-detail-fields" style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 16 }}>
+                        {field('Object class', objClass)}
+                        {field('Event type', event.event_type)}
+                        {field('VCA rule', ruleName)}
+                        {field('Confidence', confidence != null ? `${confidence}%` : null)}
+                        {field('Plate', plate)}
+                        {field('Camera', getCameraName(event.camera_id))}
+                        {field('Time', formatTime(event.event_time))}
+                        {detailLine && !(event.event_type === 'lpr' && plate) ? field('Detail', detailLine) : null}
+                    </div>
+
+                    {/* Raw details payload (collapsible) */}
+                    <details style={{ marginBottom: 8 }}>
+                        <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600, marginBottom: 6 }}>
+                            Raw details
+                        </summary>
+                        <pre data-testid="event-detail-raw" style={{
+                            background: 'var(--bg-tertiary)', border: '1px solid var(--border)', borderRadius: 4,
+                            padding: 10, fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)',
+                            overflowX: 'auto', maxHeight: 220, fontFamily: "'JetBrains Mono', monospace", margin: 0,
+                        }}>
+                            {rawDetails}
+                        </pre>
+                    </details>
+
+                    {/* Actions */}
+                    <div className="modal-actions">
+                        <button className="btn" onClick={() => setDetailEvent(null)}>Close</button>
+                        <button
+                            className="btn btn-primary"
+                            data-testid="event-detail-jump"
+                            onClick={() => { onEventClick(event); setDetailEvent(null); }}
+                        >
+                            ⏩ Jump to video
+                        </button>
+                    </div>
                 </div>
             </div>
         );
@@ -816,6 +1023,9 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                     displayedEvents.map((event, i) => renderRow(event, i))
                 )}
             </div>
+
+            {/* Click-to-detail modal (snapshot + full details + jump-to-video) */}
+            {renderDetailModal()}
         </div>
     );
 }
