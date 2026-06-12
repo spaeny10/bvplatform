@@ -383,6 +383,17 @@ func (db *DB) UpdateCamera(ctx context.Context, id uuid.UUID, update CameraUpdat
 		args = append(args, *update.Username)
 		argN++
 	}
+	if update.Password != nil {
+		// B-17: encrypt the new password before storing, mirroring CreateCamera.
+		// The plaintext never reaches the SQL layer.
+		encrypted, encErr := db.encryptCred(*update.Password)
+		if encErr != nil {
+			return encErr
+		}
+		sets = append(sets, fmt.Sprintf("password = $%d", argN))
+		args = append(args, encrypted)
+		argN++
+	}
 	if update.RetentionDays != nil {
 		sets = append(sets, fmt.Sprintf("retention_days = $%d", argN))
 		args = append(args, *update.RetentionDays)

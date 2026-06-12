@@ -225,9 +225,17 @@ var probeStreamFn = recording.ProbeRTSPStream
 // video stream. It uses the existing RTSPCandidateURIs + ProbeRTSPStream
 // helpers so the NAT port-derivation and path-sweep logic lives in one place.
 //
-// Returns the working main URI (and sub URI, which may be empty if the sub
-// probe fails) and the probe error when NO main candidate passes. Callers
-// decide what to do on error — create blocks, update+autostart set offline.
+// Probe outcomes are classified by recording.ClassifyProbeError:
+//   - ProbeSuccess across any candidate → that URI is returned as the winner.
+//   - ProbeDefinitiveFailure across ALL candidates → probeErr is non-nil; the
+//     caller should block camera creation (400). These are hard rejections from
+//     the server (404, 401, Connection refused, invalid codec data) that no
+//     amount of waiting will fix.
+//   - ProbeInconclusive (all candidates timed out / were killed by context) →
+//     returns the original mainUri with probeErr == nil (optimistic allow).
+//     The B-15 status reconciler will flip the camera offline within ~60 s if
+//     it is genuinely dead, so blocking here is a false positive for slow
+//     cellular / wide-FOV cameras that simply take longer to respond.
 //
 // The onvifAddress is forwarded to RTSPCandidateURIs so the NAT-derived port
 // (ONVIF_port - 7526) is tried first in the candidate set.
@@ -238,22 +246,49 @@ func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvi
 	if len(mainCandidates) == 0 {
 		mainCandidates = []string{mainUri}
 	}
+
+	// Track the worst outcome seen so far. We sweep all candidates regardless
+	// of per-candidate outcome because a later candidate (different port/path)
+	// may succeed even if the first one is definitively wrong.
+	worstOutcome := recording.ProbeSuccess
+	var firstErr error // first candidate error, for human-readable block messages
+
 	for _, uri := range mainCandidates {
-		if err := probeStreamFn(ctx, ffmpegPath, uri); err == nil {
+		err := probeStreamFn(ctx, ffmpegPath, uri)
+		if err == nil {
 			workedMain = uri
 			break
 		}
-	}
-	if workedMain == "" {
-		// Return the probe error from the FIRST candidate (most likely the one the
-		// operator intended) so the error message is actionable, not just "the last
-		// candidate in a long list failed."
-		probeErr = probeStreamFn(ctx, ffmpegPath, mainCandidates[0])
-		if probeErr == nil {
-			// Shouldn't happen — first candidate would have matched above.
-			probeErr = fmt.Errorf("rtsp probe: no working stream found among %d candidates", len(mainCandidates))
+		outcome := recording.ClassifyProbeError(err)
+		if firstErr == nil {
+			firstErr = err
 		}
-		return "", "", probeErr
+		// Ratchet up toward the most serious outcome seen across candidates.
+		// ProbeDefinitiveFailure > ProbeInconclusive > ProbeSuccess.
+		if outcome > worstOutcome {
+			worstOutcome = outcome
+		}
+	}
+
+	if workedMain == "" {
+		// No candidate succeeded.
+		switch worstOutcome {
+		case recording.ProbeDefinitiveFailure:
+			// Every candidate either got a hard rejection or at least one did and
+			// the rest were inconclusive — block the create so the operator sees
+			// an actionable error rather than a silently-broken camera.
+			if firstErr == nil {
+				firstErr = fmt.Errorf("rtsp probe: no working stream found among %d candidates", len(mainCandidates))
+			}
+			return "", "", firstErr
+		default:
+			// All candidates timed out / were inconclusive. This is the wide/
+			// cellular camera case (B-16): the stream is probably fine but just
+			// slow. Allow the create optimistically with the original URI; the
+			// B-15 reconciler corrects the status within ~60 s if it stays dead.
+			log.Printf("[PROBE] All %d main-stream candidates inconclusive (timeout/killed) for %s — allowing create optimistically; B-15 reconciler will verify", len(mainCandidates), mainUri)
+			workedMain = mainUri
+		}
 	}
 
 	// Sub is optional: if it fails, log and proceed with empty sub.

@@ -99,6 +99,12 @@ type CameraUpdate struct {
 	RtspURI           *string `json:"rtsp_uri,omitempty"`
 	SubStreamURI      *string `json:"sub_stream_uri,omitempty"`
 	Username          *string `json:"username,omitempty"`
+	// Password is write-only: when present the value is encrypted at rest by
+	// db.UpdateCamera before it reaches the database. It is never returned in
+	// any Camera GET/list response (Camera.Password is json:"-"). This allows
+	// re-saving credentials in-place (B-17) without deleting and re-adding the
+	// camera (which would churn the UUID and break recording history).
+	Password          *string `json:"password,omitempty"`
 	RetentionDays     *int    `json:"retention_days,omitempty"`
 	Recording         *bool   `json:"recording,omitempty"`
 	RecordingMode     *string `json:"recording_mode,omitempty"`

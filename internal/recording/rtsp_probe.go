@@ -84,23 +84,34 @@ var rtspBandwidthRetryDelay = 3 * time.Second
 // ProbeRTSPStream stays readable and so unit tests can drive the
 // retry-decision path without re-running the underlying ffprobe call.
 func probeRTSPStreamOnce(ctx context.Context, ffmpegPath, uri string) error {
-	// 4 s per-probe budget keeps the candidate matrix tractable. With up
-	// to ~12 candidates per stream and 2 streams (main + sub) per camera,
-	// a 4 s ceiling caps add-camera at ~96 s worst-case; typical first-
-	// hit success is well under 2 s.
-	pctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	// 25 s per-probe budget: cellular / wide-FOV panoramic cameras (e.g.
+	// 5120×1520 on a 5G link) routinely take 10-15 s from DESCRIBE to first
+	// data. The previous 4 s ceiling killed those probes with "signal: killed",
+	// which B-16's ClassifyProbeError now correctly maps to ProbeInconclusive
+	// (not ProbeDefinitiveFailure), but a generous per-probe timeout means
+	// fast-connect cameras still confirm definitively rather than timing out.
+	// With up to ~12 candidates × 2 streams the outer 90 s caller context is
+	// still the hard cap on total add-camera latency.
+	pctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
 	// RTSP socket timeout is "-timeout <microseconds>" on ffmpeg 5.x+; the
 	// older "-stimeout" flag was removed and ffprobe rejects it outright.
 	// The wrapping context above is the real backstop — the in-process
-	// timeout just keeps unresponsive cameras from chewing the full 4 s.
+	// timeout just keeps unresponsive cameras from chewing the full 25 s.
+	// -probesize / -analyzeduration: stop analysis as soon as the first
+	// video packet arrives (one PPS/SPS is enough to identify the codec);
+	// without these ffprobe buffers up to the default 5 MB / 5 s of payload
+	// before declaring success, which on slow cellular links adds 5-10 s to
+	// every successful probe.
 	cmd := exec.CommandContext(pctx, ffprobeBin(ffmpegPath),
 		"-v", "error",
 		"-rtsp_transport", "tcp",
-		"-timeout", "3000000",
+		"-timeout", "20000000", // 20 s socket-level timeout (µs)
+		"-probesize", "32768", // 32 KB — enough for one video frame header
+		"-analyzeduration", "500000", // 0.5 s — stop after first video PTS
 		"-select_streams", "v:0",
-		"-show_entries", "stream=codec_name",
+		"-show_entries", "stream=codec_type",
 		"-of", "default=nokey=1:noprint_wrappers=1",
 		uri,
 	)
@@ -139,6 +150,78 @@ func isRTSPBandwidthExhausted(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "453")
+}
+
+// ProbeOutcome classifies the result of an RTSP stream probe into three
+// mutually exclusive buckets so callers can choose how strictly to
+// gate camera creation.
+type ProbeOutcome int
+
+const (
+	// ProbeSuccess means ffprobe identified at least one video stream.
+	ProbeSuccess ProbeOutcome = iota
+	// ProbeInconclusive means the probe was killed by context timeout or a
+	// generic connect timeout — the stream may be reachable but slow (e.g.
+	// a wide 5120-px panoramic on a cellular link). Allow creation optimistically;
+	// the B-15 status reconciler will flip the camera offline within ~60 s if
+	// it is genuinely dead.
+	ProbeInconclusive
+	// ProbeDefinitiveFailure means the stream is definitely broken: the
+	// server returned a hard error (404 / 401 / connection refused / invalid
+	// codec data) that no amount of waiting will fix. Block camera creation.
+	// This is numerically largest so a single definitive error ratchets over
+	// any number of inconclusive outcomes in ProbeAndSelectStream's sweep.
+	ProbeDefinitiveFailure
+)
+
+// definitiveFailureFragments are lowercase substrings that appear in
+// ffprobe/libavformat stderr when the server has actively refused the stream
+// in a way that retrying cannot fix. Matching is case-insensitive (the error
+// message is lowercased before comparison). These strings are deliberately
+// narrow — only hard rejections from the server or local config errors.
+var definitiveFailureFragments = []string{
+	"404",
+	"stream not found",
+	"connection refused",
+	"no route to host",
+	"401",
+	"unauthorized",
+	"invalid data",
+	"could not find codec",
+	// Local configuration error — ffmpegPath not set. This is not a network
+	// timeout; blocking is correct (the operator needs to set the path).
+	"ffmpeg path not configured",
+}
+
+// ClassifyProbeError maps a probe error to a ProbeOutcome. A nil error maps to
+// ProbeSuccess. Inconclusive covers the timeout/kill class; definitive covers
+// hard server rejections; everything else defaults to Inconclusive so the
+// reconciler handles novel error forms rather than incorrectly blocking creates.
+func ClassifyProbeError(err error) ProbeOutcome {
+	if err == nil {
+		return ProbeSuccess
+	}
+	msg := strings.ToLower(err.Error())
+
+	// context.DeadlineExceeded / context.Canceled / signal:killed from
+	// exec.CommandContext — the child was stopped by our timeout, not by
+	// a server error. Treat as inconclusive.
+	if strings.Contains(msg, "signal: killed") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "context canceled") {
+		return ProbeInconclusive
+	}
+
+	for _, frag := range definitiveFailureFragments {
+		if strings.Contains(msg, frag) {
+			return ProbeDefinitiveFailure
+		}
+	}
+
+	// Unknown error shape. Default to Inconclusive — novel transient errors
+	// should not permanently block a camera add; the reconciler will detect
+	// genuine failures within two poll cycles (~60 s).
+	return ProbeInconclusive
 }
 
 // RTSPCandidateURIs returns a prioritized list of (port, path) variants to

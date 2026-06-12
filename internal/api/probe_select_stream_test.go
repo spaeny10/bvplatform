@@ -136,3 +136,127 @@ func TestProbeAndSelectStream_EmptyFFmpegPath(t *testing.T) {
 		t.Fatal("expected error with empty ffmpegPath, got nil")
 	}
 }
+
+// ── B-16: lenient-on-inconclusive (wide/cellular cameras) ────────────────────
+
+// TestProbeAndSelectStream_AllTimeout_AllowedOptimistically: when every
+// candidate probe is killed by context timeout ("signal: killed"), the create
+// must be ALLOWED (probeErr == nil) with the original main URI, not blocked.
+// This is the wide/cellular-camera case: mediamtx is already streaming it;
+// the probe just can't reach it fast enough. The B-15 reconciler corrects the
+// status within ~60 s if the stream really is dead.
+func TestProbeAndSelectStream_AllTimeout_AllowedOptimistically(t *testing.T) {
+	killed := errors.New("ffprobe rtsp://5001.bigview.ai:554/channel1/main: signal: killed")
+	// Enough inconclusive errors to exhaust all candidates.
+	errs := make([]error, 40)
+	for i := range errs {
+		errs[i] = killed
+	}
+	installProbeStub(t, errs...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	originalURI := "rtsp://admin:pw@5001.bigview.ai:554/channel1/main"
+	gotMain, gotSub, err := ProbeAndSelectStream(
+		ctx, "/usr/bin/ffmpeg",
+		originalURI,
+		"",
+		"5001.bigview.ai:8080",
+	)
+	if err != nil {
+		t.Fatalf("B-16: all-timeout should NOT block create, got error: %v", err)
+	}
+	if gotMain == "" {
+		t.Fatal("B-16: expected non-empty main URI when all probes inconclusive")
+	}
+	if gotSub != "" {
+		t.Errorf("expected empty sub (none provided), got %q", gotSub)
+	}
+}
+
+// TestProbeAndSelectStream_MixedDefinitiveAndTimeout_Blocks: when at least one
+// candidate returns a definitive failure AND the rest are inconclusive (timeout),
+// the create MUST be blocked. Definitive beats inconclusive.
+func TestProbeAndSelectStream_MixedDefinitiveAndTimeout_Blocks(t *testing.T) {
+	// The matrix for a standard URI typically starts with the convention-derived
+	// port (which we make time out) then the original path (which returns 404).
+	errs := []error{
+		errors.New("ffprobe rtsp://...: signal: killed"),                // inconclusive
+		errors.New("method DESCRIBE failed: 404 Stream Not Found"),       // definitive
+	}
+	// Pad the rest with timeouts to simulate more inconclusive candidates.
+	for i := 0; i < 30; i++ {
+		errs = append(errs, errors.New("signal: killed"))
+	}
+	installProbeStub(t, errs...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gotMain, gotSub, err := ProbeAndSelectStream(
+		ctx, "/usr/bin/ffmpeg",
+		"rtsp://admin:pw@5001.bigview.ai:554/channel1/main",
+		"",
+		"5001.bigview.ai:8080",
+	)
+	if err == nil {
+		t.Fatal("B-16: mixed definitive+inconclusive should BLOCK create, got nil error")
+	}
+	if gotMain != "" || gotSub != "" {
+		t.Errorf("expected empty URIs on block, got main=%q sub=%q", gotMain, gotSub)
+	}
+}
+
+// TestProbeAndSelectStream_ContextDeadline_AllowedOptimistically: context
+// deadline exceeded is another form of inconclusive — same allow-optimistically
+// behavior as signal:killed (the B-16 regression used signal:killed, but
+// context.DeadlineExceeded produces the same class).
+func TestProbeAndSelectStream_ContextDeadline_AllowedOptimistically(t *testing.T) {
+	deadline := errors.New("ffprobe rtsp://...: context deadline exceeded")
+	errs := make([]error, 40)
+	for i := range errs {
+		errs[i] = deadline
+	}
+	installProbeStub(t, errs...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, err := ProbeAndSelectStream(
+		ctx, "/usr/bin/ffmpeg",
+		"rtsp://admin:pw@5001.bigview.ai:554/channel1/main",
+		"",
+		"5001.bigview.ai:8080",
+	)
+	if err != nil {
+		t.Fatalf("B-16: all-deadline-exceeded should NOT block create, got error: %v", err)
+	}
+}
+
+// TestProbeAndSelectStream_DefinitiveAllFail_Blocks: connection refused across
+// all candidates must still block create (hard error, not slow).
+func TestProbeAndSelectStream_DefinitiveAllFail_Blocks(t *testing.T) {
+	connRefused := errors.New("connection refused")
+	errs := make([]error, 40)
+	for i := range errs {
+		errs[i] = connRefused
+	}
+	installProbeStub(t, errs...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	gotMain, _, err := ProbeAndSelectStream(
+		ctx, "/usr/bin/ffmpeg",
+		"rtsp://admin:pw@527.bigview.ai:554/main",
+		"",
+		"527.bigview.ai:8082",
+	)
+	if err == nil {
+		t.Fatal("B-16: all-connection-refused should BLOCK create, got nil error")
+	}
+	if gotMain != "" {
+		t.Errorf("expected empty main URI on block, got %q", gotMain)
+	}
+}
