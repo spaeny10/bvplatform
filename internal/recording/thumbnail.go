@@ -131,6 +131,40 @@ func ExtractFrameFromSegmentBytes(ffmpegPath, segmentPath string, offsetSec floa
 	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
+// captureSegmentFrameClamped extracts a JPEG data URI from a recording segment,
+// defending against the two failure modes seen on real recorder output:
+//
+//   - Seek PAST end-of-file. FindEventClipFull derives the segment start from the
+//     filename timestamp, but FFmpeg restarts (cellular packet loss) produce
+//     SHORT segments — a 24s file labeled :00 whose nominal 60s window an event
+//     at +34s falls into. Seeking to +34s in a 24s file makes ffmpeg emit zero
+//     bytes (exit 0, no frame). We ffprobe the real duration and clamp the
+//     offset to [0, dur-0.5] before seeking.
+//   - Still-OPEN segment. The recorder writes plain (non-fragmented) MP4 whose
+//     moov atom is only written on close, so the newest file is unreadable
+//     ("moov atom not found", exit 1) until it rotates. The duration probe fails
+//     on such a file, which the caller treats as "skip this segment".
+//
+// Returns an error (so the caller can fall through to the next segment / RTSP
+// fallback) if the segment is unreadable or yields no frame.
+func captureSegmentFrameClamped(ffmpegPath, segmentPath string, offsetSec float64) (string, error) {
+	// Probe the real duration. A probe failure means the file is open/truncated
+	// (moov atom missing) — unreadable for a frame grab; bail so the caller can
+	// pick another segment or fall back to RTSP.
+	dur, derr := ProbeVideoDuration(ffmpegPath, segmentPath)
+	if derr != nil {
+		return "", fmt.Errorf("segment unreadable (likely still open): %w", derr)
+	}
+	if offsetSec < 0 {
+		offsetSec = 0
+	}
+	// Clamp into the file. Leave a 0.5s tail so we never land exactly on EOF.
+	if dur > 0.5 && offsetSec > dur-0.5 {
+		offsetSec = dur - 0.5
+	}
+	return ExtractFrameFromSegmentBytes(ffmpegPath, segmentPath, offsetSec)
+}
+
 // CaptureEventThumbnail produces a base64 JPEG data URI for an event by reading
 // the LOCAL recording segment that covers eventTime — a reliable, network-free
 // seek that works even when the live RTSP stream is slow (cellular trailers) or
@@ -156,7 +190,7 @@ func CaptureEventThumbnail(ffmpegPath, storagePath, cameraID string, eventTime t
 	if segHintPath != "" {
 		if _, statErr := os.Stat(segHintPath); statErr == nil {
 			offset := eventTime.Sub(segHintStart).Seconds()
-			if uri, gErr := ExtractFrameFromSegmentBytes(ffmpegPath, segHintPath, offset); gErr == nil {
+			if uri, gErr := captureSegmentFrameClamped(ffmpegPath, segHintPath, offset); gErr == nil {
 				return uri, "segment-hint", nil
 			} else {
 				log.Printf("[THUMB] segment-hint seek failed (%s @ %.1fs): %v — trying disk scan", filepath.Base(segHintPath), offset, gErr)
@@ -164,16 +198,21 @@ func CaptureEventThumbnail(ffmpegPath, storagePath, cameraID string, eventTime t
 		}
 	}
 
-	// 2) Filesystem scan for the covering (or closest) segment.
+	// 2) Filesystem scan: try the best-fit segment, then fall back to closer
+	//    neighbors. The duration-clamped extractor handles short segments
+	//    (offset past EOF) and skips the still-open newest file (unreadable
+	//    plain MP4 — moov atom written only on close).
 	if storagePath != "" {
-		absPath, _, segStart := FindEventClipFull(storagePath, cameraID, eventTime)
-		if absPath != "" {
-			offset := eventTime.Sub(segStart).Seconds()
-			if uri, gErr := ExtractFrameFromSegmentBytes(ffmpegPath, absPath, offset); gErr == nil {
+		candidates := FindEventClipCandidates(storagePath, cameraID, eventTime, 4)
+		for _, c := range candidates {
+			if uri, gErr := captureSegmentFrameClamped(ffmpegPath, c.AbsPath, c.OffsetSec); gErr == nil {
 				return uri, "segment", nil
 			} else {
-				log.Printf("[THUMB] segment seek failed (%s @ %.1fs): %v — falling back to RTSP sub", filepath.Base(absPath), offset, gErr)
+				log.Printf("[THUMB] segment seek failed (%s @ %.1fs): %v", filepath.Base(c.AbsPath), c.OffsetSec, gErr)
 			}
+		}
+		if len(candidates) > 0 {
+			log.Printf("[THUMB] all %d local segment candidates failed for camera %s — falling back to RTSP sub", len(candidates), cameraID)
 		}
 	}
 
