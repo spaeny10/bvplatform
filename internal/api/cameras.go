@@ -215,6 +215,11 @@ func HandleGetCamera(db *database.DB) http.HandlerFunc {
 	}
 }
 
+// probeStreamFn is the single-call RTSP probe used by ProbeAndSelectStream.
+// Defaults to recording.ProbeRTSPStream; tests replace it to drive the
+// candidate-selection logic without invoking ffprobe.
+var probeStreamFn = recording.ProbeRTSPStream
+
 // ProbeAndSelectStream probes the candidate (port, path) matrix for mainUri
 // and optionally subUri, returning the first URIs that successfully serve a
 // video stream. It uses the existing RTSPCandidateURIs + ProbeRTSPStream
@@ -234,7 +239,7 @@ func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvi
 		mainCandidates = []string{mainUri}
 	}
 	for _, uri := range mainCandidates {
-		if err := recording.ProbeRTSPStream(ctx, ffmpegPath, uri); err == nil {
+		if err := probeStreamFn(ctx, ffmpegPath, uri); err == nil {
 			workedMain = uri
 			break
 		}
@@ -243,7 +248,7 @@ func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvi
 		// Return the probe error from the FIRST candidate (most likely the one the
 		// operator intended) so the error message is actionable, not just "the last
 		// candidate in a long list failed."
-		probeErr = recording.ProbeRTSPStream(ctx, ffmpegPath, mainCandidates[0])
+		probeErr = probeStreamFn(ctx, ffmpegPath, mainCandidates[0])
 		if probeErr == nil {
 			// Shouldn't happen — first candidate would have matched above.
 			probeErr = fmt.Errorf("rtsp probe: no working stream found among %d candidates", len(mainCandidates))
@@ -258,7 +263,7 @@ func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvi
 			subCandidates = []string{subUri}
 		}
 		for _, uri := range subCandidates {
-			if err := recording.ProbeRTSPStream(ctx, ffmpegPath, uri); err == nil {
+			if err := probeStreamFn(ctx, ffmpegPath, uri); err == nil {
 				workedSub = uri
 				break
 			}
