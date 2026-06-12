@@ -68,6 +68,13 @@ type Camera struct {
 	SenseWebhookToken string     `json:"sense_webhook_token,omitempty"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
+	// LastStreamError holds the ffprobe error from the most recent failed
+	// RTSP stream probe. Empty/nil when the last probe succeeded or no
+	// probe has been run yet. Surfaced in the API response so the UI can
+	// show WHY a camera is offline rather than just that it is.
+	// (B-13 / B-14: written by probeAndSelectStream in internal/api/cameras.go)
+	LastStreamError string `json:"last_stream_error,omitempty"`
+
 	// DeletedAt is set by SoftDeleteCamera; nil means the camera is live.
 	// Exposed in JSON so admin include_deleted responses surface the timestamp.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
