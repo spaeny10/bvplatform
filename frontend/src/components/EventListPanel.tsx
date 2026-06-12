@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { Camera, Event, queryEvents } from '@/lib/api';
 
@@ -282,6 +283,11 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [detailEvent]);
+    // Clear any open detail modal when the panel itself is closed, so a stale
+    // modal doesn't re-appear the next time the panel is opened.
+    useEffect(() => {
+        if (!open) setDetailEvent(null);
+    }, [open]);
     // Per-thumbnail natural size, keyed by event id — lets pixel-space bbox
     // coords normalize against the actual image when frame dims aren't in details.
     const [imgDims, setImgDims] = useState<Record<number, { w: number; h: number }>>({});
@@ -697,7 +703,13 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
             );
         };
 
-        return (
+        // Portal to <body> so the fixed-position overlay escapes the
+        // event-list-panel, which is itself position:fixed + transform —
+        // a transformed ancestor becomes the containing block for fixed
+        // descendants, which would otherwise clamp this modal to the
+        // ~340px feed column instead of the viewport.
+        if (typeof document === 'undefined') return null;
+        return createPortal(
             <div
                 className="modal-overlay"
                 data-testid="event-detail-overlay"
@@ -835,7 +847,8 @@ export default function EventListPanel({ cameras, open, onClose, onEventClick, l
                         </button>
                     </div>
                 </div>
-            </div>
+            </div>,
+            document.body,
         );
     };
 

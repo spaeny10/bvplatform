@@ -155,6 +155,13 @@ func captureSegmentFrameClamped(ffmpegPath, segmentPath string, offsetSec float6
 	if derr != nil {
 		return "", fmt.Errorf("segment unreadable (likely still open): %w", derr)
 	}
+	// A (0, nil) probe is just as unusable as an error: without a real
+	// duration the clamp below can't bound the offset, so a stale offset would
+	// seek past EOF and ffmpeg returns exit-0-with-no-frame. Treat it as
+	// unreadable so the caller falls back to another segment / RTSP.
+	if dur <= 0 {
+		return "", fmt.Errorf("segment reported non-positive duration (%.3fs); treating as unreadable", dur)
+	}
 	if offsetSec < 0 {
 		offsetSec = 0
 	}

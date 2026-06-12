@@ -449,7 +449,14 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 				EventType: eventType,
 				Details:   details,
 			}
-			db.InsertEvent(context.Background(), evt)
+			if err := db.InsertEvent(context.Background(), evt); err != nil {
+				// Don't broadcast a phantom event with id:0 — the frontend
+				// could never match the async thumbnail patch to it, and an
+				// event that failed to persist shouldn't appear live as if it
+				// succeeded. Log and drop.
+				log.Printf("[EVENT] runtime camera %s: InsertEvent failed, dropping live broadcast: %v", cameraID, err)
+				return
+			}
 
 			// Broadcast the live event. CRITICAL: include the generated event
 			// id (populated by InsertEvent) so the frontend row can later be
