@@ -692,6 +692,15 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 		StartCameraEventSource(context.Background(), cam, subscriber, subReg, "API")
 
 		log.Printf("[API] Camera created and started: %s (%s)", cam.Name, cam.ID)
+
+		// Auto-import camera-side VCA zones so the live overlay shows them
+		// without the operator having to trigger a manual sync-zones call.
+		// Fire-and-forget: the camera create succeeds regardless. Only runs
+		// for Milesight cameras whose operator.cgi VCA API is supported.
+		if isMilesightCamera(cam) {
+			TrySyncCameraVCAZones(db, cam.ID, cam.OnvifAddress, cam.Username, cam.Password, cam.Name)
+		}
+
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, cam)
 	}

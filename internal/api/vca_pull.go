@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -374,9 +375,9 @@ func lineCrossDirection(d int) string {
 	case 0:
 		return "both"
 	case 1:
-		return "a_to_b"
+		return "left_to_right"
 	case 2:
-		return "b_to_a"
+		return "right_to_left"
 	default:
 		return "both"
 	}
@@ -470,4 +471,101 @@ func applyCameraVCAToDB(ctx context.Context, db *database.DB, camID uuid.UUID, r
 		})
 	}
 	return db.ReplaceVCARules(ctx, camID, creates)
+}
+
+// HandleSyncZones imports the camera's current VCA zone configuration
+// into vca_rules so the live overlay picks them up immediately.
+//
+// It mirrors POST /api/cameras/{id}/vca/pull?apply=1 but as a dedicated
+// named endpoint that operators can invoke from the camera card without
+// opening the full VCA editor. Required role: admin or soc_supervisor.
+//
+// POST /api/cameras/{id}/sync-zones
+func HandleSyncZones(db *database.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims := claimsFromRequest(r)
+		if claims == nil {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if claims.Role != "admin" && claims.Role != "soc_supervisor" {
+			http.Error(w, "forbidden: admin or supervisor required", http.StatusForbidden)
+			return
+		}
+
+		camID, err := uuid.Parse(chi.URLParam(r, "id"))
+		if err != nil {
+			http.Error(w, "invalid camera id", http.StatusBadRequest)
+			return
+		}
+		cam, err := db.GetCamera(r.Context(), camID)
+		if err != nil {
+			http.Error(w, "camera not found", http.StatusNotFound)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		client := onvif.NewClient(cam.OnvifAddress, cam.Username, cam.Password)
+		rules, err := pullCameraVCA(ctx, client, camID)
+		if err != nil {
+			log.Printf("[VCA] sync-zones fetch failed for %s (%s): %v", cam.Name, cam.OnvifAddress, err)
+			http.Error(w, "failed to read VCA config from camera: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		if err := applyCameraVCAToDB(r.Context(), db, camID, rules); err != nil {
+			http.Error(w, "failed to save zones to DB: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		log.Printf("[VCA] sync-zones imported %d rules for camera %s", len(rules), cam.Name)
+
+		// Return a summary so the frontend can update its rule list without a
+		// separate GET /vca/rules round trip.
+		type ruleInfo struct {
+			RuleType   string `json:"rule_type"`
+			Name       string `json:"name"`
+			Enabled    bool   `json:"enabled"`
+			PointCount int    `json:"point_count"`
+		}
+		summary := make([]ruleInfo, 0, len(rules))
+		for _, r := range rules {
+			summary = append(summary, ruleInfo{
+				RuleType:   r.RuleType,
+				Name:       r.Name,
+				Enabled:    r.Enabled,
+				PointCount: len(r.Region),
+			})
+		}
+		writeJSON(w, map[string]interface{}{
+			"camera_id": camID,
+			"imported":  len(rules),
+			"rules":     summary,
+		})
+	}
+}
+
+// TrySyncCameraVCAZones fires-and-forgets a VCA zone import for a camera.
+// Safe to call from HandleCreateCamera on Milesight devices — failures are
+// logged but don't fail the camera-create response. The goroutine is short
+// (≤20 s) and uses a background context so the HTTP request can return
+// while the sync is in flight.
+func TrySyncCameraVCAZones(db *database.DB, camID uuid.UUID, onvifAddress, username, password, camName string) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		client := onvif.NewClient(onvifAddress, username, password)
+		rules, err := pullCameraVCA(ctx, client, camID)
+		if err != nil {
+			log.Printf("[VCA] auto-import failed for new camera %s (%s): %v", camName, onvifAddress, err)
+			return
+		}
+		if err := applyCameraVCAToDB(ctx, db, camID, rules); err != nil {
+			log.Printf("[VCA] auto-import DB write failed for %s: %v", camName, err)
+			return
+		}
+		log.Printf("[VCA] auto-import: imported %d zones for new camera %s", len(rules), camName)
+	}()
 }
