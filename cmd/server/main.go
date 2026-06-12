@@ -521,15 +521,36 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 			continue
 		}
 
-		// Connect to camera via ONVIF to verify
+		// Connect to camera via ONVIF to verify reachability.
 		client := onvif.NewClient(cam.OnvifAddress, cam.Username, cam.Password)
 		if _, err := client.Connect(ctx); err != nil {
-			log.Printf("[STARTUP] Camera %s offline: %v", cam.Name, err)
+			log.Printf("[STARTUP] Camera %s offline (ONVIF connect failed): %v", cam.Name, err)
 			db.UpdateCameraStatus(ctx, cam.ID, "offline")
 			continue
 		}
 
-		db.UpdateCameraStatus(ctx, cam.ID, "online")
+		// B-13 / B-14: probe the RTSP stream at boot. On failure, mark offline
+		// and record last_stream_error — do NOT block startup (other cameras
+		// should still start). On success, store any corrected URI and mark online.
+		if cfg.FFmpegPath != "" {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 90*time.Second)
+			probedMain, probedSub, probeErr := api.ProbeAndSelectStream(
+				probeCtx, cfg.FFmpegPath, cam.RTSPUri, cam.SubStreamUri, cam.OnvifAddress)
+			probeCancel()
+			if probeErr != nil {
+				log.Printf("[STARTUP] Camera %s stream probe failed — marked offline: %v", cam.Name, probeErr)
+				db.UpdateCameraStreamError(ctx, cam.ID, probeErr.Error())
+				continue
+			}
+			// If the probe found a better URI (e.g., corrected NAT port), store it.
+			if probedMain != cam.RTSPUri || probedSub != cam.SubStreamUri {
+				log.Printf("[STARTUP] Camera %s: stream URI corrected by probe (%s → %s)", cam.Name, cam.RTSPUri, probedMain)
+				cam.RTSPUri = probedMain
+				cam.SubStreamUri = probedSub
+				db.UpdateCameraRTSP(ctx, cam.ID, probedMain, probedSub, cam.ProfileToken, cam.Manufacturer, cam.Model, cam.Firmware)
+			}
+		}
+		db.ClearCameraStreamError(ctx, cam.ID)
 
 		// Only start recording/HLS if storage is configured
 		if cfg.StoragePath != "" {

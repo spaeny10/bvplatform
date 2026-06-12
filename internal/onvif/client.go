@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -611,11 +612,34 @@ func (c *Client) GetStreamURI(ctx context.Context, profileToken string) (string,
 	return uri, nil
 }
 
-// rewriteStreamHost swaps the host portion of an RTSP URI with the host
-// we connected to via XAddr, but only when the advertised host is a
-// private IP and ours is not. That's the NAT-traversal scenario; in any
-// other case (already-routable host, both private, parse failure) we
-// return the URI untouched.
+// rewriteStreamHost swaps the host (and, in the NAT case, the port) of an
+// RTSP URI so that it uses the publicly-reachable address we actually
+// connected to via XAddr.
+//
+// This is only active when the advertised host is a private IP and the
+// connect host is not — i.e., classic NAT traversal. On-LAN deployments
+// where both addresses are private are unaffected.
+//
+// B-14 port fix: BigView security trailers map multiple cameras through
+// sequential ONVIF ports (8080, 8081, 8082, …) and sequential RTSP ports
+// (554, 555, 556, …). A camera behind ONVIF :8081 should be reached on
+// RTSP :555, not :554. The camera's firmware reports its internal LAN port
+// (always :554) in GetStreamURI; blindly preserving that port collapses
+// every camera in the trailer to :554 — whichever one happens to be
+// mapped there wins, the rest 404.
+//
+// The fix: in NAT mode, derive the RTSP port from the ONVIF port using
+// the BigView convention (RTSP_port = 554 + (ONVIF_port - 8080) = ONVIF_port - 7526)
+// when the ONVIF address carries a non-zero port. This is the same formula
+// used by RTSPCandidateURIs to build the probe-first candidate; having
+// rewriteStreamHost emit it means the ONVIF-reported URI is already correct
+// before the probe sweeps start, so the first candidate typically wins.
+//
+// Non-NAT and LAN deployments: the "onvif port to rtsp port" formula only
+// fires when onvifPort > 0 AND the derived port is a valid candidate
+// (1–65535). On a direct-LAN deployment onvifPort is typically 80 or 0;
+// the formula would produce port -7446 or 0 which is out of range, so we
+// fall back to the advertised port — preserving the existing LAN behavior.
 func (c *Client) rewriteStreamHost(uri string) string {
 	if uri == "" {
 		return uri
@@ -632,24 +656,54 @@ func (c *Client) rewriteStreamHost(uri string) string {
 		return uri
 	}
 
-	// Splice in the connect host. Preserve the advertised port — cameras
-	// often run RTSP on a non-554 port that isn't our HTTP port; we
-	// trust their port assertion since it survives NAT mapping.
+	// Derive the external RTSP port from the ONVIF connect port when the
+	// convention applies: ONVIF 8080+N → RTSP 554+N (offset 7526).
+	// Only apply when the result falls in the valid port range — this
+	// guards LAN deployments where ONVIF is on port 80 (80 - 7526 = -7446).
+	targetPort := advertisedPort
+	onvifPort := portFromAddr(c.XAddr)
+	if onvifPort > 0 {
+		derived := onvifPort - 7526
+		if derived >= 1 && derived <= 65535 {
+			targetPort = fmt.Sprintf("%d", derived)
+			log.Printf("[ONVIF] NAT port derivation: ONVIF :%d → RTSP :%s", onvifPort, targetPort)
+		}
+	}
+
 	rebuilt := strings.Replace(uri,
 		"rtsp://"+advertisedHost+":"+advertisedPort,
-		"rtsp://"+connectHost+":"+advertisedPort,
+		"rtsp://"+connectHost+":"+targetPort,
 		1,
 	)
 	if rebuilt == uri {
-		// No port present in original — try the bare host form.
+		// Advertised URI had no port — splice host and append derived port.
 		rebuilt = strings.Replace(uri,
 			"rtsp://"+advertisedHost,
-			"rtsp://"+connectHost,
+			"rtsp://"+connectHost+":"+targetPort,
 			1,
 		)
 	}
-	log.Printf("[ONVIF] NAT rewrite: stream host %s -> %s", advertisedHost, connectHost)
+	log.Printf("[ONVIF] NAT rewrite: stream %s:%s -> %s:%s", advertisedHost, advertisedPort, connectHost, targetPort)
 	return rebuilt
+}
+
+// portFromAddr extracts the port from a URL like "http://host:8081/onvif/…".
+// Returns 0 when the port is absent or unparseable.
+func portFromAddr(addr string) int {
+	s := addr
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	// Strip path.
+	if slash := strings.Index(s, "/"); slash >= 0 {
+		s = s[:slash]
+	}
+	if _, p, err := net.SplitHostPort(s); err == nil {
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // splitHostPort extracts the host and port from an RTSP URI, defaulting
