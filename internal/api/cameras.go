@@ -429,12 +429,16 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 		// Semaphore to bound concurrent thumbnail captures for this camera —
 		// mirrors the boot-time autoStartCameras path in cmd/server/main.go.
 		thumbSem := make(chan struct{}, 3)
-		// Capture the RTSP URI + ffmpeg path now; the subscriber closure runs
-		// for the camera's whole lifetime, long after this request returns.
+		// Capture the RTSP URI + sub-stream + ffmpeg path + storage path now;
+		// the subscriber closure runs for the camera's whole lifetime, long
+		// after this request returns.
 		camRTSPUri := cam.RTSPUri
+		camSubStreamUri := cam.SubStreamUri
 		ffmpegPath := ""
+		storagePath := ""
 		if cfg != nil {
 			ffmpegPath = cfg.FFmpegPath
+			storagePath = cfg.StoragePath
 		}
 
 		// Start event subscription and register for cleanup on camera delete
@@ -475,6 +479,8 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 			// the boot-time autoStartCameras path in cmd/server/main.go.
 			if camRTSPUri != "" && evt.ID != 0 {
 				eventID := evt.ID
+				eventTime := evt.EventTime
+				camIDStr := cameraID.String()
 				select {
 				case thumbSem <- struct{}{}:
 					go func() {
@@ -484,7 +490,13 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 								log.Printf("[THUMB] PANIC in thumbnail goroutine for event %d: %v", eventID, rec)
 							}
 						}()
-						thumb, err := recording.CaptureFrame(ffmpegPath, camRTSPUri, 3)
+						// Primary: read the LOCAL recording segment covering the
+						// event (no network). Fallback: RTSP SUB-stream grab on a
+						// recording gap. Shared with the boot-time path via
+						// recording.CaptureEventThumbnail.
+						thumb, via, err := recording.CaptureEventThumbnail(
+							ffmpegPath, storagePath, camIDStr, eventTime,
+							"", time.Time{}, camSubStreamUri, 12)
 						if err != nil {
 							log.Printf("[THUMB] Failed to capture thumbnail for event %d: %v", eventID, err)
 							return
@@ -495,12 +507,12 @@ func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recordin
 							log.Printf("[THUMB] Failed to store thumbnail for event %d: %v", eventID, err)
 							return
 						}
-						log.Printf("[THUMB] Captured thumbnail for event %d (camera %s)", eventID, cameraID.String())
+						log.Printf("[THUMB] Captured thumbnail for event %d (camera %s) via %s", eventID, camIDStr, via)
 
 						thumbMsg, _ := json.Marshal(map[string]interface{}{
 							"type":      "event_thumbnail",
 							"event_id":  eventID,
-							"camera_id": cameraID.String(),
+							"camera_id": camIDStr,
 							"thumbnail": thumb,
 						})
 						hub.Broadcast(thumbMsg)
