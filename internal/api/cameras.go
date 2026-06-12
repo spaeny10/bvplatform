@@ -280,7 +280,11 @@ func ProbeAndSelectStream(ctx context.Context, ffmpegPath, mainUri, subUri, onvi
 // camera rows carry device credentials and the onvif_address the
 // web-UI proxy dials (F-14: same gate as reboot/Milesight config; a
 // viewer or customer account must not be able to register devices).
-func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *Hub, subReg *SubscriberRegistry, ffmpegPath string) http.HandlerFunc {
+// Takes both cfg (the runtime-add thumbnail path needs cfg.StoragePath +
+// cfg.FFmpegPath) and ffmpegPath (#81's create-time RTSP stream probe) — same
+// ffmpeg binary, but keeping both params means neither the snapshot-feed nor
+// the onboarding-probe code path needs reworking after this merge.
+func HandleCreateCamera(cfg *config.Config, db *database.DB, recEngine *recording.Engine, hlsServer *streaming.HLSServer, mtxServer *streaming.MediaMTXServer, hub *Hub, subReg *SubscriberRegistry, ffmpegPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := claimsFromRequest(r)
 		if claims == nil {
@@ -509,6 +513,21 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 			ensureCancel()
 		}
 
+		// Semaphore to bound concurrent thumbnail captures for this camera —
+		// mirrors the boot-time autoStartCameras path in cmd/server/main.go.
+		thumbSem := make(chan struct{}, 3)
+		// Capture the RTSP URI + sub-stream + ffmpeg path + storage path now;
+		// the subscriber closure runs for the camera's whole lifetime, long
+		// after this request returns.
+		camRTSPUri := cam.RTSPUri
+		camSubStreamUri := cam.SubStreamUri
+		ffmpegPath := ""
+		storagePath := ""
+		if cfg != nil {
+			ffmpegPath = cfg.FFmpegPath
+			storagePath = cfg.StoragePath
+		}
+
 		// Start event subscription and register for cleanup on camera delete
 		subscriber := onvif.NewEventSubscriber(client, cam.ID, func(cameraID uuid.UUID, eventType string, details map[string]interface{}) {
 			evt := &database.Event{
@@ -517,17 +536,85 @@ func HandleCreateCamera(db *database.DB, recEngine *recording.Engine, hlsServer 
 				EventType: eventType,
 				Details:   details,
 			}
-			db.InsertEvent(context.Background(), evt)
+			if err := db.InsertEvent(context.Background(), evt); err != nil {
+				// Don't broadcast a phantom event with id:0 — the frontend
+				// could never match the async thumbnail patch to it, and an
+				// event that failed to persist shouldn't appear live as if it
+				// succeeded. Log and drop.
+				log.Printf("[EVENT] runtime camera %s: InsertEvent failed, dropping live broadcast: %v", cameraID, err)
+				return
+			}
 
+			// Broadcast the live event. CRITICAL: include the generated event
+			// id (populated by InsertEvent) so the frontend row can later be
+			// patched by the async "event_thumbnail" message below — without an
+			// id the patch can never match and the live row stays snapshot-less
+			// forever. Also send event_type/event_time explicitly to match the
+			// boot-time path's payload shape (the frontend normalizes either).
 			wsMsg, _ := json.Marshal(map[string]interface{}{
-				"type":      "event",
-				"camera_id": cameraID.String(),
-				"event":     eventType,
-				"details":   details,
-				"source":    DetectionSource(details),
-				"time":      time.Now().Format(time.RFC3339),
+				"type":       "event",
+				"id":         evt.ID,
+				"camera_id":  cameraID.String(),
+				"event":      eventType,
+				"event_type": eventType,
+				"event_time": evt.EventTime.Format(time.RFC3339),
+				"details":    details,
+				"source":     DetectionSource(details),
+				"time":       time.Now().Format(time.RFC3339),
 			})
 			hub.Broadcast(wsMsg)
+
+			// Async thumbnail capture via FFmpeg (bounded by semaphore). The
+			// live "event" broadcast above carries no thumbnail (the grab takes
+			// a few seconds); once captured we persist it and broadcast an
+			// "event_thumbnail" patch the frontend applies to the matching row.
+			// Without this, runtime-added cameras never showed a snapshot in the
+			// live feed — only a later REST refetch could backfill it. Mirrors
+			// the boot-time autoStartCameras path in cmd/server/main.go.
+			if camRTSPUri != "" && evt.ID != 0 {
+				eventID := evt.ID
+				eventTime := evt.EventTime
+				camIDStr := cameraID.String()
+				select {
+				case thumbSem <- struct{}{}:
+					go func() {
+						defer func() { <-thumbSem }()
+						defer func() {
+							if rec := recover(); rec != nil {
+								log.Printf("[THUMB] PANIC in thumbnail goroutine for event %d: %v", eventID, rec)
+							}
+						}()
+						// Primary: read the LOCAL recording segment covering the
+						// event (no network). Fallback: RTSP SUB-stream grab on a
+						// recording gap. Shared with the boot-time path via
+						// recording.CaptureEventThumbnail.
+						thumb, via, err := recording.CaptureEventThumbnail(
+							ffmpegPath, storagePath, camIDStr, eventTime,
+							"", time.Time{}, camSubStreamUri, 12)
+						if err != nil {
+							log.Printf("[THUMB] Failed to capture thumbnail for event %d: %v", eventID, err)
+							return
+						}
+						thumbCtx, thumbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer thumbCancel()
+						if err := db.UpdateEventThumbnail(thumbCtx, eventID, thumb); err != nil {
+							log.Printf("[THUMB] Failed to store thumbnail for event %d: %v", eventID, err)
+							return
+						}
+						log.Printf("[THUMB] Captured thumbnail for event %d (camera %s) via %s", eventID, camIDStr, via)
+
+						thumbMsg, _ := json.Marshal(map[string]interface{}{
+							"type":      "event_thumbnail",
+							"event_id":  eventID,
+							"camera_id": camIDStr,
+							"thumbnail": thumb,
+						})
+						hub.Broadcast(thumbMsg)
+					}()
+				default:
+					// Skip thumbnail — too many captures in flight.
+				}
+			}
 
 			// ── Generate SOC alarm for VCA/AI events on site-assigned cameras ──
 			alarmTypes := map[string]bool{

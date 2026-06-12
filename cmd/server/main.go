@@ -1054,10 +1054,20 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 					}()
 				}
 
-				// Async thumbnail capture via FFmpeg (bounded by semaphore)
+				// Async thumbnail capture (bounded by semaphore). Primary path
+				// reads the LOCAL recording segment covering event_time — a
+				// network-free ffmpeg seek that works even when the live RTSP
+				// is slow (cellular trailers) or the HEVC main stream chokes a
+				// fresh grab. Falls back to an RTSP SUB-stream grab only on a
+				// recording gap. Shared with the runtime camera-add path via
+				// recording.CaptureEventThumbnail.
 				if cam.RTSPUri != "" {
 					eventID := evt.ID
-					rtspUri := cam.RTSPUri
+					eventTime := evt.EventTime
+					camIDStr := cameraID.String()
+					subStreamUri := cam.SubStreamUri
+					storagePath := cfg.StoragePath
+					ffmpegPath := cfg.FFmpegPath
 					// Try to acquire semaphore slot; skip thumbnail if too many in-flight
 					select {
 					case thumbSem <- struct{}{}:
@@ -1068,7 +1078,9 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 									log.Printf("[THUMB] PANIC in thumbnail goroutine for event %d: %v", eventID, rec)
 								}
 							}()
-							thumb, err := recording.CaptureFrame(cfg.FFmpegPath, rtspUri, 3)
+							thumb, via, err := recording.CaptureEventThumbnail(
+								ffmpegPath, storagePath, camIDStr, eventTime,
+								"", time.Time{}, subStreamUri, 12)
 							if err != nil {
 								log.Printf("[THUMB] Failed to capture thumbnail for event %d: %v", eventID, err)
 								return
@@ -1079,13 +1091,13 @@ func autoStartCameras(ctx context.Context, db *database.DB, cfg *config.Config, 
 								log.Printf("[THUMB] Failed to store thumbnail for event %d: %v", eventID, err)
 								return
 							}
-							log.Printf("[THUMB] Captured thumbnail for event %d (camera %s)", eventID, cameraID.String())
+							log.Printf("[THUMB] Captured thumbnail for event %d (camera %s) via %s", eventID, camIDStr, via)
 
 							// Broadcast thumbnail update so frontend can patch it in
 							thumbMsg, _ := json.Marshal(map[string]interface{}{
 								"type":      "event_thumbnail",
 								"event_id":  eventID,
-								"camera_id": cameraID.String(),
+								"camera_id": camIDStr,
 								"thumbnail": thumb,
 							})
 							hub.Broadcast(thumbMsg)

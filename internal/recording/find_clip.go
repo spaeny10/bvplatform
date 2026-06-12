@@ -189,6 +189,60 @@ func FindEventClipFull(storagePath, cameraID string, eventTime time.Time) (absPa
 	return best.absPath, relURL(storagePath, cameraID, best.absPath), best.startTime
 }
 
+// SegmentCandidate is an on-disk recording segment paired with the seek offset
+// (event_time - segment_start) to reach the event moment inside it. Used by the
+// thumbnail capture to try the best-fit segment first and fall back to the next
+// when one is unreadable (e.g. the still-open newest file).
+type SegmentCandidate struct {
+	AbsPath   string
+	StartTime time.Time
+	OffsetSec float64
+}
+
+// FindEventClipCandidates returns the on-disk segments that could contain the
+// event, best-fit first: the segment whose [start,end) window holds eventTime,
+// then progressively-closer neighbors by start time. Each carries its seek
+// offset. The newest (still-open, unreadable until rotated) segment naturally
+// sorts late so a closed segment is preferred. Returns nil if none on disk.
+func FindEventClipCandidates(storagePath, cameraID string, eventTime time.Time, max int) []SegmentCandidate {
+	segments, _ := listSegments(storagePath, cameraID, true)
+	if len(segments) == 0 {
+		return nil
+	}
+	// Rank by absolute distance from eventTime to the segment's [start,end]
+	// window: 0 when contained, else how far outside. Stable, deterministic.
+	dist := func(s segInfo) time.Duration {
+		switch {
+		case eventTime.Before(s.startTime):
+			return s.startTime.Sub(eventTime)
+		case !s.endTime.IsZero() && eventTime.After(s.endTime):
+			return eventTime.Sub(s.endTime)
+		default:
+			return 0
+		}
+	}
+	idx := make([]int, len(segments))
+	for i := range segments {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		return dist(segments[idx[a]]) < dist(segments[idx[b]])
+	})
+	if max <= 0 || max > len(idx) {
+		max = len(idx)
+	}
+	out := make([]SegmentCandidate, 0, max)
+	for _, i := range idx[:max] {
+		s := segments[i]
+		off := eventTime.Sub(s.startTime).Seconds()
+		if off < 0 {
+			off = 0
+		}
+		out = append(out, SegmentCandidate{AbsPath: s.absPath, StartTime: s.startTime, OffsetSec: off})
+	}
+	return out
+}
+
 // pickContainingSegment returns the segment that actually holds eventTime in
 // its [startTime, endTime) window. endTime is derived from the next segment's
 // start (or "open-ended now+1min" for the latest), so short segments produced
