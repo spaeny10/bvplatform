@@ -164,20 +164,31 @@ func pullCameraVCA(ctx context.Context, client *onvif.Client, camID uuid.UUID) (
 
 // ── polygon / line parsing ──
 
+// milesightPolygonGrid is the coordinate space for VCA polygon vertices
+// returned by the Milesight operator.cgi JSON REST API (get.vca.*).
+// This is distinct from:
+//   - maxWidth/maxHeight in the same response (those are the analytics frame
+//     pixel dimensions used for min/max object size filtering — NOT the
+//     polygon space)
+//   - The 0-10000 integer space used by the older dataloader.cgi setconfig API
+//
+// Verified against live camera: 5001 front (MS-C4467-X20RPE panoramic)
+// returns maxWidth=608, maxHeight=352 but polygon coords like x=993, y=979
+// that are clearly 0–1000. Dividing by 1000 gives 0.993, 0.979 which are
+// near-edge values that match a zone covering most of the frame — correct.
+const milesightPolygonGrid = 1000.0
+
 type vcaEnvelope struct {
 	MaxWidth  int `json:"maxWidth"`
 	MaxHeight int `json:"maxHeight"`
 }
 
-func parsePolygon(polyX, polyY string, maxW, maxH int) []database.Point {
+func parsePolygon(polyX, polyY string, _, _ int) []database.Point {
 	xs := splitSlotList(polyX)
 	ys := splitSlotList(polyY)
 	n := len(xs)
 	if len(ys) < n {
 		n = len(ys)
-	}
-	if maxW <= 0 || maxH <= 0 {
-		return nil
 	}
 	out := make([]database.Point, 0, n)
 	for i := 0; i < n; i++ {
@@ -185,10 +196,18 @@ func parsePolygon(polyX, polyY string, maxW, maxH int) []database.Point {
 		if xs[i] < 0 || ys[i] < 0 {
 			continue
 		}
-		out = append(out, database.Point{
-			X: float64(xs[i]) / float64(maxW),
-			Y: float64(ys[i]) / float64(maxH),
-		})
+		x := float64(xs[i]) / milesightPolygonGrid
+		y := float64(ys[i]) / milesightPolygonGrid
+		// Clamp to [0,1] — occasional firmware rounding can push a near-edge
+		// vertex just over 1.0 (e.g. y=1014 → 1.014). Clamp so the overlay
+		// math stays in-bounds without discarding a valid vertex.
+		if x > 1.0 {
+			x = 1.0
+		}
+		if y > 1.0 {
+			y = 1.0
+		}
+		out = append(out, database.Point{X: x, Y: y})
 	}
 	return out
 }
